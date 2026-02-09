@@ -1,15 +1,11 @@
 [tool.poetry]
-name = "DATA-SCIENCE-PROJECTS"
+name = "agents-for-bpm"
 version = "0.1.0"
 description = ""
-authors = ["raheleh <raheleh.hadian@sap.com>"]
-readme = "README.md"
-
-###### Otherwise error for not using this project
+authors = ["Angelo Casciani <angelo.casciani@sap.com>"]
+readme = "README.md" 
 package-mode = false
- 
- 
- 
+
 [[tool.poetry.source]]
 name = "sap"
 url = "https://int.repositories.cloud.sap/artifactory/api/pypi/build-snapshots-pypi/simple"
@@ -46,14 +42,15 @@ tiktoken = "^0.7.0"
 
 
 
-
-
 statsmodels = "^0.14.4"
 scipy = "^1.15.3"
 ruptures = "^1.1.9"
 seaborn = "^0.13.2"
 dask = "^2025.7.0"
 transformers = "^4.55.4"
+pm4py = "^2.7.19.8"
+rustxes = "^0.2.11"
+graphviz = "^0.20.3"
  
 [tool.poetry.group.dev.dependencies]
  
