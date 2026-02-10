@@ -19,8 +19,10 @@ from analysis import (
 
 
 class PredictiveProcessAgent:
-    def __init__(self, model_name: str = "gpt-4.1"):
+    def __init__(self, model_name: str = "gpt-4.1", temperature: float = 0.0, max_tokens: int = 32768):
         self.model_name = model_name
+        self.temperature = temperature
+        self.max_tokens = max_tokens
 
     def run_analysis_pipeline(self, log_path: str) -> str:
         """
@@ -150,7 +152,7 @@ END ACTIVITIES: {end_acts}
             },
         ]
 
-        kwargs = dict(model_name=self.model_name, messages=messages)
+        kwargs = dict(model_name=self.model_name, messages=messages, temperature=self.temperature, max_tokens=self.max_tokens)
         response = chat.completions.create(**kwargs)
         return response.choices[0].message.content
 

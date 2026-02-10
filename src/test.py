@@ -10,7 +10,7 @@ messages = [
     {"role": "user", "content": "Do other Azure Cognitive Services support this too?"},
 ]
 
-kwargs = dict(model_name="gpt-4.1", messages=messages)
+kwargs = dict(model_name="gpt-4.1", messages=messages, temperature=0.0, max_tokens=256)
 response = chat.completions.create(**kwargs)
 
 # print(response)
