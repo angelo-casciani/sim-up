@@ -158,7 +158,7 @@ END ACTIVITIES: {end_acts}
 
     def _get_system_prompt(self) -> str:
         return """
-You are an expert Process Mining Agent specialized in Predictive Analytics.
+You are an expert Process Mining agent specialized in predictive analytics.
 Your goal is NOT to describe what happened in the past, but to forecast risks and opportunities for the future.
 
 You have access to the 'Stochastic Language' of the process, which tells you the probability of specific paths occurring.
