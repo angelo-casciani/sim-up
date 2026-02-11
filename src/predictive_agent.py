@@ -55,7 +55,6 @@ class PredictiveProcessAgent:
             print(f"Warning: Could not compute stochastic language: {e}")
             stochastic_lang = "Not available"
 
-        # abstractions for llms
         print("    Computing LLM abstractions")
         try:
             log_features = abstract_log_features(log)
@@ -69,7 +68,6 @@ class PredictiveProcessAgent:
             print(f"Warning: Could not abstract variants: {e}")
             variants_abstraction = "Not available"
 
-        # Discover Petri net for further analysis
         print("    Discovering process model")
         try:
             net, initial_marking, final_marking = discover_petri_net_inductive(log)
