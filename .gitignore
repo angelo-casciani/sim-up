@@ -206,7 +206,9 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-report/
+reports/
 
 # Logs - exclude only pure .xes files, not compressed variants
 logs/*.xes
+logs/*confidential*
+misc/

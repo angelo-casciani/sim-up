@@ -51,6 +51,7 @@ transformers = "^4.55.4"
 pm4py = "^2.7.19.8"
 rustxes = "^0.2.11"
 graphviz = "^0.20.3"
+pyyaml = "^6.0"
  
 [tool.poetry.group.dev.dependencies]
  
