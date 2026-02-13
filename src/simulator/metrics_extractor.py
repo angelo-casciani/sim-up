@@ -2,7 +2,7 @@
 
 import pandas as pd
 import pm4py
-from typing import Dict, Any
+from typing import Dict
 
 
 class MetricsExtractor:

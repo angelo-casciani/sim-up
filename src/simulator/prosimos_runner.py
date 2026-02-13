@@ -3,9 +3,8 @@
 import os
 import json
 import subprocess
-import tempfile
 import copy
-from typing import Dict, Any
+from typing import Dict
 
 
 class ProsimosRunner:

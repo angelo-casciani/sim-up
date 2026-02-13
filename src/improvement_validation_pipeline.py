@@ -1,12 +1,9 @@
-"""Refactored process improvement validation agent."""
-
 import os
 import json
 import tempfile
 import shutil
 import time
-from typing import Dict, Tuple, List
-from pathlib import Path
+import subprocess
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -317,10 +314,8 @@ class ImprovementValidationAgent:
             except PermissionError:
                 try:
                     if self.use_sudo:
-                        import subprocess
                         subprocess.run(['sudo', 'rm', '-rf', self.work_dir], check=True)
                     else:
-                        import subprocess
                         subprocess.run(['chmod', '-R', '755', self.work_dir], check=True)
                         shutil.rmtree(self.work_dir)
                     print(f"Cleaned up working directory: {self.work_dir}")

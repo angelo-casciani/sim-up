@@ -1,8 +1,6 @@
-"""Metrics extraction module."""
-
 import pandas as pd
 import pm4py
-from typing import Dict, Any
+from typing import Dict
 
 
 class MetricsExtractor:
@@ -51,15 +49,10 @@ class MetricsExtractor:
             
             log = pm4py.read_xes(xes_path)
             metrics = {}
-            
-            # Cycle time using pm4py
-            from pm4py.statistics.traces.generic.log import case_statistics
-            cycle_times = case_statistics.get_all_case_durations(log)
+            cycle_times = pm4py.statistics.traces.generic.log.case_statistics.get_all_case_durations(log)
             
             if cycle_times:
                 metrics['avg_cycle_time'] = sum(cycle_times) / len(cycle_times)
-            
-            # Throughput
             metrics['avg_throughput'] = float(len(log))
             metrics['avg_waiting_time'] = metrics.get('avg_cycle_time', 0) * 0.3
             

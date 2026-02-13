@@ -143,8 +143,8 @@ poetry run python src/main.py --log sepsis.xes
 
 This will:
 1. Discover baseline model from `logs/sepsis.xes`
-2. Generate 3 improvement hypotheses
-3. Simulate and validate improvements
+2. Run 3 improvement iterations (each iteration generates a new hypothesis)
+3. Simulate and validate each hypothesis
 4. Generate reports in `reports/`
 
 ### Run with Custom Parameters
@@ -166,7 +166,7 @@ poetry run python src/main.py \
 --model MODEL                LLM model (default: gpt-4.1)
 --temperature TEMP           LLM temperature [0.0-1.0] (default: 0.0)
 --max_tokens NUM             Max LLM response tokens (default: 4096)
---max_iterations NUM         Improvement iterations (default: 3)
+--max_iterations NUM         Improvement iterations (default: 3, set 1 for single-shot)
 --docker_image IMAGE         SIMOD Docker image (default: nokal/simod:latest)
 --no_sudo                    Don't use sudo for Docker
 ```
@@ -194,9 +194,9 @@ poetry run python src/main.py --log road_traffic.xes --no_sudo
 
 ```
 reports/
-├── improvement_report_gpt-4.1_sepsis.xes_0.0_4096_20260212_121344.txt
+├── improvement_report_gpt-4.1_sepsis_0.0_4096_20260212_121344.txt
 └── interaction_logs/
-    └── interaction_log_sepsis.xes_20260212_121344.txt
+  └── interaction_log_sepsis_20260212_121344.txt
 ```
 
 **Improvement Report** contains:
@@ -229,11 +229,19 @@ Real Metrics (cycle time, throughput, resources)
 
 ### 2. Hypothesis Generation
 
-LLM analyzes baseline metrics and suggests improvements:
+LLM analyzes baseline metrics and suggests improvements. This step is repeated
+for each iteration so you can compare multiple alternatives:
 - Resource allocation changes
 - Activity reordering
 - Waiting time reduction
 - Cost optimization
+
+**Parameters considered (from SIMOD + Prosimos output and log metrics):**
+- **Process structure**: BPMN model and gateway branching probabilities
+- **Arrival behavior**: arrival time distribution and calendar
+- **Resources**: resource profiles (counts), resource calendars, and utilization
+- **Activity performance**: task-resource duration distributions
+- **Baseline KPIs**: cycle time, throughput, waiting time, total cost
 
 ### 3. Simulation & Validation
 
@@ -300,7 +308,7 @@ All runs are fully reproducible:
 **Reproduce a run:**
 ```bash
 # Extract parameters from interaction log
-cat reports/interaction_logs/interaction_log_sepsis.xes_20260212_121344.txt
+cat reports/interaction_logs/interaction_log_sepsis_20260212_121344.txt
 
 # Re-run with same parameters
 poetry run python src/main.py \

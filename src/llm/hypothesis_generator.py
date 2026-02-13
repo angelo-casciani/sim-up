@@ -1,5 +1,3 @@
-"""LLM hypothesis generation module."""
-
 import json
 from typing import Dict, List
 from dotenv import load_dotenv
@@ -10,24 +8,13 @@ from gen_ai_hub.proxy.native.openai import chat
 
 
 class HypothesisGenerator:
-    """Generates process improvement hypotheses using LLM."""
-    
-    def __init__(
-        self,
-        model_name: str = "gpt-4.1",
-        temperature: float = 0.0,
-        max_tokens: int = 4096
-    ):
-        """Initialize hypothesis generator."""
+    def __init__(self, model_name: str = "gpt-4.1", temperature: float = 0.0, max_tokens: int = 4096):
         self.model_name = model_name
         self.temperature = temperature
         self.max_tokens = max_tokens
     
-    def generate(
-        self,
-        baseline_metrics: Dict,
-        previous_improvements: List[Dict] = None
-    ) -> Dict:
+    
+    def generate(self, baseline_metrics: Dict, previous_improvements: List[Dict] = None) -> Dict:
         """
         Generate improvement hypothesis using LLM.
         
@@ -55,10 +42,8 @@ class HypothesisGenerator:
                 max_tokens=self.max_tokens
             )
             
-            # Parse LLM response
+            # Parse LLM response and extract JSON
             response_text = response.choices[0].message.content
-            
-            # Extract JSON from response
             try:
                 start_idx = response_text.find('{')
                 end_idx = response_text.rfind('}') + 1
@@ -70,7 +55,6 @@ class HypothesisGenerator:
             except json.JSONDecodeError:
                 hypothesis = self._parse_hypothesis_text(response_text)
             
-            # Validate hypothesis structure
             if self._validate_hypothesis(hypothesis):
                 return hypothesis
             else:
@@ -81,11 +65,11 @@ class HypothesisGenerator:
             print(f"Error generating hypothesis: {e}")
             return self._get_fallback_hypothesis()
     
+
     def _get_system_prompt(self) -> str:
-        """Get system prompt for LLM."""
         return """You are a process improvement specialist analyzing business process metrics.
 
-Your task is to generate actionable, specific hypotheses to improve process performance.
+Your task is to generate actionable, predictive hypotheses to improve process performance.
 
 For each hypothesis, provide:
 - Clear description of the improvement
@@ -115,8 +99,8 @@ Return a JSON object with the following structure:
   }
 }"""
     
+
     def _get_user_prompt(self, baseline_metrics: Dict, previous_improvements: List[Dict]) -> str:
-        """Get user prompt for LLM."""
         prompt = f"""Analyze the current process metrics and generate ONE new improvement hypothesis:
 
 BASELINE METRICS:
@@ -142,6 +126,7 @@ Return ONLY the JSON object, no additional text."""
         
         return prompt
     
+
     def _parse_hypothesis_text(self, text: str) -> Dict:
         """Parse hypothesis from plain text if JSON parsing fails."""
         hypothesis = {
@@ -156,11 +141,13 @@ Return ONLY the JSON object, no additional text."""
         }
         return hypothesis
     
+
     def _validate_hypothesis(self, hypothesis: Dict) -> bool:
         """Validate hypothesis structure."""
         required_keys = {"description", "improvement_type", "changes", "expected_impact"}
         return required_keys.issubset(hypothesis.keys())
     
+
     def _get_fallback_hypothesis(self) -> Dict:
         """Get fallback hypothesis when LLM call fails."""
         return {

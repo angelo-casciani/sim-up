@@ -4,8 +4,7 @@ import os
 import json
 import subprocess
 import shutil
-from typing import Tuple, Dict, Any
-from pathlib import Path
+from typing import Tuple, Dict
 import yaml
 import pm4py
 
