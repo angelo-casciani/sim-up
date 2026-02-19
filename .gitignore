@@ -212,3 +212,4 @@ reports/
 logs/*.xes
 logs/*confidential*
 misc/
+simulated_data/

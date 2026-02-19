@@ -122,12 +122,14 @@ Format with markdown for readability."""
         if validated_improvements:
             improvements_text = "VALIDATED IMPROVEMENTS:\n\n"
             for i, imp in enumerate(validated_improvements, 1):
-                improvements_text += f"{i}. {imp['hypothesis']['description']}\n"
-                improvements_text += f"   Type: {imp['hypothesis']['improvement_type']}\n"
-                improvements_text += f"   Rationale: {imp['hypothesis']['rationale']}\n"
-                improvements_text += f"   Impact: {imp['impact']['summary']}\n"
+                hypothesis = imp.get('hypothesis', {})
+                impact = imp.get('impact') or imp.get('improvement', {})
+                improvements_text += f"{i}. {hypothesis.get('description', 'N/A')}\n"
+                improvements_text += f"   Type: {hypothesis.get('improvement_type', 'N/A')}\n"
+                improvements_text += f"   Rationale: {hypothesis.get('rationale', 'N/A')}\n"
+                improvements_text += f"   Impact: {impact.get('summary', 'N/A')}\n"
                 improvements_text += f"   Detailed metrics:\n"
-                for metric, data in imp['impact']['improvements'].items():
+                for metric, data in impact.get('improvements', {}).items():
                     baseline_val = data['baseline']
                     new_val = data['new']
                     change_pct = data['change_pct']
@@ -232,7 +234,8 @@ This report presents a comprehensive analysis of the current process and the imp
         
         if validated_improvements:
             for imp in validated_improvements:
-                report += f"- {imp['impact']['summary']}\n"
+                impact = imp.get('impact') or imp.get('improvement', {})
+                report += f"- {impact.get('summary', 'N/A')}\n"
         else:
             report += "- Analysis completed; no significant improvements identified within iteration limit\n"
         
@@ -264,11 +267,13 @@ This report presents a comprehensive analysis of the current process and the imp
         
         if validated_improvements:
             for i, imp in enumerate(validated_improvements, 1):
-                report += f"### Improvement {i}: {imp['hypothesis']['description']}\n\n"
-                report += f"**Type:** {imp['hypothesis']['improvement_type']}\n"
-                report += f"**Rationale:** {imp['hypothesis']['rationale']}\n\n"
+                hypothesis = imp.get('hypothesis', {})
+                impact = imp.get('impact') or imp.get('improvement', {})
+                report += f"### Improvement {i}: {hypothesis.get('description', 'N/A')}\n\n"
+                report += f"**Type:** {hypothesis.get('improvement_type', 'N/A')}\n"
+                report += f"**Rationale:** {hypothesis.get('rationale', 'N/A')}\n\n"
                 report += "**Impact Summary:**\n"
-                report += f"{imp['impact']['summary']}\n\n"
+                report += f"{impact.get('summary', 'N/A')}\n\n"
         else:
             report += "No validated improvements identified.\n\n"
         

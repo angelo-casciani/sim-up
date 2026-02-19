@@ -5,6 +5,9 @@ from dotenv import load_dotenv
 import sys
 import subprocess
 
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 load_dotenv()
 
 from improvement_validation_pipeline import ImprovementValidationAgent
@@ -128,8 +131,8 @@ def test_improvement_agent():
         os.makedirs(report_dir, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # Strip file extension from log name
-        log_name_no_ext = os.path.splitext(args.log)[0]
+        # Strip file extension from log name and replace path separators with underscores
+        log_name_no_ext = os.path.splitext(args.log)[0].replace(os.sep, "_").replace("/", "_")
         report_filename = (f"improvement_report_{args.model}_{log_name_no_ext}_{args.temperature}_{args.max_tokens}_{timestamp}.txt")
         report_path = os.path.join(report_dir, report_filename)
         
