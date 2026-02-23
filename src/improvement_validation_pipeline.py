@@ -10,17 +10,17 @@ from dotenv import load_dotenv
 import sys
 import re
 import pandas as pd
-from typing import Dict
+from typing import Dict, Tuple
 
 # Ensure src directory is in path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 load_dotenv()
 
-from simulator import SIMODDiscoverer, ProsimosRunner, AgentSimulatorRunner, EnsembleArbiter
+from simulator import SIMODDiscoverer, ProsimosRunner, AgentSimulatorRunner
 from llm import HypothesisGenerator
 from validation import ImprovementValidator
-from reporting import ReportGenerator, EnsembleReportSynthesizer
+from reporting import ReportGenerator
 
 
 class ImprovementValidationAgent:
@@ -42,7 +42,9 @@ class ImprovementValidationAgent:
         max_tokens: int = 4096,
         max_iterations: int = 3,
         docker_image: str = "nokal/simod:latest",
-        use_sudo: bool = True
+        use_sudo: bool = True,
+        des_runs: int = 10,
+        abs_runs: int = 10
     ):
         """Initialize the improvement validation agent."""
         self.model_name = model_name
@@ -51,22 +53,26 @@ class ImprovementValidationAgent:
         self.max_iterations = max_iterations
         self.docker_image = docker_image
         self.use_sudo = use_sudo
+        self.des_runs = max(1, int(des_runs))
+        self.abs_runs = max(1, int(abs_runs))
         self.work_dir = None
         self.history = []
         self.interaction_log = []
         self.log_file = None
         self.log_basename = None  # Store log filename without extension
         self.execution_times = {}  # Track execution times
+        self._temp_abs_logs = []
         
         # Initialize modules
         self.discoverer = SIMODDiscoverer(docker_image, use_sudo)
         self.simulator = ProsimosRunner(docker_image, use_sudo)
         self.agent_simulator = AgentSimulatorRunner()  # Agent-based simulator (optional)
-        self.arbiter = EnsembleArbiter()  # Conflict resolution between simulators
         self.hypothesis_gen = HypothesisGenerator(model_name, temperature, max_tokens)
         self.validator = ImprovementValidator()
         self.reporter = ReportGenerator(model_name, temperature, max_tokens)
-        self.ensemble_reporter = EnsembleReportSynthesizer()  # Reality check reports
+        self.des_train_log_path = None
+        self.des_test_log_path = None
+        self.abs_source_log_path = None
     
     def run_improvement_pipeline(self, log_path: str) -> str:
         """
@@ -92,11 +98,44 @@ class ImprovementValidationAgent:
         self.log_basename = os.path.splitext(os.path.basename(log_path))[0]
         self.log_path = log_path
         self.abs_case_count = None
-        self.time_horizon_seconds = self._compute_time_horizon_seconds(log_path)
+        self.full_log_path = log_path
+
+        self.des_train_log_path, self.des_test_log_path = self._prepare_des_train_test_logs(log_path)
+        self.train_log_path = self.des_train_log_path or log_path
+        self.test_log_path = self.des_test_log_path or log_path
+        self.abs_source_log_path = self.test_log_path
+
+        if self.des_train_log_path and self.des_train_log_path != log_path:
+            print(f"✓ DES input log (train split): {self.des_train_log_path}")
+            if self.des_test_log_path:
+                print(f"✓ DES held-out test split: {self.des_test_log_path}")
+            self._log_interaction(f"DES train split log: {self.des_train_log_path}")
+            if self.des_test_log_path:
+                self._log_interaction(f"DES test split log: {self.des_test_log_path}")
+        else:
+            print("⚠️  DES split unavailable, using original log")
+            self._log_interaction("DES split unavailable, using original log")
+
+        print("✓ Split policy: train=discovery, test=simulation/validation, full=train+test context")
+        self._log_interaction(
+            "Split policy: "
+            f"train={self.train_log_path}, test={self.test_log_path}, full={self.full_log_path}"
+        )
+
+        try:
+            full_cases = pd.read_csv(self.full_log_path)["case_id"].nunique()
+            train_cases = pd.read_csv(self.train_log_path)["case_id"].nunique()
+            test_cases = pd.read_csv(self.test_log_path)["case_id"].nunique()
+            print(f"✓ Split sizes (cases): full={full_cases}, train={train_cases}, test={test_cases}")
+            self._log_interaction(f"Split sizes (cases): full={full_cases}, train={train_cases}, test={test_cases}")
+        except Exception:
+            pass
+
+        self.time_horizon_seconds = self._compute_time_horizon_seconds(self.test_log_path)
         if self.time_horizon_seconds:
             days = self.time_horizon_seconds / 86400
-            print(f"✓ Time horizon from baseline log: {self.time_horizon_seconds:.0f} seconds ({days:.1f} days)")
-            self._log_interaction(f"Time horizon (seconds): {self.time_horizon_seconds:.0f} ({days:.1f} days)")
+            print(f"✓ Time horizon from test split: {self.time_horizon_seconds:.0f} seconds ({days:.1f} days)")
+            self._log_interaction(f"Time horizon from test split (seconds): {self.time_horizon_seconds:.0f} ({days:.1f} days)")
         
         # Setup interaction log
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -104,8 +143,9 @@ class ImprovementValidationAgent:
         self._log_interaction("="*80)
         self._log_interaction("PROCESS IMPROVEMENT VALIDATION - INTERACTION LOG")
         self._log_interaction(f"Timestamp: {datetime.now()}")
-        self._log_interaction(f"Event Log: {log_path}")
+        self._log_interaction(f"Event Log (original): {log_path}")
         self._log_interaction(f"Model: {self.model_name}")
+        self._log_interaction(f"Simulation runs config: DES={self.des_runs}, ABS={self.abs_runs}")
         self._log_interaction("="*80 + "\n")
         
         try:
@@ -130,7 +170,6 @@ class ImprovementValidationAgent:
                     break
             baseline_model = None
             baseline_metrics = None
-            calibration_factor = None
             pm4py_baseline_metrics = None
             
             if calibrated_model_path:
@@ -169,7 +208,28 @@ class ImprovementValidationAgent:
             # If no calibrated model, discover baseline
             if baseline_model is None:
                 print("Discovering baseline simulation model with SIMOD...")
-                baseline_model, baseline_metrics = self.discoverer.discover(log_path, self.work_dir)
+                discovery_input_log = self.train_log_path
+                baseline_model, baseline_metrics = self.discoverer.discover(discovery_input_log, self.work_dir)
+
+                # Enforce DES baseline from SIMOD assets (BPMN + Prosimos params).
+                if not self._is_simod_ready_model(baseline_model):
+                    print("⚠️  SIMOD discovery from DES-train split did not produce executable Prosimos assets.")
+                    if discovery_input_log != self.full_log_path:
+                        print("↻ Retrying SIMOD discovery from original log as fallback source...")
+                        retry_model, retry_metrics = self.discoverer.discover(self.full_log_path, self.work_dir)
+                        if self._is_simod_ready_model(retry_model):
+                            baseline_model = retry_model
+                            baseline_metrics = retry_metrics
+                            print("✓ SIMOD fallback discovery from original log succeeded.")
+                        else:
+                            raise RuntimeError(
+                                "SIMOD discovery failed to produce BPMN/Prosimos assets for DES baseline "
+                                "(both split-log and original-log attempts)."
+                            )
+                    else:
+                        raise RuntimeError(
+                            "SIMOD discovery failed to produce BPMN/Prosimos assets for DES baseline."
+                        )
             
             step1_time = time.time() - step1_start
             self.execution_times['step_1_baseline_discovery'] = step1_time
@@ -233,7 +293,7 @@ class ImprovementValidationAgent:
             try:
                 baseline_des_metrics, baseline_abs_metrics, baseline_unified_metrics = self._simulate_baseline(
                     baseline_model,
-                    log_path,
+                    self.abs_source_log_path,
                     baseline_metrics
                 )
                 if baseline_unified_metrics:
@@ -255,7 +315,7 @@ class ImprovementValidationAgent:
                 baseline_unified_metrics = None
 
             working_model = baseline_model
-            working_abs_log_path = log_path
+            working_abs_log_path = self.abs_source_log_path
             target_hints = self._extract_target_hints(
                 baseline_model,
                 baseline_metrics,
@@ -345,18 +405,22 @@ class ImprovementValidationAgent:
                 print(f"\n[STEP 3.{iteration+1}] Running simulation with modifications...")
                 self._log_interaction(f"\n[STEP 3.{iteration+1}] PARALLEL SIMULATIONS (DES + ABS)")
                 self._log_interaction("-"*40)
+                horizon_label = f"{self.time_horizon_seconds:.0f}s" if self.time_horizon_seconds else "n/a"
+                print(f"  Shared settings: des_time_horizon={horizon_label}, abs_time_horizon=full-run, DES runs={self.des_runs}, ABS runs={self.abs_runs}")
+                self._log_interaction(
+                    f"Shared settings: des_time_horizon={horizon_label}, abs_time_horizon=full-run, "
+                    f"des_total_cases={self.abs_case_count}, des_runs={self.des_runs}, abs_runs={self.abs_runs}, "
+                    f"des_log={self.des_train_log_path or log_path}, abs_log={self.abs_source_log_path}"
+                )
                 
                 sim_start = time.time()
                 
                 # Run Prosimos (DES) in main thread
                 print(f"  ├─ Prosimos (Structural/DES)...")
-                des_metrics = self.simulator.simulate(
+                des_metrics = self._run_des_simulations(
                     working_model,
                     hypothesis['changes'],
-                    self.work_dir,
-                    total_cases=self.abs_case_count,
-                    time_horizon_seconds=self.time_horizon_seconds,
-                    baseline_metrics=baseline_metrics
+                    baseline_metrics
                 )
                 
                 # Run AgentSimulator (ABS) in parallel thread
@@ -371,8 +435,8 @@ class ImprovementValidationAgent:
                             hypothesis['changes'],
                             self.work_dir,
                             enabled=True,
-                            time_horizon_seconds=self.time_horizon_seconds,
-                            num_simulations=1
+                            time_horizon_seconds=None,
+                            num_simulations=self.abs_runs
                         )[0]
                     except Exception as e:
                         abs_thread_error = e
@@ -412,43 +476,36 @@ class ImprovementValidationAgent:
                 self._log_interaction(json.dumps(abs_metrics, indent=2))
                 self._log_interaction(f"\n⏱️  Parallel simulation time: {sim_time:.1f} seconds")
                 
-                # STEP 3.5: Ensemble Arbitration (Stereoscopic Analysis)
-                print(f"\n[STEP 3.5.{iteration+1}] Ensemble Arbitration (Stereoscopic Analysis)...")
-                self._log_interaction(f"\n[STEP 3.5.{iteration+1}] ENSEMBLE ARBITRATION")
+                # STEP 3.5: Keep simulator outputs independent (no reconciliation/arbitration)
+                print(f"\n[STEP 3.5.{iteration+1}] Independent simulator assessment (no reconciliation)...")
+                self._log_interaction(f"\n[STEP 3.5.{iteration+1}] INDEPENDENT SIMULATOR ASSESSMENT")
                 self._log_interaction("-"*40)
-                
-                arb_start = time.time()
-                arbitration_result = self.arbiter.arbitrate(
-                    hypothesis,
-                    des_metrics,
-                    abs_metrics,
-                    threshold=2.0
-                )
-                arb_time = time.time() - arb_start
-                
-                # Use unified metrics from arbitration
-                new_metrics = arbitration_result['unified_metrics'].copy()
-                
-                print(f"Arbitration Strategy: {arbitration_result['arbitration_strategy'].upper()}")
-                print(f"Primary Source: {arbitration_result['primary_source']}")
-                print(f"Hypothesis Type: {arbitration_result['hypothesis_type']}")
-                print(f"Confidence: {arbitration_result['confidence']*100:.1f}%")
-                print(f"Behavioral Gap: {arbitration_result['behavioral_gap']}")
-                if arbitration_result['warnings']:
-                    for warning in arbitration_result['warnings']:
-                        print(f"  ⚠️  {warning}")
-                
-                self._log_interaction("\nArbitration Result:")
-                self._log_interaction(f"Strategy: {arbitration_result['arbitration_strategy']}")
-                self._log_interaction(f"Primary Source: {arbitration_result['primary_source']}")
-                self._log_interaction(f"Confidence: {arbitration_result['confidence']*100:.1f}%")
-                self._log_interaction(f"Behavioral Gap: {arbitration_result['behavioral_gap']}")
-                self._log_interaction(f"Insight: {arbitration_result['insight']}")
-                if arbitration_result['warnings']:
-                    self._log_interaction("\nWarnings:")
-                    for warning in arbitration_result['warnings']:
-                        self._log_interaction(f"  {warning}")
-                self._log_interaction(f"\n⏱️  Arbitration time: {arb_time:.1f} seconds")
+
+                # Explicit per-simulator impact vs each simulator's own baseline
+                des_impact = self._compute_impact_metrics(baseline_des_metrics, des_metrics)
+                abs_impact = self._compute_impact_metrics(baseline_abs_metrics, abs_metrics)
+                if des_impact:
+                    print("  DES impact vs DES baseline:")
+                    for metric_name, change in des_impact.items():
+                        print(f"    - {metric_name}: {change:+.2f}%")
+                if abs_impact:
+                    print("  ABS impact vs ABS baseline:")
+                    for metric_name, change in abs_impact.items():
+                        print(f"    - {metric_name}: {change:+.2f}%")
+
+                self._log_interaction("\nPer-simulator impact vs own baseline:")
+                if des_impact:
+                    self._log_interaction("  DES:")
+                    for metric_name, change in des_impact.items():
+                        self._log_interaction(f"    - {metric_name}: {change:+.2f}%")
+                else:
+                    self._log_interaction("  DES: unavailable")
+                if abs_impact:
+                    self._log_interaction("  ABS:")
+                    for metric_name, change in abs_impact.items():
+                        self._log_interaction(f"    - {metric_name}: {change:+.2f}%")
+                else:
+                    self._log_interaction("  ABS: unavailable")
                 
                 # Validate improvement
                 print(f"\n[STEP 4.{iteration+1}] Validating improvement...")
@@ -456,21 +513,50 @@ class ImprovementValidationAgent:
                 self._log_interaction("-"*40)
                 
                 val_start = time.time()
-                improvement_result = self.validator.validate(
-                    baseline_unified_metrics or baseline_metrics,
-                    new_metrics,
+                des_validation = self.validator.validate(
+                    baseline_des_metrics or baseline_metrics,
+                    des_metrics,
                     hypothesis,
                     threshold=1.0,
                     min_improvements=1,
                     max_regression_pct=8.0,
+                    max_cycle_time_increase_pct=10.0,
                     max_regressions=1,
-                    require_throughput_non_decrease=True,
-                    des_metrics=des_metrics,
-                    abs_metrics=abs_metrics,
-                    check_agreement=True,
-                    agreement_threshold=10.0,
-                    arbitration_result=arbitration_result
+                    require_throughput_non_decrease=True
                 )
+
+                abs_validation = self.validator.validate(
+                    baseline_abs_metrics or baseline_metrics,
+                    abs_metrics,
+                    hypothesis,
+                    threshold=1.0,
+                    min_improvements=1,
+                    max_regression_pct=8.0,
+                    max_cycle_time_increase_pct=10.0,
+                    max_regressions=1,
+                    require_throughput_non_decrease=True
+                )
+
+                overall_is_improvement = bool(des_validation.get("is_improvement") or abs_validation.get("is_improvement"))
+                overall_summary_parts = []
+                if des_validation.get("is_improvement"):
+                    overall_summary_parts.append(f"DES improved ({des_validation.get('summary', 'n/a')})")
+                if abs_validation.get("is_improvement"):
+                    overall_summary_parts.append(f"ABS improved ({abs_validation.get('summary', 'n/a')})")
+                if not overall_summary_parts:
+                    overall_summary_parts.append(
+                        f"Neither simulator improved (DES: {des_validation.get('summary', 'n/a')} | ABS: {abs_validation.get('summary', 'n/a')})"
+                    )
+
+                merged_improvements = self._merge_simulator_improvements(des_validation, abs_validation)
+                improvement_result = {
+                    "is_improvement": overall_is_improvement,
+                    "summary": "; ".join(overall_summary_parts),
+                    "improvements": merged_improvements,
+                    "des_validation": des_validation,
+                    "abs_validation": abs_validation,
+                    "decision_rule": "OR (DES or ABS)"
+                }
                 val_time = time.time() - val_start
                 
                 print(f"⏱️  Validation took {val_time:.1f} seconds")
@@ -484,21 +570,9 @@ class ImprovementValidationAgent:
                 
                 self._log_interaction(f"\nValidation Result: {'✓ IMPROVEMENT' if improvement_result['is_improvement'] else '✗ NO IMPROVEMENT'}")
                 self._log_interaction(f"Summary: {improvement_result['summary']}")
-                if 'arbitration_info' in improvement_result:
-                    self._log_interaction(f"Arbitration: {improvement_result['arbitration_info']}")
-                
-                # Log agreement check if available
-                if 'agreement_check' in improvement_result:
-                    agreement = improvement_result['agreement_check']
-                    self._log_interaction(f"\nSimulator Agreement: {'✓ AGREE' if agreement['agree'] else '✗ CONTRADICT'}")
-                    self._log_interaction(f"  {agreement['reason']}")
-                    if agreement.get('details'):
-                        self._log_interaction("  Details:")
-                        for metric, info in agreement['details'].items():
-                            if info['status'] == 'agree':
-                                self._log_interaction(f"    {metric}: {info['direction']} (DES: {info['des_change']:.1f}%, ABS: {info['abs_change']:.1f}%)")
-                            elif info['status'] == 'contradict':
-                                self._log_interaction(f"    {metric}: CONTRADICTION (DES: {info['des_direction']} {info['des_change']:.1f}%, ABS: {info['abs_direction']} {info['abs_change']:.1f}%)")
+                self._log_interaction(f"Decision rule: {improvement_result['decision_rule']}")
+                self._log_interaction(f"DES validation: {'✓' if des_validation.get('is_improvement') else '✗'} {des_validation.get('summary', '')}")
+                self._log_interaction(f"ABS validation: {'✓' if abs_validation.get('is_improvement') else '✗'} {abs_validation.get('summary', '')}")
                 
                 self._log_interaction(f"\n⏱️  Validation time: {val_time:.1f} seconds")
                 
@@ -508,7 +582,6 @@ class ImprovementValidationAgent:
                     'total_time': iteration_time,
                     'hypothesis_time': hyp_time,
                     'simulation_time': sim_time,
-                    'arbitration_time': arb_time,
                     'validation_time': val_time,
                     'status': 'validated' if improvement_result['is_improvement'] else 'not_improved'
                 })
@@ -518,20 +591,24 @@ class ImprovementValidationAgent:
                 self.history.append({
                     "step": f"iteration_{iteration+1}",
                     "hypothesis": hypothesis,
-                    "metrics": new_metrics,
                     "des_metrics": des_metrics,
                     "abs_metrics": abs_metrics,
-                    "arbitration": arbitration_result,
+                    "des_impact_vs_baseline": des_impact,
+                    "abs_impact_vs_baseline": abs_impact,
+                    "des_validation": des_validation,
+                    "abs_validation": abs_validation,
                     "improvement": improvement_result,
                     "execution_time": iteration_time
                 })
 
                 attempt_history.append({
                     "hypothesis": hypothesis,
-                    "unified_metrics": new_metrics,
                     "des_metrics": des_metrics,
                     "abs_metrics": abs_metrics,
-                    "arbitration": arbitration_result,
+                    "des_impact_vs_baseline": des_impact,
+                    "abs_impact_vs_baseline": abs_impact,
+                    "des_validation": des_validation,
+                    "abs_validation": abs_validation,
                     "improvement": improvement_result
                 })
                 if len(attempt_history) > 5:
@@ -539,33 +616,39 @@ class ImprovementValidationAgent:
                 
                 # === CUMULATIVE IMPROVEMENT: Update baseline for next iteration if validated ===
                 if improvement_result['is_improvement']:
-                    print(f"\n✅ IMPROVEMENT VALIDATED - Updating baseline for next iteration")
-                    self._log_interaction(f"\n✅ IMPROVEMENT VALIDATED - Updating baseline for next iteration")
-                    
-                    # Apply modifications to working_model for next iteration
-                    working_model = self.simulator.apply_modifications_to_model(
-                        working_model,
-                        hypothesis['changes']
-                    )
+                    print(f"\n✅ IMPROVEMENT VALIDATED - updating working scenario for next iterations")
+                    self._log_interaction(f"\n✅ IMPROVEMENT VALIDATED - fixed simulator baselines retained for validation")
+                    self._log_interaction("Applying validated changes cumulatively to working DES/ABS scenarios for next iteration")
 
-                    # Apply modifications to ABS log for cumulative ABS scenario
-                    working_abs_log_path = self.agent_simulator.apply_modifications_to_log(
-                        working_abs_log_path,
-                        hypothesis['changes']
+                    try:
+                        working_model = self.simulator.apply_modifications_to_model(
+                            working_model,
+                            hypothesis['changes']
+                        )
+                    except Exception as model_update_error:
+                        print(f"⚠️  Could not update cumulative DES scenario: {model_update_error}")
+                        self._log_interaction(f"DES cumulative scenario update failed: {model_update_error}")
+
+                    abs_param_type = (hypothesis.get('changes') or {}).get('parameter_type')
+                    if abs_param_type in {'activity_durations', 'resources', 'role_redesign'}:
+                        try:
+                            updated_abs_log = self.agent_simulator.apply_modifications_to_log(
+                                working_abs_log_path,
+                                hypothesis['changes']
+                            )
+                            if updated_abs_log and updated_abs_log != working_abs_log_path:
+                                working_abs_log_path = updated_abs_log
+                                self._temp_abs_logs.append(updated_abs_log)
+                                self._log_interaction(f"ABS cumulative scenario log updated: {updated_abs_log}")
+                        except Exception as abs_update_error:
+                            print(f"⚠️  Could not update cumulative ABS scenario: {abs_update_error}")
+                            self._log_interaction(f"ABS cumulative scenario update failed: {abs_update_error}")
+
+                    target_hints = self._extract_target_hints(
+                        working_model,
+                        baseline_metrics,
+                        baseline_abs_metrics
                     )
-                    
-                    # Use new metrics as baseline for next iteration
-                    baseline_metrics = new_metrics.copy()
-                    
-                    # Also update baseline_des/abs if they exist
-                    if des_metrics:
-                        baseline_des_metrics = des_metrics.copy()
-                    if abs_metrics:
-                        baseline_abs_metrics = abs_metrics.copy()
-                    
-                    # Update baseline_unified for next iteration
-                    if 'unified_metrics' in arbitration_result:
-                        baseline_unified_metrics = arbitration_result['unified_metrics'].copy()
                     
                     validated_improvements.append({
                         "iteration": iteration + 1,
@@ -573,20 +656,15 @@ class ImprovementValidationAgent:
                         "improvement": improvement_result,
                         "des_metrics": des_metrics,
                         "abs_metrics": abs_metrics,
-                        "arbitration": arbitration_result,
+                        "des_impact_vs_baseline": des_impact,
+                        "abs_impact_vs_baseline": abs_impact,
                         "metrics_change": {
-                            "cycle_time": improvement_result['improvements'].get('cycle_time', {}).get('change_pct', 0),
-                            "throughput": improvement_result['improvements'].get('throughput', {}).get('change_pct', 0),
-                            "waiting_time": improvement_result['improvements'].get('waiting_time', {}).get('change_pct', 0),
+                            "des_cycle_time": improvement_result['improvements'].get('des_cycle_time', {}).get('change_pct', 0),
+                            "des_throughput": improvement_result['improvements'].get('des_throughput', {}).get('change_pct', 0),
+                            "abs_cycle_time": improvement_result['improvements'].get('abs_cycle_time', {}).get('change_pct', 0),
+                            "abs_throughput": improvement_result['improvements'].get('abs_throughput', {}).get('change_pct', 0),
                         }
                     })
-                    
-                    print(f"  New baseline: cycle_time={baseline_metrics.get('avg_cycle_time', 0):.0f}s, "
-                          f"throughput={baseline_metrics.get('avg_throughput', 0):.0f}, "
-                          f"waiting_time={baseline_metrics.get('avg_waiting_time', 0):.0f}s")
-                    self._log_interaction(f"  New baseline: cycle_time={baseline_metrics.get('avg_cycle_time', 0):.0f}s, "
-                                         f"throughput={baseline_metrics.get('avg_throughput', 0):.0f}, "
-                                         f"waiting_time={baseline_metrics.get('avg_waiting_time', 0):.0f}s")
                 
                 if improvement_result['is_improvement']:
                     print(f"✓ VALIDATED IMPROVEMENT!")
@@ -602,23 +680,6 @@ class ImprovementValidationAgent:
             self._log_interaction(f"\nTotal validated improvements: {len(validated_improvements)}")
             
             report_start = time.time()
-            
-            # Generate ensemble report for each validated improvement
-            ensemble_reports = []
-            for idx, improvement in enumerate(validated_improvements, 1):
-                ensemble_report = self.ensemble_reporter.synthesize_report(
-                    improvement['hypothesis'],
-                    baseline_metrics,
-                    improvement['des_metrics'],
-                    improvement['abs_metrics'],
-                    improvement['arbitration'],
-                    self.execution_times
-                )
-                ensemble_reports.append(ensemble_report)
-                self._log_interaction(f"\n{'='*80}")
-                self._log_interaction(f"ENSEMBLE REPORT - IMPROVEMENT {idx}")
-                self._log_interaction(f"{'='*80}")
-                self._log_interaction(ensemble_report)
             
             # Also generate traditional report for structured comparison
             report = self.reporter.generate(
@@ -636,7 +697,7 @@ class ImprovementValidationAgent:
             total_time = time.time() - pipeline_start_time
             self.execution_times['total_pipeline'] = total_time
             
-            # Log execution times (including arbitration)
+            # Log execution times
             self._log_interaction("\n" + "="*80)
             self._log_interaction("EXECUTION TIME SUMMARY")
             self._log_interaction("="*80)
@@ -647,7 +708,6 @@ class ImprovementValidationAgent:
                 if 'hypothesis_time' in it_time:
                     self._log_interaction(f"  - Hypothesis Generation: {it_time['hypothesis_time']:.1f} seconds")
                     self._log_interaction(f"  - Parallel Simulations (DES+ABS): {it_time['simulation_time']:.1f} seconds")
-                    self._log_interaction(f"  - Ensemble Arbitration: {it_time.get('arbitration_time', 0):.1f} seconds")
                     self._log_interaction(f"  - Validation: {it_time['validation_time']:.1f} seconds")
             self._log_interaction(f"\nReport Generation: {report_time:.1f} seconds")
             
@@ -691,6 +751,13 @@ class ImprovementValidationAgent:
             print(f"Warning: Could not clean agent_simulated_* folders: {cleanup_err}")
         
         # Cleanup
+        for temp_log in getattr(self, "_temp_abs_logs", []):
+            try:
+                if temp_log and os.path.exists(temp_log):
+                    os.remove(temp_log)
+            except Exception:
+                pass
+
         if self.work_dir and os.path.exists(self.work_dir):
             try:
                 shutil.rmtree(self.work_dir)
@@ -771,40 +838,23 @@ class ImprovementValidationAgent:
         baseline_changes = {"parameter_type": None, "specific_changes": []}
 
         print("\n[STEP 1.5] Simulating baseline (DES + ABS)...")
+        print(f"  Shared settings: baseline ABS runs={self.abs_runs}, baseline DES runs={self.des_runs}")
         baseline_abs_metrics, abs_output_dir = self.agent_simulator.simulate(
             log_path,
             None,
             self.work_dir,
             enabled=True,
-            time_horizon_seconds=None
+            time_horizon_seconds=None,
+            num_simulations=self.abs_runs
         )
 
-        # Align DES case count to ABS baseline to reduce structural mismatch.
-        if baseline_abs_metrics:
-            abs_cases = baseline_abs_metrics.get("simulated_case_count")
-            if abs_cases is None:
-                abs_cases = baseline_abs_metrics.get("avg_throughput")
-            if abs_cases:
-                try:
-                    self.abs_case_count = int(round(float(abs_cases)))
-                    self._log_interaction(
-                        f"Aligned DES total_cases to ABS baseline: {self.abs_case_count}"
-                    )
-                except (TypeError, ValueError):
-                    self.abs_case_count = None
+        # Keep simulators independent: do NOT overwrite DES settings from ABS outputs.
+        # DES uses its own configured case budget and horizon derived from the source log.
 
-        abs_horizon = self._compute_time_horizon_from_abs_outputs(abs_output_dir)
-        if abs_horizon:
-            self.time_horizon_seconds = abs_horizon
-            self._log_interaction(f"Time horizon (ABS baseline, seconds): {self.time_horizon_seconds:.0f}")
-
-        baseline_des_metrics = self.simulator.simulate(
+        baseline_des_metrics = self._run_des_simulations(
             baseline_model,
             baseline_changes,
-            self.work_dir,
-            total_cases=self.abs_case_count,
-            time_horizon_seconds=self.time_horizon_seconds,
-            baseline_metrics=baseline_metrics
+            baseline_metrics
         )
 
         if not baseline_des_metrics:
@@ -816,6 +866,155 @@ class ImprovementValidationAgent:
         )
 
         return baseline_des_metrics, baseline_abs_metrics, baseline_unified_metrics
+
+    def _merge_simulator_improvements(self, des_validation: Dict, abs_validation: Dict) -> Dict:
+        """Merge simulator validation improvements with explicit prefixes for reporting."""
+        merged = {}
+        for metric_name, payload in (des_validation or {}).get("improvements", {}).items():
+            merged[f"des_{metric_name}"] = payload
+        for metric_name, payload in (abs_validation or {}).get("improvements", {}).items():
+            merged[f"abs_{metric_name}"] = payload
+        return merged
+
+    def _prepare_des_train_test_logs(self, log_path: str) -> Tuple[str, str]:
+        """Create DES train/test split using AgentSimulator's native split logic."""
+        if not log_path.lower().endswith(".csv"):
+            return log_path, None
+
+        try:
+            from source.train_test_split import split_data
+        except Exception as import_error:
+            print(f"⚠️  Could not import AgentSimulator split_data ({import_error}); using original log for DES")
+            return log_path, None
+
+        try:
+            sample_df = pd.read_csv(log_path, nrows=1)
+            cols = set(sample_df.columns.tolist())
+
+            def find_column(patterns, fallback=None):
+                for col in cols:
+                    if col.lower() in [p.lower() for p in patterns]:
+                        return col
+                for col in cols:
+                    col_lower = col.lower()
+                    for pattern in patterns:
+                        if pattern.lower() in col_lower:
+                            return col
+                return fallback
+
+            case_col = find_column(["case_id", "case"], "case_id")
+            activity_col = find_column(["activity_name", "concept:name", "activity", "Activity"], "activity_name")
+            resource_col = find_column(["org:resource", "resource", "resourceid"], "resource")
+            start_ts_col = find_column(["start_timestamp", "start_time", "start"], "start_timestamp")
+            end_ts_col = find_column(["end_timestamp", "end_time", "end", "time:timestamp"], "end_timestamp")
+
+            column_names = {
+                case_col: "case_id",
+                activity_col: "activity_name",
+                resource_col: "resource",
+                end_ts_col: "end_timestamp",
+                start_ts_col: "start_timestamp"
+            }
+
+            train_df, test_df, _ = split_data(log_path, column_names)
+
+            split_dir = os.path.join(self.work_dir, "des_splits")
+            os.makedirs(split_dir, exist_ok=True)
+
+            train_path = os.path.join(split_dir, "des_train_split.csv")
+            test_path = os.path.join(split_dir, "des_test_split.csv")
+            train_df.to_csv(train_path, index=False)
+            test_df.to_csv(test_path, index=False)
+
+            train_cases = train_df["case_id"].nunique() if "case_id" in train_df.columns else "n/a"
+            test_cases = test_df["case_id"].nunique() if "case_id" in test_df.columns else "n/a"
+            print(f"✓ DES split created via AgentSimulator logic: train_cases={train_cases}, test_cases={test_cases}")
+            return train_path, test_path
+        except Exception as split_error:
+            print(f"⚠️  DES split creation failed ({split_error}); using original log")
+            return log_path, None
+
+    @staticmethod
+    def _is_simod_ready_model(model: Dict) -> bool:
+        """Return True if model has executable SIMOD/Prosimos assets for DES simulation."""
+        if not isinstance(model, dict):
+            return False
+
+        has_bpmn = bool(model.get("bpmn_path"))
+        has_prosimos_json = bool(model.get("prosimos_path") or model.get("prosimos_params"))
+        return has_bpmn and has_prosimos_json
+
+    @staticmethod
+    def _compute_impact_metrics(baseline_metrics: Dict, new_metrics: Dict) -> Dict:
+        """Compute percentage deltas for key metrics vs simulator-specific baseline."""
+        if not baseline_metrics or not new_metrics:
+            return {}
+
+        result = {}
+        metric_map = {
+            "avg_cycle_time": "cycle_time",
+            "avg_throughput": "throughput",
+            "avg_waiting_time": "waiting_time",
+            "total_cost": "cost"
+        }
+
+        for source_key, label in metric_map.items():
+            base_value = baseline_metrics.get(source_key)
+            new_value = new_metrics.get(source_key)
+            if base_value is None or new_value is None:
+                continue
+            try:
+                base_value = float(base_value)
+                new_value = float(new_value)
+            except (TypeError, ValueError):
+                continue
+            if base_value == 0:
+                continue
+            result[label] = ((new_value - base_value) / base_value) * 100.0
+
+        return result
+
+    def _run_des_simulations(self, model: Dict, modifications: Dict, baseline_metrics: Dict = None) -> Dict:
+        """Run Prosimos one or more times and average numeric metrics for stability."""
+        des_runs = []
+        for run_idx in range(self.des_runs):
+            if self.des_runs > 1:
+                print(f"    DES run {run_idx + 1}/{self.des_runs}...")
+            metrics = self.simulator.simulate(
+                model,
+                modifications,
+                self.work_dir,
+                total_cases=self.abs_case_count,
+                time_horizon_seconds=self.time_horizon_seconds,
+                baseline_metrics=baseline_metrics
+            )
+            if metrics:
+                des_runs.append(metrics)
+
+        if not des_runs:
+            return {}
+
+        if len(des_runs) == 1:
+            return des_runs[0]
+
+        aggregated = {}
+        numeric_keys = ["avg_cycle_time", "avg_throughput", "avg_waiting_time", "total_cost"]
+        for key in numeric_keys:
+            values = [float(m[key]) for m in des_runs if key in m and m[key] is not None]
+            if values:
+                aggregated[key] = sum(values) / len(values)
+
+        resource_utils = {}
+        for run in des_runs:
+            for resource_id, value in run.get("resource_utilization", {}).items():
+                resource_utils.setdefault(resource_id, []).append(float(value))
+        if resource_utils:
+            aggregated["resource_utilization"] = {
+                resource_id: sum(values) / len(values)
+                for resource_id, values in resource_utils.items()
+            }
+
+        return aggregated
 
     def _build_role_redesign_hints(self, baseline_metrics: Dict = None, baseline_abs_metrics: Dict = None) -> str:
         """Build concise role redesign hints from baseline (and ABS when available)."""
@@ -850,61 +1049,6 @@ class ImprovementValidationAgent:
             f"Underutilized candidates: {', '.join(under)}. "
             "Prefer role redesign: create specialist role or shift responsibilities from overloaded to underutilized roles before adding headcount."
         )
-
-    @staticmethod
-    def _compute_time_horizon_from_abs_outputs(output_dir: str) -> float:
-        """Compute time horizon from ABS output CSVs."""
-        if not output_dir or not os.path.isdir(output_dir):
-            return None
-
-        time_candidates = [
-            "end_timestamp",
-            "end_time",
-            "time:timestamp",
-            "timestamp",
-            "start_timestamp",
-            "start_time"
-        ]
-
-        min_time = None
-        max_time = None
-        try:
-            csv_files = [f for f in os.listdir(output_dir) if f.endswith(".csv")]
-            for name in csv_files[:5]:
-                path = os.path.join(output_dir, name)
-                df = pd.read_csv(path)
-                if df.empty:
-                    continue
-
-                time_col = None
-                for candidate in time_candidates:
-                    if candidate in df.columns:
-                        time_col = candidate
-                        break
-                if time_col is None:
-                    for col in df.columns:
-                        if "time" in col.lower():
-                            time_col = col
-                            break
-                if time_col is None:
-                    continue
-
-                series = pd.to_datetime(df[time_col], errors="coerce")
-                series_min = series.min()
-                series_max = series.max()
-                if pd.isna(series_min) or pd.isna(series_max):
-                    continue
-
-                min_time = series_min if min_time is None else min(min_time, series_min)
-                max_time = series_max if max_time is None else max(max_time, series_max)
-        except Exception:
-            return None
-
-        if min_time is None or max_time is None:
-            return None
-
-        horizon = (max_time - min_time).total_seconds()
-        return horizon if horizon and horizon > 0 else None
 
     @staticmethod
     def _compute_time_horizon_seconds(log_path: str) -> float:

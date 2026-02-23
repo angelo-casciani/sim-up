@@ -6,6 +6,17 @@ from typing import Dict
 
 class MetricsExtractor:
     """Extracts metrics from simulation outputs."""
+
+    @staticmethod
+    def _find_column(df: pd.DataFrame, candidates) -> str:
+        for candidate in candidates:
+            if candidate in df.columns:
+                return candidate
+        lowered = {c.lower(): c for c in df.columns}
+        for candidate in candidates:
+            if candidate.lower() in lowered:
+                return lowered[candidate.lower()]
+        return None
     
     def extract_from_csv(self, csv_path: str, time_horizon_seconds: float = None) -> Dict:
         """Extract metrics from simulated CSV log."""
@@ -30,32 +41,69 @@ class MetricsExtractor:
                 return self._basic_extraction(df)
             
             metrics = {}
-            
-            # Cycle time: calculate from time difference per case
-            if any('time' in col.lower() for col in df.columns):
-                time_col = [col for col in df.columns if 'time' in col.lower()][0]
-                df[time_col] = pd.to_datetime(df[time_col], errors='coerce')
-                original_cases = df['case_id'].nunique() if 'case_id' in df.columns else len(df)
+
+            start_col = self._find_column(df, ['start_timestamp', 'start_time'])
+            end_col = self._find_column(df, ['end_timestamp', 'end_time', 'time:timestamp', 'timestamp'])
+            time_col = end_col or start_col or self._find_column(
+                df, [c for c in df.columns if 'time' in c.lower()]
+            )
+
+            if time_col:
+                if start_col:
+                    df[start_col] = pd.to_datetime(df[start_col], errors='coerce')
+                if end_col:
+                    df[end_col] = pd.to_datetime(df[end_col], errors='coerce')
+                if not end_col and time_col:
+                    df[time_col] = pd.to_datetime(df[time_col], errors='coerce')
+
+                original_cases = df['case_id'].nunique()
                 if time_horizon_seconds:
-                    min_time = df[time_col].min()
+                    anchor_col = end_col or start_col or time_col
+                    min_time = df[anchor_col].min()
                     if pd.notna(min_time):
                         horizon_end = min_time + pd.to_timedelta(time_horizon_seconds, unit='s')
-                        df = df[df[time_col] <= horizon_end]
-                        filtered_cases = df['case_id'].nunique() if 'case_id' in df.columns else len(df)
+                        case_starts = df.groupby('case_id')[anchor_col].min()
+                        valid_case_ids = case_starts[case_starts <= horizon_end].index
+                        df = df[df['case_id'].isin(valid_case_ids)]
+                        filtered_cases = len(valid_case_ids)
                         print(f"  ✓ Time horizon filter: {original_cases} → {filtered_cases} cases (within {time_horizon_seconds/86400:.1f} days)")
-                
-                cycle_times = df.groupby('case_id')[time_col].apply(
-                    lambda x: (x.max() - x.min()).total_seconds()
-                )
-                metrics['avg_cycle_time'] = float(cycle_times.mean())
-                metrics['avg_throughput'] = float(len(cycle_times))
-                metrics['avg_waiting_time'] = float(metrics['avg_cycle_time'] * 0.3)
+
+                # Avoid partial traces: keep only cases with at least 2 events
+                case_event_counts = df.groupby('case_id').size()
+                valid_cases = case_event_counts[case_event_counts >= 2].index
+                if len(valid_cases) > 0:
+                    df = df[df['case_id'].isin(valid_cases)].copy()
+
+                if start_col and end_col:
+                    case_start = df.groupby('case_id')[start_col].min()
+                    case_end = df.groupby('case_id')[end_col].max()
+                    case_cycle = (case_end - case_start).dt.total_seconds().fillna(0)
+                    metrics['avg_cycle_time'] = float(case_cycle.mean()) if len(case_cycle) > 0 else 0.0
+
+                    wait_samples = []
+                    for _, trace in df.sort_values(['case_id', start_col, end_col]).groupby('case_id'):
+                        if len(trace) < 2:
+                            continue
+                        gaps = (trace[start_col].iloc[1:].reset_index(drop=True) - trace[end_col].iloc[:-1].reset_index(drop=True)).dt.total_seconds()
+                        gaps = gaps.fillna(0).clip(lower=0)
+                        wait_samples.append(float(gaps.sum()))
+                    metrics['avg_waiting_time'] = float(sum(wait_samples) / len(wait_samples)) if wait_samples else float(metrics['avg_cycle_time'] * 0.3)
+                else:
+                    series = df[time_col]
+                    cycle_times = df.groupby('case_id')[time_col].apply(
+                        lambda x: (x.max() - x.min()).total_seconds() if len(x) > 1 else 0.0
+                    )
+                    metrics['avg_cycle_time'] = float(cycle_times.mean()) if len(cycle_times) > 0 else 0.0
+                    metrics['avg_waiting_time'] = float(metrics['avg_cycle_time'] * 0.3)
+
+                metrics['avg_throughput'] = float(df['case_id'].nunique())
             
             # Extract REAL resource utilization from the CSV
             resource_utilization = {}
-            if 'resource' in df.columns:
+            resource_col = self._find_column(df, ['resource', 'org:resource', 'resourceid'])
+            if resource_col:
                 # Count activity instances per resource
-                activity_count = df.groupby('resource').size()
+                activity_count = df.groupby(resource_col).size()
                 total_activities = len(df)
                 
                 # Calculate utilization based on activity frequency

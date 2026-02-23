@@ -22,6 +22,8 @@ def parse_arguments():
     parser.add_argument('--max_iterations', type=int, default=3, help='Maximum improvement iterations (default: 3)')    
     parser.add_argument('--docker_image', type=str, default='nokal/simod:latest', help='SIMOD Docker image (default: nokal/simod:latest)')
     parser.add_argument('--no_sudo', action='store_true', help='Do not use sudo for Docker commands (default: use sudo)')
+    parser.add_argument('--des_runs', type=int, default=10, help='Number of DES (Prosimos) runs to average (default: 10)')
+    parser.add_argument('--abs_runs', type=int, default=10, help='Number of ABS (AgentSimulator) runs to request (default: 10)')
     
     return parser.parse_args()
 
@@ -80,6 +82,8 @@ def test_improvement_agent():
     print(f"  Max Iterations: {args.max_iterations}")
     print(f"  Docker Image: {args.docker_image}")
     print(f"  Use Sudo: {not args.no_sudo}")
+    print(f"  DES Runs: {args.des_runs}")
+    print(f"  ABS Runs: {args.abs_runs}")
     print()
     
     print("Checking prerequisites...")
@@ -113,7 +117,9 @@ def test_improvement_agent():
         max_tokens=args.max_tokens,
         max_iterations=args.max_iterations,
         docker_image=args.docker_image,
-        use_sudo=not args.no_sudo
+        use_sudo=not args.no_sudo,
+        des_runs=args.des_runs,
+        abs_runs=args.abs_runs
     )
     
     print("Running improvement pipeline...")

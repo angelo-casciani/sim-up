@@ -47,8 +47,16 @@ class AgentSimulatorRunner:
     
     def _discover_agent_simulator(self) -> str:
         """Try to find AgentSimulator installation."""
-        # Check common locations
+        current_file = os.path.abspath(__file__)
+        src_dir = os.path.dirname(os.path.dirname(current_file))
+        repo_root = os.path.dirname(src_dir)
+        env_path = os.getenv("AGENT_SIMULATOR_PATH")
+
+        # Check preferred local and common locations
         candidates = [
+            env_path,
+            os.path.join(src_dir, "AgentSimulator"),
+            os.path.join(repo_root, "AgentSimulator"),
             "/home/angelo/projects/AgentSimulator",
             "/opt/AgentSimulator",
             os.path.expanduser("~/AgentSimulator"),
@@ -57,13 +65,14 @@ class AgentSimulatorRunner:
         ]
         
         for path in candidates:
+            if not path:
+                continue
             full_path = os.path.abspath(path)
             if os.path.exists(full_path):
                 source_path = os.path.join(full_path, "source")
                 if os.path.exists(source_path):
                     return full_path
         
-        return None
         return None
     def simulate(
         self,
@@ -436,7 +445,7 @@ class AgentSimulatorRunner:
 
         df = df.copy()
         for change in changes:
-            target = str(change.get('target', ''))
+            target = self._normalize_target_label(change.get('target', ''))
             change_type = str(change.get('change', ''))
             value = int(float(change.get('value', 0) or 0))
             if value <= 0:
@@ -475,7 +484,7 @@ class AgentSimulatorRunner:
         underutilized = [r for r, u in utilization.items() if u < 0.05]
 
         for change in changes:
-            target = str(change.get('target', ''))
+            target = self._normalize_target_label(change.get('target', ''))
             change_type = str(change.get('change', ''))
             raw_value = float(change.get('value', 0) or 0)
 
@@ -505,6 +514,23 @@ class AgentSimulatorRunner:
         if activity_col in df.columns:
             return df
         return df
+
+    @staticmethod
+    def _normalize_target_label(target) -> str:
+        """Normalize LLM-proposed target labels to actual resource ids in logs."""
+        target_str = str(target or "").strip()
+        if not target_str:
+            return ""
+
+        for separator in ["→", "->"]:
+            if separator in target_str:
+                target_str = target_str.split(separator)[0].strip()
+                break
+
+        if target_str.lower().endswith("_profile"):
+            target_str = target_str[: -len("_profile")].strip()
+
+        return target_str
     
     def _extract_metrics_from_simulated_logs(
         self,
@@ -517,8 +543,12 @@ class AgentSimulatorRunner:
         Calculates: cycle time, throughput, waiting time, resource utilization.
         """
         try:
-            # Find all simulated CSV logs
-            simulated_logs = sorted(Path(output_dir).glob("*.csv"))
+            # Find only actual simulation logs (avoid auxiliary CSV artifacts)
+            simulated_logs = sorted(Path(output_dir).glob("simulated_log*.csv"))
+            if not simulated_logs:
+                simulated_logs = sorted(Path(output_dir).glob("simulation_log*.csv"))
+            if not simulated_logs:
+                simulated_logs = sorted(Path(output_dir).glob("*.csv"))
             
             if not simulated_logs:
                 logger.error(f"❌ No CSV files found in AgentSimulator output directory: {output_dir}")
@@ -527,26 +557,9 @@ class AgentSimulatorRunner:
             
             logger.info(f"Found {len(simulated_logs)} AgentSimulator logs in {output_dir}")
             
-            # Read a sample to detect columns
-            sample_df = pd.read_csv(original_log, nrows=1)
-            columns = set(sample_df.columns.tolist())
-            
-            def find_column(patterns, fallback=None):
-                """Find column matching pattern."""
-                for col in columns:
-                    if col.lower() in [p.lower() for p in patterns]:
-                        return col
-                for col in columns:
-                    col_lower = col.lower()
-                    for pattern in patterns:
-                        if pattern.lower() in col_lower:
-                            return col
-                return fallback
-            
-            case_col = find_column(['case_id', 'case', 'case:concept:name'], 'case_id')
-            time_col = find_column(['end_timestamp', 'end_time', 'time:timestamp', 'timestamp'], 'end_timestamp')
-            resource_col = find_column(['resource', 'org:resource', 'resourceid'], 'resource')
-            
+            from simulator.metrics_extractor import MetricsExtractor
+            extractor = MetricsExtractor()
+
             # Consolidate metrics across all logs
             all_cycle_times = []
             all_throughputs = []
@@ -555,40 +568,15 @@ class AgentSimulatorRunner:
             
             for log_file in simulated_logs[:10]:  # Process all available (max 10)
                 try:
-                    df = pd.read_csv(log_file)
-                    
-                    if case_col in df.columns and time_col in df.columns:
-                        # Cycle time: time span per case
-                        df[time_col] = pd.to_datetime(df[time_col], errors='coerce')
-                        original_cases = df[case_col].nunique()
-                        if time_horizon_seconds:
-                            min_time = df[time_col].min()
-                            if pd.notna(min_time):
-                                horizon_end = min_time + pd.to_timedelta(time_horizon_seconds, unit='s')
-                                df = df[df[time_col] <= horizon_end]
-                                filtered_cases = df[case_col].nunique()
-                                if log_file == simulated_logs[0]:  # Log once for first file
-                                    logger.info(f"  ✓ ABS time horizon filter: {original_cases} → {filtered_cases} cases (within {time_horizon_seconds/86400:.1f} days)")
-                        cycle_times = df.groupby(case_col)[time_col].apply(
-                            lambda x: (x.max() - x.min()).total_seconds()
-                        )
-                        cycle_time = float(cycle_times.mean()) if len(cycle_times) > 0 else 0
-                        all_cycle_times.append(cycle_time)
-                        
-                        # Throughput: number of unique cases
-                        throughput = df[case_col].nunique()
-                        all_throughputs.append(throughput)
-                        
-                        # Waiting time: estimate as 30% of cycle time
-                        waiting_time = cycle_time * 0.3
-                        all_waiting_times.append(waiting_time)
-                    
-                    # Resource utilization
-                    if resource_col in df.columns:
-                        resources = df[resource_col].dropna().unique()
-                        for res in resources:
-                            res_str = str(res)
-                            resource_counts[res_str] = resource_counts.get(res_str, 0) + 1
+                    metrics = extractor.extract_from_csv(str(log_file), time_horizon_seconds=time_horizon_seconds)
+                    if not metrics:
+                        continue
+                    all_cycle_times.append(float(metrics.get('avg_cycle_time', 0.0)))
+                    all_throughputs.append(float(metrics.get('avg_throughput', 0.0)))
+                    all_waiting_times.append(float(metrics.get('avg_waiting_time', 0.0)))
+
+                    for res, util in metrics.get('resource_utilization', {}).items():
+                        resource_counts.setdefault(str(res), []).append(float(util))
                     
                 except Exception as e:
                     logger.warning(f"Error extracting metrics from {log_file}: {e}")
@@ -605,10 +593,9 @@ class AgentSimulatorRunner:
             
             # Calculate resource utilization
             resource_utilization = {}
-            total_appearances = sum(resource_counts.values()) if resource_counts else 1
-            for res, count in resource_counts.items():
-                util = min((count / total_appearances) * 10, 0.95)
-                resource_utilization[res] = round(util, 2)
+            for res, util_values in resource_counts.items():
+                if util_values:
+                    resource_utilization[res] = round(sum(util_values) / len(util_values), 4)
             
             metrics = {
                 "avg_cycle_time": round(avg_cycle_time, 2),
