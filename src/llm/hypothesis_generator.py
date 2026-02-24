@@ -369,8 +369,14 @@ Return ONLY the JSON object, no additional text."""
         expected.setdefault("cycle_time", "-5%")
         expected.setdefault("cost", "+2%")
 
-        description = hypothesis.get("description") or f"Apply {change} on {target}."
-        rationale = hypothesis.get("rationale") or "Selected by constrained strategy to maximize improvement likelihood and reduce invalid iterations."
+        description, rationale = self._build_consistent_narrative(
+            parameter_type,
+            target,
+            change,
+            value,
+            fallback_description=hypothesis.get("description"),
+            fallback_rationale=hypothesis.get("rationale")
+        )
 
         return {
             "description": description,
@@ -388,6 +394,47 @@ Return ONLY the JSON object, no additional text."""
             },
             "expected_impact": expected
         }
+
+    def _build_consistent_narrative(
+        self,
+        parameter_type: str,
+        target: str,
+        change: str,
+        value,
+        fallback_description: str = None,
+        fallback_rationale: str = None
+    ):
+        """Build narrative text guaranteed to match executable change payload."""
+        fallback_description = (fallback_description or "").strip()
+        fallback_rationale = (fallback_rationale or "").strip()
+
+        if parameter_type == "role_redesign":
+            if "→" in str(target):
+                src, dst = [part.strip() for part in str(target).split("→", 1)]
+            else:
+                src, dst = str(target), str(target)
+            description = (
+                f"Shift responsibilities from {src} to {dst} to rebalance workload and reduce bottlenecks."
+            )
+            rationale = (
+                f"Executed change is {change} from {src} to {dst} (value={value}), targeting overloaded-to-underutilized redistribution."
+            )
+            return description, rationale
+
+        if parameter_type == "activity_durations":
+            description = f"Reduce execution duration for {target} by {value}% to improve flow efficiency."
+            rationale = f"Executed change is {change} on activity {target} with value={value}."
+            return description, rationale
+
+        if parameter_type == "calendar":
+            description = f"Adjust calendar {target} by {value} hour(s) to improve process capacity."
+            rationale = f"Executed change is {change} on calendar {target} with value={value}."
+            return description, rationale
+
+        # resources/default
+        description = f"Increase capacity for {target} using {change} (value={value}) to reduce resource pressure."
+        rationale = f"Executed change is {change} on resource target {target} with value={value}."
+        return description, rationale
 
     def _build_safe_change(
         self,

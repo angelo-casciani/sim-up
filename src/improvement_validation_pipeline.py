@@ -537,7 +537,10 @@ class ImprovementValidationAgent:
                     require_throughput_non_decrease=True
                 )
 
+                conflict_detected, conflict_reason = self._has_strong_cross_simulator_conflict(des_impact, abs_impact)
                 overall_is_improvement = bool(des_validation.get("is_improvement") or abs_validation.get("is_improvement"))
+                if conflict_detected:
+                    overall_is_improvement = False
                 overall_summary_parts = []
                 if des_validation.get("is_improvement"):
                     overall_summary_parts.append(f"DES improved ({des_validation.get('summary', 'n/a')})")
@@ -547,6 +550,8 @@ class ImprovementValidationAgent:
                     overall_summary_parts.append(
                         f"Neither simulator improved (DES: {des_validation.get('summary', 'n/a')} | ABS: {abs_validation.get('summary', 'n/a')})"
                     )
+                if conflict_detected:
+                    overall_summary_parts.append(f"Rejected by cross-simulator conflict guardrail ({conflict_reason})")
 
                 merged_improvements = self._merge_simulator_improvements(des_validation, abs_validation)
                 improvement_result = {
@@ -555,7 +560,11 @@ class ImprovementValidationAgent:
                     "improvements": merged_improvements,
                     "des_validation": des_validation,
                     "abs_validation": abs_validation,
-                    "decision_rule": "OR (DES or ABS)"
+                    "decision_rule": "OR (DES or ABS) + conflict guardrail",
+                    "cross_simulator_conflict": {
+                        "detected": conflict_detected,
+                        "reason": conflict_reason
+                    }
                 }
                 val_time = time.time() - val_start
                 
@@ -571,6 +580,8 @@ class ImprovementValidationAgent:
                 self._log_interaction(f"\nValidation Result: {'✓ IMPROVEMENT' if improvement_result['is_improvement'] else '✗ NO IMPROVEMENT'}")
                 self._log_interaction(f"Summary: {improvement_result['summary']}")
                 self._log_interaction(f"Decision rule: {improvement_result['decision_rule']}")
+                if conflict_detected:
+                    self._log_interaction(f"Cross-simulator conflict guardrail: {conflict_reason}")
                 self._log_interaction(f"DES validation: {'✓' if des_validation.get('is_improvement') else '✗'} {des_validation.get('summary', '')}")
                 self._log_interaction(f"ABS validation: {'✓' if abs_validation.get('is_improvement') else '✗'} {abs_validation.get('summary', '')}")
                 
@@ -973,6 +984,39 @@ class ImprovementValidationAgent:
             result[label] = ((new_value - base_value) / base_value) * 100.0
 
         return result
+
+    @staticmethod
+    def _has_strong_cross_simulator_conflict(des_impact: Dict, abs_impact: Dict) -> Tuple[bool, str]:
+        """Detect strong directional conflicts between DES and ABS impacts.
+
+        Conflict is triggered when both simulators provide a meaningful (non-trivial)
+        delta for the same metric but in opposite directions.
+        """
+        des_impact = des_impact or {}
+        abs_impact = abs_impact or {}
+
+        thresholds = {
+            "cycle_time": 2.0,
+            "throughput": 2.0,
+            "waiting_time": 2.0
+        }
+
+        for metric_name, threshold in thresholds.items():
+            des_value = des_impact.get(metric_name)
+            abs_value = abs_impact.get(metric_name)
+            if des_value is None or abs_value is None:
+                continue
+            if abs(des_value) < threshold or abs(abs_value) < threshold:
+                continue
+
+            opposite_direction = (des_value > 0 > abs_value) or (des_value < 0 < abs_value)
+            if opposite_direction:
+                return True, (
+                    f"{metric_name} moves in opposite directions with material magnitude "
+                    f"(DES={des_value:+.2f}%, ABS={abs_value:+.2f}%)"
+                )
+
+        return False, ""
 
     def _run_des_simulations(self, model: Dict, modifications: Dict, baseline_metrics: Dict = None) -> Dict:
         """Run Prosimos one or more times and average numeric metrics for stability."""

@@ -77,9 +77,11 @@ class ReportGenerator:
                 execution_times,
                 iterations_times
             )
+
+            grounded_ledger = self._build_grounded_validation_ledger(validated_improvements)
             
-            # Return header + LLM content
-            return report_header + "\n\n" + response.choices[0].message.content
+            # Return header + deterministic facts + LLM narrative
+            return report_header + "\n\n" + grounded_ledger + "\n\n" + response.choices[0].message.content
             
         except Exception as e:
             print(f"Error generating report: {e}")
@@ -155,6 +157,39 @@ Create a professional report that executives can use to make decisions about pro
 Include specific numbers and percentages from the metrics provided."""
         
         return prompt
+
+    def _build_grounded_validation_ledger(self, validated_improvements: List[Dict]) -> str:
+        """Create deterministic section with executed changes and validation outcomes."""
+        lines = []
+        lines.append("## 0. VALIDATION LEDGER (GROUND TRUTH)")
+        lines.append("")
+        lines.append("This section is generated directly from pipeline data (not LLM interpretation).")
+
+        if not validated_improvements:
+            lines.append("")
+            lines.append("No validated improvements were accepted.")
+            return "\n".join(lines)
+
+        for item in validated_improvements:
+            iteration = item.get("iteration", "n/a")
+            hypothesis = item.get("hypothesis", {}) or {}
+            changes = (hypothesis.get("changes", {}) or {}).get("specific_changes", []) or []
+            first_change = changes[0] if changes and isinstance(changes[0], dict) else {}
+            improvement = item.get("improvement", {}) or {}
+            des_validation = improvement.get("des_validation", {}) or {}
+            abs_validation = improvement.get("abs_validation", {}) or {}
+
+            lines.append("")
+            lines.append(f"### Iteration {iteration}")
+            lines.append(f"- Executed parameter type: {hypothesis.get('changes', {}).get('parameter_type', 'n/a')}")
+            lines.append(f"- Executed target: {first_change.get('target', 'n/a')}")
+            lines.append(f"- Executed change: {first_change.get('change', 'n/a')} (value={first_change.get('value', 'n/a')})")
+            lines.append(f"- Decision rule: {improvement.get('decision_rule', 'n/a')}")
+            lines.append(f"- Overall accepted: {bool(improvement.get('is_improvement'))}")
+            lines.append(f"- DES validation: {des_validation.get('summary', 'n/a')}")
+            lines.append(f"- ABS validation: {abs_validation.get('summary', 'n/a')}")
+
+        return "\n".join(lines)
     
     def _build_report_header(
         self,
