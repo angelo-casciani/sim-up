@@ -1,3 +1,0 @@
-[submodule "src/AgentSimulator"]
-	path = src/AgentSimulator
-	url = https://github.com/lukaskirchdorfer/AgentSimulator

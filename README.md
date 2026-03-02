@@ -10,7 +10,7 @@ Agentic pipeline for process-improvement discovery and validation using:
 ## Documentation
 
 - Runtime and validation behavior are documented in this README.
-- AgentSimulator internals and native commands are in `src/AgentSimulator/README.md`.
+- AgentSimulator internals and the local modification are documented in `src/AgentSimulator/README.md`.
 - Simulator design and split policy are documented in `misc/SIMULATORS_README.md`.
 
 ## What is Working End-to-End
@@ -41,7 +41,6 @@ The setup script performs all required bootstrap operations:
 - enforce Poetry environment on Python 3.11
 - install Poetry dependencies
 - ensure SIMOD Docker image (`nokal/simod:latest`) is available
-- sync/init AgentSimulator git submodule at `src/AgentSimulator`
 - verify AgentSimulator import in the Poetry environment
 
 ### Run
