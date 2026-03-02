@@ -108,6 +108,15 @@ Structure the report with:
 4. IMPLEMENTATION ROADMAP - Recommended sequence and dependencies
 5. EXPECTED ROI - Quantified business value
 
+Critical consistency rules:
+- Use ONLY facts present in the provided input payload.
+- Do NOT invent iterations, targets, people, or metric values.
+- Keep DES and ABS evidence separate; never merge them into one synthetic metric.
+- If DES and ABS differ, explicitly acknowledge the divergence.
+- For each validated improvement, reference the executed change target from input data.
+- Do not claim causality beyond what metrics support.
+- If evidence is mixed, use cautious language.
+
 Use clear language suitable for business stakeholders, not just technical experts.
 Format with markdown for readability."""
     
@@ -126,10 +135,17 @@ Format with markdown for readability."""
             for i, imp in enumerate(validated_improvements, 1):
                 hypothesis = imp.get('hypothesis', {})
                 impact = imp.get('impact') or imp.get('improvement', {})
+                des_validation = impact.get('des_validation', {}) if isinstance(impact, dict) else {}
+                abs_validation = impact.get('abs_validation', {}) if isinstance(impact, dict) else {}
+                first_change = (hypothesis.get('changes', {}).get('specific_changes', [{}]) or [{}])[0]
                 improvements_text += f"{i}. {hypothesis.get('description', 'N/A')}\n"
                 improvements_text += f"   Type: {hypothesis.get('improvement_type', 'N/A')}\n"
                 improvements_text += f"   Rationale: {hypothesis.get('rationale', 'N/A')}\n"
+                improvements_text += f"   Executed target: {first_change.get('target', 'N/A')}\n"
+                improvements_text += f"   Executed change: {first_change.get('change', 'N/A')} (value={first_change.get('value', 'N/A')})\n"
                 improvements_text += f"   Impact: {impact.get('summary', 'N/A')}\n"
+                improvements_text += f"   DES validation summary: {des_validation.get('summary', 'N/A')}\n"
+                improvements_text += f"   ABS validation summary: {abs_validation.get('summary', 'N/A')}\n"
                 improvements_text += f"   Detailed metrics:\n"
                 for metric, data in impact.get('improvements', {}).items():
                     baseline_val = data['baseline']
@@ -154,7 +170,14 @@ BASELINE METRICS:
 NUMBER OF ITERATIONS: {history_length}
 
 Create a professional report that executives can use to make decisions about process improvements.
-Include specific numbers and percentages from the metrics provided."""
+Include specific numbers and percentages from the metrics provided.
+
+Mandatory reporting rules:
+- Keep DES-prefixed and ABS-prefixed metrics clearly separated.
+- Do not present ABS-only gains as DES gains, or vice versa.
+- Use the executed target/change exactly as provided.
+- If simulator signals conflict, mention uncertainty and recommend controlled rollout.
+- Never state improvements that are absent from the provided metrics."""
         
         return prompt
 
@@ -287,7 +310,6 @@ This report presents a comprehensive analysis of the current process and the imp
 | Average Cycle Time    | {baseline_metrics.get('avg_cycle_time', 'N/A')} sec   |
 | Average Throughput    | {baseline_metrics.get('avg_throughput', 'N/A')} cases |
 | Average Waiting Time  | {baseline_metrics.get('avg_waiting_time', 'N/A')} sec   |
-| Total Cost            | ${baseline_metrics.get('total_cost', 'N/A')}          |
 
 **Key Observations:**
 - Process baseline established through SIMOD discovery and simulation

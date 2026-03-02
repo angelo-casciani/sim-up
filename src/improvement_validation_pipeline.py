@@ -7,15 +7,10 @@ import subprocess
 import threading
 from datetime import datetime
 from dotenv import load_dotenv
-import sys
+load_dotenv()
 import re
 import pandas as pd
 from typing import Dict, Tuple
-
-# Ensure src directory is in path for imports
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-load_dotenv()
 
 from simulator import SIMODDiscoverer, ProsimosRunner, AgentSimulatorRunner
 from llm import HypothesisGenerator
@@ -35,38 +30,34 @@ class ImprovementValidationAgent:
     - Report generation (ReportGenerator)
     """
     
-    def __init__(
-        self, 
-        model_name: str = "gpt-4.1", 
-        temperature: float = 0.0, 
-        max_tokens: int = 4096,
-        max_iterations: int = 3,
-        docker_image: str = "nokal/simod:latest",
-        use_sudo: bool = True,
-        des_runs: int = 10,
-        abs_runs: int = 10
-    ):
-        """Initialize the improvement validation agent."""
+    def __init__(self, 
+                model_name: str = "gpt-4.1", 
+                temperature: float = 0.0, 
+                max_tokens: int = 4096,
+                max_iterations: int = 3,
+                use_sudo: bool = True,
+                des_runs: int = 10,
+                abs_runs: int = 10,
+                des_constrain_total_cases: bool = False):
         self.model_name = model_name
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.max_iterations = max_iterations
-        self.docker_image = docker_image
         self.use_sudo = use_sudo
         self.des_runs = max(1, int(des_runs))
         self.abs_runs = max(1, int(abs_runs))
+        self.des_constrain_total_cases = bool(des_constrain_total_cases)
         self.work_dir = None
         self.history = []
         self.interaction_log = []
         self.log_file = None
-        self.log_basename = None  # Store log filename without extension
-        self.execution_times = {}  # Track execution times
-        self._temp_abs_logs = []
+        self.log_basename = None  # log filename without extension
+        self.execution_times = {}
         
         # Initialize modules
-        self.discoverer = SIMODDiscoverer(docker_image, use_sudo)
-        self.simulator = ProsimosRunner(docker_image, use_sudo)
-        self.agent_simulator = AgentSimulatorRunner()  # Agent-based simulator (optional)
+        self.discoverer = SIMODDiscoverer(use_sudo)
+        self.simulator = ProsimosRunner(use_sudo)
+        self.agent_simulator = AgentSimulatorRunner()
         self.hypothesis_gen = HypothesisGenerator(model_name, temperature, max_tokens)
         self.validator = ImprovementValidator()
         self.reporter = ReportGenerator(model_name, temperature, max_tokens)
@@ -97,7 +88,7 @@ class ImprovementValidationAgent:
         # Store log basename without extension for later use
         self.log_basename = os.path.splitext(os.path.basename(log_path))[0]
         self.log_path = log_path
-        self.abs_case_count = None
+        self.des_total_cases = None
         self.full_log_path = log_path
 
         self.des_train_log_path, self.des_test_log_path = self._prepare_des_train_test_logs(log_path)
@@ -132,10 +123,11 @@ class ImprovementValidationAgent:
             pass
 
         self.time_horizon_seconds = self._compute_time_horizon_seconds(self.test_log_path)
+        self.des_time_horizon_seconds = self.time_horizon_seconds  # always constrain DES to test-split horizon
         if self.time_horizon_seconds:
             days = self.time_horizon_seconds / 86400
-            print(f"✓ Time horizon from test split: {self.time_horizon_seconds:.0f} seconds ({days:.1f} days)")
-            self._log_interaction(f"Time horizon from test split (seconds): {self.time_horizon_seconds:.0f} ({days:.1f} days)")
+            print(f"✓ DES time horizon (always constrained to test split): {self.time_horizon_seconds:.0f} seconds ({days:.1f} days)")
+            self._log_interaction(f"DES time horizon (always constrained to test split): {self.time_horizon_seconds:.0f} seconds ({days:.1f} days)")
         
         # Setup interaction log
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -270,21 +262,19 @@ class ImprovementValidationAgent:
                 "execution_time": step1_time
             })
 
-            # Set case count from baseline metrics - use as Prosimos upper bound
-            # (actual throughput will be determined by arrival rate over time horizon)
-            baseline_case_count = baseline_metrics.get('avg_throughput', 1000)
-            try:
-                self.abs_case_count = int(round(float(baseline_case_count)))
-                # Increase Prosimos case limit to 2x baseline to ensure time horizon is reached
-                # (metrics extraction will filter to time horizon anyway)
-                prosimos_max_cases = self.abs_case_count * 2
-                print(f"✓ Baseline: {self.abs_case_count} cases over {self.time_horizon_seconds/86400:.1f} days")
-                print(f"✓ Prosimos will simulate up to {prosimos_max_cases} cases (2x baseline) to ensure time horizon coverage")
-                print(f"✓ Both simulators will be filtered to {self.time_horizon_seconds:.0f}s time horizon during metrics extraction")
-                self.abs_case_count = prosimos_max_cases
-            except (TypeError, ValueError):
-                self.abs_case_count = 2000
-                print(f"⚠️  Could not parse case count, defaulting to {self.abs_case_count} cases")
+            # DES case budget policy: unconstrained by default unless explicitly enabled.
+            self.des_total_cases = None
+            if self.des_constrain_total_cases:
+                baseline_case_count = baseline_metrics.get('avg_throughput', 1000)
+                try:
+                    des_case_count = int(round(float(baseline_case_count)))
+                    self.des_total_cases = des_case_count * 2
+                    print(f"✓ DES case-budget constraint enabled: max {self.des_total_cases} cases (2x baseline)")
+                except (TypeError, ValueError):
+                    self.des_total_cases = 2000
+                    print(f"⚠️  Could not parse baseline case count, DES case-budget constraint defaults to {self.des_total_cases} cases")
+            else:
+                print("✓ DES total cases unconstrained by default")
 
             # Build simulator-relative baseline for validation (preferred for relative comparisons).
             baseline_des_metrics = None
@@ -314,8 +304,6 @@ class ImprovementValidationAgent:
                 baseline_abs_metrics = None
                 baseline_unified_metrics = None
 
-            working_model = baseline_model
-            working_abs_log_path = self.abs_source_log_path
             target_hints = self._extract_target_hints(
                 baseline_model,
                 baseline_metrics,
@@ -405,11 +393,13 @@ class ImprovementValidationAgent:
                 print(f"\n[STEP 3.{iteration+1}] Running simulation with modifications...")
                 self._log_interaction(f"\n[STEP 3.{iteration+1}] PARALLEL SIMULATIONS (DES + ABS)")
                 self._log_interaction("-"*40)
-                horizon_label = f"{self.time_horizon_seconds:.0f}s" if self.time_horizon_seconds else "n/a"
-                print(f"  Shared settings: des_time_horizon={horizon_label}, abs_time_horizon=full-run, DES runs={self.des_runs}, ABS runs={self.abs_runs}")
+                horizon_label = f"{self.des_time_horizon_seconds:.0f}s" if self.des_time_horizon_seconds else "none"
+                abs_horizon_label = f"{self.time_horizon_seconds:.0f}s" if self.time_horizon_seconds else "full-run"
+                cases_label = self.des_total_cases if self.des_total_cases is not None else "none"
+                print(f"  Shared settings: des_time_horizon={horizon_label}, abs_time_horizon={abs_horizon_label}, DES runs={self.des_runs}, ABS runs={self.abs_runs}")
                 self._log_interaction(
-                    f"Shared settings: des_time_horizon={horizon_label}, abs_time_horizon=full-run, "
-                    f"des_total_cases={self.abs_case_count}, des_runs={self.des_runs}, abs_runs={self.abs_runs}, "
+                    f"Shared settings: des_time_horizon={horizon_label}, abs_time_horizon={abs_horizon_label}, "
+                    f"des_total_cases={cases_label}, des_runs={self.des_runs}, abs_runs={self.abs_runs}, "
                     f"des_log={self.des_train_log_path or log_path}, abs_log={self.abs_source_log_path}"
                 )
                 
@@ -418,7 +408,7 @@ class ImprovementValidationAgent:
                 # Run Prosimos (DES) in main thread
                 print(f"  ├─ Prosimos (Structural/DES)...")
                 des_metrics = self._run_des_simulations(
-                    working_model,
+                    baseline_model,
                     hypothesis['changes'],
                     baseline_metrics
                 )
@@ -431,11 +421,11 @@ class ImprovementValidationAgent:
                     try:
                         print(f"  ├─ AgentSimulator (Behavioral/ABS)...")
                         abs_metrics = self.agent_simulator.simulate(
-                            working_abs_log_path,
+                            self.abs_source_log_path,
                             hypothesis['changes'],
                             self.work_dir,
                             enabled=True,
-                            time_horizon_seconds=None,
+                            time_horizon_seconds=self.time_horizon_seconds,
                             num_simulations=self.abs_runs
                         )[0]
                     except Exception as e:
@@ -537,35 +527,13 @@ class ImprovementValidationAgent:
                     require_throughput_non_decrease=True
                 )
 
-                conflict_detected, conflict_reason = self._has_strong_cross_simulator_conflict(des_impact, abs_impact)
-                overall_is_improvement = bool(des_validation.get("is_improvement") or abs_validation.get("is_improvement"))
-                if conflict_detected:
-                    overall_is_improvement = False
-                overall_summary_parts = []
-                if des_validation.get("is_improvement"):
-                    overall_summary_parts.append(f"DES improved ({des_validation.get('summary', 'n/a')})")
-                if abs_validation.get("is_improvement"):
-                    overall_summary_parts.append(f"ABS improved ({abs_validation.get('summary', 'n/a')})")
-                if not overall_summary_parts:
-                    overall_summary_parts.append(
-                        f"Neither simulator improved (DES: {des_validation.get('summary', 'n/a')} | ABS: {abs_validation.get('summary', 'n/a')})"
-                    )
-                if conflict_detected:
-                    overall_summary_parts.append(f"Rejected by cross-simulator conflict guardrail ({conflict_reason})")
-
+                param_type = (hypothesis.get('changes') or {}).get('parameter_type', '')
                 merged_improvements = self._merge_simulator_improvements(des_validation, abs_validation)
-                improvement_result = {
-                    "is_improvement": overall_is_improvement,
-                    "summary": "; ".join(overall_summary_parts),
-                    "improvements": merged_improvements,
-                    "des_validation": des_validation,
-                    "abs_validation": abs_validation,
-                    "decision_rule": "OR (DES or ABS) + conflict guardrail",
-                    "cross_simulator_conflict": {
-                        "detected": conflict_detected,
-                        "reason": conflict_reason
-                    }
-                }
+                improvement_result = self._decide_improvement(
+                    param_type, des_validation, abs_validation, des_impact, abs_impact, merged_improvements
+                )
+                conflict_detected = improvement_result['cross_simulator_conflict']['detected']
+                conflict_reason = improvement_result['cross_simulator_conflict']['reason']
                 val_time = time.time() - val_start
                 
                 print(f"⏱️  Validation took {val_time:.1f} seconds")
@@ -582,8 +550,8 @@ class ImprovementValidationAgent:
                 self._log_interaction(f"Decision rule: {improvement_result['decision_rule']}")
                 if conflict_detected:
                     self._log_interaction(f"Cross-simulator conflict guardrail: {conflict_reason}")
-                self._log_interaction(f"DES validation: {'✓' if des_validation.get('is_improvement') else '✗'} {des_validation.get('summary', '')}")
-                self._log_interaction(f"ABS validation: {'✓' if abs_validation.get('is_improvement') else '✗'} {abs_validation.get('summary', '')}")
+                self._log_interaction(f"DES validation [{improvement_result.get('des_role', 'active')}]: {'✓' if des_validation.get('is_improvement') else '✗'} {des_validation.get('summary', '')}")
+                self._log_interaction(f"ABS validation [{improvement_result.get('abs_role', 'active')}]: {'✓' if abs_validation.get('is_improvement') else '✗'} {abs_validation.get('summary', '')}")
                 
                 self._log_interaction(f"\n⏱️  Validation time: {val_time:.1f} seconds")
                 
@@ -620,47 +588,16 @@ class ImprovementValidationAgent:
                     "abs_impact_vs_baseline": abs_impact,
                     "des_validation": des_validation,
                     "abs_validation": abs_validation,
-                    "improvement": improvement_result
+                    "improvement": improvement_result,
+                    "decision_rule": improvement_result.get('decision_rule', 'OR'),
+                    "des_validated": bool(des_validation.get('is_improvement')),
+                    "abs_validated": bool(abs_validation.get('is_improvement')),
                 })
                 if len(attempt_history) > 5:
                     attempt_history.pop(0)
                 
-                # === CUMULATIVE IMPROVEMENT: Update baseline for next iteration if validated ===
                 if improvement_result['is_improvement']:
-                    print(f"\n✅ IMPROVEMENT VALIDATED - updating working scenario for next iterations")
-                    self._log_interaction(f"\n✅ IMPROVEMENT VALIDATED - fixed simulator baselines retained for validation")
-                    self._log_interaction("Applying validated changes cumulatively to working DES/ABS scenarios for next iteration")
-
-                    try:
-                        working_model = self.simulator.apply_modifications_to_model(
-                            working_model,
-                            hypothesis['changes']
-                        )
-                    except Exception as model_update_error:
-                        print(f"⚠️  Could not update cumulative DES scenario: {model_update_error}")
-                        self._log_interaction(f"DES cumulative scenario update failed: {model_update_error}")
-
-                    abs_param_type = (hypothesis.get('changes') or {}).get('parameter_type')
-                    if abs_param_type in {'activity_durations', 'resources', 'role_redesign'}:
-                        try:
-                            updated_abs_log = self.agent_simulator.apply_modifications_to_log(
-                                working_abs_log_path,
-                                hypothesis['changes']
-                            )
-                            if updated_abs_log and updated_abs_log != working_abs_log_path:
-                                working_abs_log_path = updated_abs_log
-                                self._temp_abs_logs.append(updated_abs_log)
-                                self._log_interaction(f"ABS cumulative scenario log updated: {updated_abs_log}")
-                        except Exception as abs_update_error:
-                            print(f"⚠️  Could not update cumulative ABS scenario: {abs_update_error}")
-                            self._log_interaction(f"ABS cumulative scenario update failed: {abs_update_error}")
-
-                    target_hints = self._extract_target_hints(
-                        working_model,
-                        baseline_metrics,
-                        baseline_abs_metrics
-                    )
-                    
+                    self._log_interaction(f"\n✅ IMPROVEMENT VALIDATED")
                     validated_improvements.append({
                         "iteration": iteration + 1,
                         "hypothesis": hypothesis,
@@ -676,9 +613,7 @@ class ImprovementValidationAgent:
                             "abs_throughput": improvement_result['improvements'].get('abs_throughput', {}).get('change_pct', 0),
                         }
                     })
-                
-                if improvement_result['is_improvement']:
-                    print(f"✓ VALIDATED IMPROVEMENT!")
+                    print(f"\n✅ IMPROVEMENT VALIDATED!")
                     print(f"  Impact: {improvement_result['summary']}")
                 else:
                     print(f"✗ No improvement: {improvement_result['summary']}")
@@ -760,14 +695,6 @@ class ImprovementValidationAgent:
                                 shutil.rmtree(path, ignore_errors=True)
         except Exception as cleanup_err:
             print(f"Warning: Could not clean agent_simulated_* folders: {cleanup_err}")
-        
-        # Cleanup
-        for temp_log in getattr(self, "_temp_abs_logs", []):
-            try:
-                if temp_log and os.path.exists(temp_log):
-                    os.remove(temp_log)
-            except Exception:
-                pass
 
         if self.work_dir and os.path.exists(self.work_dir):
             try:
@@ -855,7 +782,7 @@ class ImprovementValidationAgent:
             None,
             self.work_dir,
             enabled=True,
-            time_horizon_seconds=None,
+            time_horizon_seconds=self.time_horizon_seconds,
             num_simulations=self.abs_runs
         )
 
@@ -966,7 +893,6 @@ class ImprovementValidationAgent:
             "avg_cycle_time": "cycle_time",
             "avg_throughput": "throughput",
             "avg_waiting_time": "waiting_time",
-            "total_cost": "cost"
         }
 
         for source_key, label in metric_map.items():
@@ -984,6 +910,113 @@ class ImprovementValidationAgent:
             result[label] = ((new_value - base_value) / base_value) * 100.0
 
         return result
+
+    @staticmethod
+    def _decide_improvement(
+        param_type: str,
+        des_validation: Dict,
+        abs_validation: Dict,
+        des_impact: Dict,
+        abs_impact: Dict,
+        merged_improvements: Dict,
+    ) -> Dict:
+        """Return improvement_result dict using change-type-aware oracle logic.
+
+        Decision rules:
+        - resources / calendar  → DES only (ABS has no queue model)
+        - role_redesign         → ABS primary; DES throughput safety check
+        - activity_durations    → OR (DES or ABS) + cross-simulator conflict guardrail
+        - anything else         → OR + conflict guardrail (fallback)
+        """
+        des_validation = des_validation or {}
+        abs_validation = abs_validation or {}
+        des_impact = des_impact or {}
+        abs_impact = abs_impact or {}
+
+        conflict_detected = False
+        conflict_reason = ""
+
+        if param_type in {'resources', 'calendar'}:
+            overall = bool(des_validation.get('is_improvement'))
+            rule = "DES only (capacity/calendar change)"
+            des_role = "primary oracle"
+            abs_role = "informational only"
+            summary_parts = []
+            if des_validation.get('is_improvement'):
+                summary_parts.append(f"DES improved ({des_validation.get('summary', 'n/a')})")
+            else:
+                summary_parts.append(f"DES did not improve ({des_validation.get('summary', 'n/a')})")
+            summary_parts.append(f"ABS: informational only ({abs_validation.get('summary', 'n/a')})")
+
+        elif param_type == 'role_redesign':
+            overall = bool(abs_validation.get('is_improvement'))
+            # Safety: DES throughput hard-fail override
+            des_tp_change = des_impact.get('throughput', 0.0) or 0.0
+            if des_tp_change < -10.0:
+                overall = False
+            # Plausibility ceiling: >95% cycle-time reduction from a single reassignment
+            # is a simulation artifact (e.g. AgentSimulator collapses on tiny test splits).
+            abs_ct_change = abs_impact.get('cycle_time', 0.0) or 0.0
+            if abs_ct_change < -95.0:
+                overall = False
+            rule = "ABS primary (role/routing change); DES throughput safety"
+            des_role = "throughput safety check"
+            abs_role = "primary oracle"
+            summary_parts = []
+            if abs_ct_change < -95.0:
+                summary_parts.append(
+                    f"Rejected: ABS cycle time reduction ({abs_ct_change:.1f}%) exceeds "
+                    f"plausibility threshold (-95%) — likely simulation artifact"
+                )
+            elif abs_validation.get('is_improvement'):
+                summary_parts.append(f"ABS improved ({abs_validation.get('summary', 'n/a')})")
+            else:
+                summary_parts.append(f"ABS did not improve ({abs_validation.get('summary', 'n/a')})")
+            if des_tp_change < -10.0:
+                summary_parts.append(f"Rejected by DES throughput safety check (Δ={des_tp_change:.1f}%)")
+
+        else:
+            # OR rule + conflict guardrail (activity_durations and fallback)
+            conflict_detected, conflict_reason = ImprovementValidationAgent._has_strong_cross_simulator_conflict(
+                des_impact, abs_impact
+            )
+            overall = bool(
+                (des_validation.get('is_improvement') or abs_validation.get('is_improvement'))
+                and not conflict_detected
+            )
+            if param_type == 'activity_durations':
+                rule = "OR (DES or ABS) + conflict guardrail"
+            else:
+                rule = "OR (DES or ABS) + conflict guardrail (fallback)"
+            des_role = "active"
+            abs_role = "active"
+            summary_parts = []
+            if des_validation.get('is_improvement'):
+                summary_parts.append(f"DES improved ({des_validation.get('summary', 'n/a')})")
+            if abs_validation.get('is_improvement'):
+                summary_parts.append(f"ABS improved ({abs_validation.get('summary', 'n/a')})")
+            if not summary_parts:
+                summary_parts.append(
+                    f"Neither simulator improved "
+                    f"(DES: {des_validation.get('summary', 'n/a')} | ABS: {abs_validation.get('summary', 'n/a')})"
+                )
+            if conflict_detected:
+                summary_parts.append(f"Rejected by cross-simulator conflict guardrail ({conflict_reason})")
+
+        return {
+            "is_improvement": overall,
+            "summary": "; ".join(summary_parts),
+            "improvements": merged_improvements,
+            "des_validation": des_validation,
+            "abs_validation": abs_validation,
+            "des_role": des_role,
+            "abs_role": abs_role,
+            "decision_rule": rule,
+            "cross_simulator_conflict": {
+                "detected": conflict_detected,
+                "reason": conflict_reason,
+            },
+        }
 
     @staticmethod
     def _has_strong_cross_simulator_conflict(des_impact: Dict, abs_impact: Dict) -> Tuple[bool, str]:
@@ -1028,8 +1061,8 @@ class ImprovementValidationAgent:
                 model,
                 modifications,
                 self.work_dir,
-                total_cases=self.abs_case_count,
-                time_horizon_seconds=self.time_horizon_seconds,
+                total_cases=self.des_total_cases,
+                time_horizon_seconds=self.des_time_horizon_seconds,
                 baseline_metrics=baseline_metrics
             )
             if metrics:
@@ -1042,7 +1075,7 @@ class ImprovementValidationAgent:
             return des_runs[0]
 
         aggregated = {}
-        numeric_keys = ["avg_cycle_time", "avg_throughput", "avg_waiting_time", "total_cost"]
+        numeric_keys = ["avg_cycle_time", "avg_throughput", "avg_waiting_time"]
         for key in numeric_keys:
             values = [float(m[key]) for m in des_runs if key in m and m[key] is not None]
             if values:
@@ -1233,7 +1266,7 @@ class ImprovementValidationAgent:
             return des_metrics.copy()
         
         combined = {}
-        for key in ["avg_cycle_time", "avg_throughput", "avg_waiting_time", "total_cost"]:
+        for key in ["avg_cycle_time", "avg_throughput", "avg_waiting_time"]:
             if key in des_metrics and key in abs_metrics:
                 combined[key] = (des_metrics[key] + abs_metrics[key]) / 2
             elif key in des_metrics:

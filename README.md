@@ -5,12 +5,13 @@ Agentic pipeline for process-improvement discovery and validation using:
 - SIMOD/Prosimos model discovery and DES simulation
 - AgentSimulator behavioral simulation
 - iterative LLM hypothesis generation
-- automated validation and report generation
+- automated change-type-aware validation and report generation
 
 ## Documentation
 
 - Runtime and validation behavior are documented in this README.
 - AgentSimulator internals and native commands are in `src/AgentSimulator/README.md`.
+- Simulator design and split policy are documented in `misc/SIMULATORS_README.md`.
 
 ## What is Working End-to-End
 
@@ -18,7 +19,8 @@ Agentic pipeline for process-improvement discovery and validation using:
 - Simulator-relative baseline validation is active (DES and ABS each compared against own baseline).
 - Dataset-specific calibrated model selection is active.
 - Report generation is robust to `impact`/`improvement` payload variants.
-- Validation accepts an improvement when DES **or** ABS passes guardrails (OR decision rule).
+- Change-type-aware validation: different simulators act as oracle depending on hypothesis type.
+- DES time horizon always constrained to the test-split window for comparable metrics.
 
 ## Quick Start
 
@@ -39,19 +41,13 @@ The setup script performs all required bootstrap operations:
 - enforce Poetry environment on Python 3.11
 - install Poetry dependencies
 - ensure SIMOD Docker image (`nokal/simod:latest`) is available
-- clone AgentSimulator into `src/AgentSimulator` (if missing)
+- sync/init AgentSimulator git submodule at `src/AgentSimulator`
 - verify AgentSimulator import in the Poetry environment
-
-If you keep AgentSimulator in a different location, set:
-
-```bash
-export AGENT_SIMULATOR_PATH=/absolute/path/to/AgentSimulator
-```
 
 ### Run
 
 ```bash
-poetry run python src/main.py --log P2P/P2P_train_preprocessed.xes --max_iterations 3
+poetry run python src/main.py --log P2P/train_preprocessed.csv --max_iterations 3
 ```
 
 ### Common Options
@@ -68,42 +64,70 @@ poetry run python src/main.py --log P2P/P2P_train_preprocessed.xes --max_iterati
 --abs_runs NUM
 ```
 
-## Simulator Notes
+## Key Design Decisions
 
-- DES uses SIMOD-discovered BPMN + Prosimos parameters.
-- ABS uses AgentSimulator on CSV logs (with hypothesis-driven temporary log edits where supported).
-- DES metrics are horizon-filtered to the test split window; ABS runs full-log simulation by default.
+### Simulator Strengths
+
+| Simulator | Models | Reliable KPIs | Not reliable |
+|---|---|---|---|
+| **DES (Prosimos)** | BPMN + resource pools + calendars + queuing | `cycle_time`, `waiting_time`, `throughput` | agent routing, handover patterns |
+| **ABS (AgentSimulator)** | Agent behaviors + handover sequences | `cycle_time` (distribution distance), resource utilization | `waiting_time` (always 0 — no queue model) |
+
+### Change-Type-Aware Validation Oracle
+
+The validation oracle depends on which type of change is being evaluated:
+
+| `parameter_type` | Primary oracle | Secondary role | Rationale |
+|---|---|---|---|
+| `resources` | **DES only** | ABS: informational only | Resource queuing only modelled in DES |
+| `calendar` | **DES only** | ABS: not used | Resource availability windows handled by DES |
+| `activity_durations` | **DES or ABS** (OR rule) | Conflict guardrail active | Both simulators model duration; OR keeps exploration open |
+| `role_redesign` | **ABS primary** | DES: throughput safety check | ABS explicitly models who does what; DES checks throughput does not regress |
+
+For `resources` and `calendar`, ABS results are logged as informational context only and do not affect the accept/reject decision.
+
+For `role_redesign`, if DES reports a throughput decrease > 10%, the proposal is rejected regardless of ABS outcome.
+
+For `activity_durations`, a cross-simulator conflict guardrail rejects proposals where DES and ABS disagree strongly on direction.
+
+### DES Time Horizon
+
+DES is always constrained to run within the test-split time window (the same window used by ABS). This ensures:
+- DES throughput is a realistic case rate, not a fixed 1000-case budget
+- Waiting time reflects the actual load level of the test period
+- DES and ABS throughput figures are directly comparable
+
+### Tracked KPIs
+
+Three KPIs are used for validation and reporting:
+- `cycle_time` (lower is better)
+- `throughput` (higher is better)
+- `waiting_time` (lower is better; note: ABS always reports 0.0 by design)
+
+Resource utilization is tracked and logged but is not a primary validation criterion.
 
 ## Outputs
 
 - Reports: `reports/improvement_report_*.txt`
 - Interaction logs: `reports/interaction_logs/interaction_log_*.txt`
 
-## Notes
-
-- Calibration artifacts are loaded automatically when available.
-- If a dataset-specific calibrated model exists, it is preferred over generic calibrated model files.
-- Validation compares improvements against the simulated baseline from the same simulator context.
-
 ## DES vs ABS: Why Results Can Differ
 
-Prosimos (DES) and AgentSimulator (ABS) are intentionally different models:
+Prosimos (DES) and AgentSimulator (ABS) are fundamentally different models:
 
-- **Prosimos (DES)** runs on SIMOD-discovered BPMN + Prosimos JSON parameters.
-- **AgentSimulator (ABS)** re-simulates behavior from the event log with agent-based logic.
-- They may share log source and horizon filtering, but they do **not** use the exact same internal state-transition and timing model.
+- **Prosimos (DES)** runs on SIMOD-discovered BPMN + Prosimos JSON parameters. It models:
+  - resource pools, calendars, and working-hour windows
+  - explicit queuing and waiting time
+  - throughput as a function of resource capacity
+- **AgentSimulator (ABS)** re-learns behavior from the event log. It models:
+  - agent-level handover and routing sequences
+  - who does what activity and in what order
+  - behavioural distribution distances (CTDD, REDD, AEDD) — lower = more faithful reproduction of the log
+  - **no queue model**: `waiting_time` is always 0.0
 
-Because of this, absolute values can diverge. The pipeline evaluates impact **per simulator** and validates improvements using simulator-relative baselines:
+Because of these structural differences, ABS cannot validate capacity or calendar changes (those affect queuing, which ABS does not simulate). ABS is the right oracle for role redesign, because it tracks agent routing sequences directly.
 
-1. Run **DES baseline** and **ABS baseline**.
-2. Apply LLM changes.
-3. Run **DES improved** and **ABS improved**.
-4. Compute impact separately:
-  - DES improved vs DES baseline
-  - ABS improved vs ABS baseline
-5. Validate each simulator independently with guardrails, then accept if DES **or** ABS validates.
-
-This makes comparison fairer and easier to debug when DES/ABS disagree.
+The pipeline uses change-type-aware oracles instead of a flat OR rule to match each hypothesis type to the simulator best equipped to evaluate it.
 
 # Architecture
 
@@ -117,9 +141,9 @@ Event Log (XES/CSV)
   -> calibrated model selection
   -> iteration loop:
        LLM hypothesis
-       improved simulation
-       validation
-    cumulative scenario update (if validated)
+       improved simulation (DES + ABS in parallel)
+       change-type-aware validation (_decide_improvement)
+       cumulative scenario update (if validated)
        reporting
   -> final report artifacts
 ```
@@ -129,18 +153,21 @@ Event Log (XES/CSV)
 - `src/improvement_validation_pipeline.py`
   - orchestrates full workflow
   - handles iteration lifecycle and artifact generation
+  - `_decide_improvement()`: change-type-aware oracle logic
 - `src/simulator/simod_discoverer.py`
   - discovers process/simulation assets
 - `src/simulator/prosimos_runner.py`
-  - runs DES simulations
+  - runs DES simulations (always time-horizon constrained)
 - `src/simulator/agent_simulator_runner.py`
-  - runs optional ABS simulations
+  - runs ABS simulations; applies case-level log modifications
 - `src/validation/improvement_validator.py`
-  - compares simulator baseline vs simulator improvement
+  - compares simulator baseline vs simulator improvement per-simulator
 - `src/calibration/simod_calibrator.py`
   - applies calibration factors, including wrapped `prosimos_params` structures
 - `src/reporting/report_generator.py`
   - generates final textual report with schema-tolerant improvement payload handling
+- `src/llm/hypothesis_generator.py`
+  - generates process improvement hypotheses; prompts include oracle guidance per change type
 
 ## Model Selection Order
 
@@ -154,29 +181,19 @@ This ensures dataset-specific calibration is preferred when present.
 
 ## Validation Strategy
 
-The pipeline uses **simulator-relative validation**:
+The pipeline uses **change-type-aware, simulator-relative validation**:
 
 - build one fixed DES baseline and one fixed ABS baseline at the start
 - simulate each new hypothesis against the current working scenario
 - compare each simulator output against its own fixed baseline
 - apply hard guardrails (throughput non-decrease, bounded regressions, cycle-time cap)
-- accept iteration if **DES or ABS** validates (OR rule)
+- accept or reject using the oracle appropriate for the hypothesis `parameter_type`
 
-This avoids rejecting useful hypotheses solely because simulator absolute values differ from raw event-log reality.
-
-## Reporting Contracts
-
-Improvement payload compatibility is tolerant to either structure:
-
-- `impact`
-- `improvement`
-
-Fallback logic prevents runtime report failures when one shape is absent.
-
+This avoids:
+- rejecting `role_redesign` hypotheses because DES cannot observe routing improvements
+- accepting `resources`/`calendar` hypotheses based on ABS output (which ignores queuing)
 
 # Validation Logic
-
-Current end-to-end validation behavior used by the pipeline.
 
 ## Goal
 
@@ -193,15 +210,12 @@ In practice, the validator answers one question per iteration:
 
 1. Extract baseline process metrics from event log (PM4Py).
 2. Discover/prepare simulation model (SIMOD/Prosimos-compatible assets).
-3. Select calibrated simulation model with dataset-aware priority:
-   - `simod_model_<dataset>_calibrated.json`
-   - fallback: `simod_model_calibrated.json`
-   - fallback: discovered/raw model
-4. Simulate baseline once for both simulators with current settings.
+3. Select calibrated simulation model with dataset-aware priority.
+4. Simulate baseline once for both simulators.
 5. Generate one hypothesis per iteration.
-6. Simulate improved scenario with hypothesis changes.
+6. Simulate improved scenario with hypothesis changes (DES + ABS in parallel).
 7. Validate DES and ABS independently against their fixed baselines.
-8. Accept iteration when DES or ABS passes validation guardrails.
+8. Select oracle for combined decision based on `parameter_type`.
 9. If accepted, apply that change to the working scenario for subsequent iterations.
 10. Repeat until `max_iterations` is reached.
 
@@ -215,18 +229,18 @@ The validator compares improved metrics against simulator baseline metrics using
 - cycle time
 - throughput
 - waiting time
-- resource utilization
+- resource utilization (informational)
+
+Note: `waiting_time` reported by ABS is **always 0.0** because AgentSimulator has no queue model. ABS waiting_time is not used for validation decisions.
 
 Guardrails enforce conservative acceptance:
 - throughput must not decrease,
-- cycle-time increase is capped,
+- cycle-time increase is capped at 10%,
 - excessive regressions fail validation.
-
-Final decision rule is OR: if DES validates or ABS validates, the proposal is accepted.
 
 ### Metric Direction
 
-- **Lower is better:** cycle time, waiting time, cost
+- **Lower is better:** cycle time, waiting time
 - **Higher is better:** throughput
 
 Resource utilization is interpreted contextually (e.g., avoiding overload concentration), not as a single universal min/max target.
@@ -239,19 +253,15 @@ For each simulator independently (DES and ABS):
 3. Enforce guardrails (hard-fail checks).
 4. Determine pass/fail for that simulator.
 
-Then combine with:
-- **Overall pass = DES pass OR ABS pass**
+Then combine using the change-type oracle (see table above).
 
-This avoids dropping potentially valuable proposals when one simulator captures a benefit the other does not.
+### Why Change-Type-Aware Oracles
 
-### Why OR + Guardrails
+A flat OR rule (old behaviour) would:
+- allow ABS to "validate" resource additions it cannot model (ABS has no queue, so adding a resource cannot lower ABS waiting time)
+- force ABS outcomes to veto role redesigns where DES is blind to routing improvements
 
-OR keeps the system exploratory across two different modeling paradigms (DES structural and ABS behavioral), while guardrails prevent clearly harmful proposals from slipping through.
-
-Example interpretation:
-- DES improves throughput with bounded regressions, ABS is neutral/slightly worse -> can still pass.
-- ABS improves cycle time, DES is neutral/slightly worse -> can still pass.
-- A simulator violates hard guardrails (e.g., large cycle-time increase) -> that simulator fails regardless of other gains.
+The oracle table resolves this by matching the hypothesis to the simulator best equipped to evaluate it.
 
 ## Why Relative Baseline
 
@@ -277,15 +287,18 @@ If one is missing, the other is used as fallback to avoid report-generation fail
 - Baseline simulation path is active (not bypassed).
 - Defaults are `des_runs=10` and `abs_runs=10` for more stable averages.
 - Report generation is tolerant to known payload schema variations.
+- DES time horizon always constrained to test split.
+- `total_cost` is not reported (hardcoded dummy value, excluded from all KPI paths).
 
 ## Reading Validation Output
 
 When reviewing logs or reports:
+- Check `parameter_type` of the hypothesis to know which oracle was active.
 - Check **DES impact vs DES baseline** and **ABS impact vs ABS baseline** separately.
-- Check both simulator-specific validation outcomes.
-- Check final decision rule outcome (`OR (DES or ABS)`).
-- For multi-iteration runs, remember accepted changes are cumulative in scenario state, but still evaluated against the original fixed simulator baselines.
-
+- Check the `Decision oracle` line in the interaction log to see which rule applied.
+- For `resources`/`calendar` hypotheses, ABS is shown as `[informational only]`.
+- For `role_redesign` hypotheses, DES is shown as `[throughput safety check]`.
+- For multi-iteration runs, accepted changes are cumulative in scenario state but still evaluated against the original fixed simulator baselines.
 
 ## License
 

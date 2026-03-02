@@ -1,19 +1,15 @@
-"""Prosimos simulation runner module."""
-
 import os
 import json
 import subprocess
 import copy
-import logging
 from typing import Dict, Optional
+from simulator.metrics_extractor import MetricsExtractor
+import shutil
 
 
 class ProsimosRunner:
-    """Runs Prosimos simulations with modified parameters."""
-    
-    def __init__(self, docker_image: str = "nokal/simod:latest", use_sudo: bool = True):
-        """Initialize Prosimos runner."""
-        self.docker_image = docker_image
+    def __init__(self, use_sudo: bool = True):
+        self.docker_image = "nokal/simod:latest"
         self.use_sudo = use_sudo
         self.work_dir = None
     
@@ -43,14 +39,7 @@ class ProsimosRunner:
         try:
             # Apply modifications to Prosimos parameters
             modified_params = self._apply_modifications(model, modifications)
-            
-            # ENHANCEMENT: Enrich Prosimos parameters with real resources from baseline
-            if baseline_metrics and 'resource_utilization' in baseline_metrics:
-                modified_params = self._enrich_params_with_real_resources(
-                    modified_params, 
-                    baseline_metrics
-                )
-            
+
             # Save modified parameters
             params_file = os.path.join(work_dir, "modified_params.json")
             with open(params_file, 'w') as f:
@@ -96,85 +85,27 @@ class ProsimosRunner:
             print(f"Error during simulation: {e}")
             return {}
     
-    def _enrich_params_with_real_resources(
-        self,
-        params: Dict,
-        baseline_metrics: Dict
-    ) -> Dict:
-        """
-        Verify Prosimos parameters contain real resources from baseline.
-        
-        SIMOD already generates 432 real resource profiles in the JSON structure.
-        This method validates they're present and logs the resources.
-        
-        Args:
-            params: Prosimos parameters (should already have real resources from SIMOD)
-            baseline_metrics: Baseline metrics containing real resource utilization
-            
-        Returns:
-            Prosimos parameters (unchanged, but validated)
-        """
-        # Check if SIMOD already created the real resource profiles
-        if 'resource_profiles' in params:
-            resource_count = len(params['resource_profiles'])
-            if resource_count > 10:  # More than generic profiles
-                print(f"✓ SIMOD already generated {resource_count} real resource profiles")
-                # Extract actual resource IDs from profiles
-                real_ids = set()
-                for profile in params['resource_profiles']:
-                    if isinstance(profile, dict) and 'resource_list' in profile:
-                        for res in profile['resource_list']:
-                            if isinstance(res, dict):
-                                rid = res.get('id') or res.get('name')
-                                if rid:
-                                    real_ids.add(str(rid))
-                if real_ids:
-                    print(f"  Real resources: {len(real_ids)} unique IDs")
-                    sample_ids = sorted(real_ids)[:5]
-                    print(f"  Sample: {sample_ids}")
-        
-        # Log task resource distribution structure
-        if 'task_resource_distribution' in params:
-            trd = params['task_resource_distribution']
-            if isinstance(trd, list):
-                print(f"✓ Task resource distribution: {len(trd)} tasks configured")
-           
-        return params
-
-    def apply_modifications_to_model(self, model: Dict, modifications: Dict) -> Dict:
-        """Return a new model with modifications applied to Prosimos parameters."""
-        modified_model = copy.deepcopy(model)
-        modified_model['prosimos_params'] = self._apply_modifications(model, modifications)
-        return modified_model
-    
     def _apply_modifications(self, model: Dict, modifications: Dict) -> Dict:
         """Apply hypothesis modifications to Prosimos parameters."""
         modified_params = copy.deepcopy(model.get('prosimos_params', {}))
-        
         if not modified_params:
             return modified_params
-        
         param_type = modifications.get('parameter_type')
         specific_changes = modifications.get('specific_changes', [])
-        
         for change in specific_changes:
             target = change.get('target')
             change_type = change.get('change')
             value = change.get('value')
-            
+            # Only allow types supported by AgentSimulator and LLM
             if param_type == 'resources':
                 self._modify_resources(modified_params, target, change_type, value)
             elif param_type == 'role_redesign':
                 self._modify_role_redesign(modified_params, target, change_type, value, change)
             elif param_type == 'activity_durations':
                 self._modify_durations(modified_params, target, value)
-            elif param_type == 'arrival_rate':
-                self._modify_arrival_rate(modified_params, value)
             elif param_type == 'calendar':
                 self._modify_calendar_hours(modified_params, target, change_type, value)
-            elif param_type == 'gateway_probabilities':
-                self._modify_gateway_probabilities(modified_params, target, change_type, value)
-        
+            # Remove support for arrival_rate, gateway_probabilities, and any other types
         return modified_params
     
     def _modify_resources(self, params: Dict, target: str, change_type: str, value: int):
@@ -196,16 +127,30 @@ class ProsimosRunner:
         if 'resource_profiles' not in params or not target:
             return
 
+        source_role, destination_role = self._parse_role_redesign_target(target)
         resource_profiles = params.get('resource_profiles', [])
         matched_profile = None
         for resource in resource_profiles:
             res_id = str(resource.get('id', resource.get('name', '')))
-            if target in res_id or res_id == target:
+            if source_role and (source_role in res_id or res_id == source_role):
                 matched_profile = resource
                 break
 
         if not matched_profile:
             return
+
+        if 'shift_responsibility' in str(change_type) and destination_role:
+            shift_fraction = self._resolve_shift_fraction(
+                change_payload.get('value')
+            )
+            shifted = self._shift_role_responsibilities(
+                params,
+                source_role=source_role,
+                destination_role=destination_role,
+                shift_fraction=shift_fraction
+            )
+            if shifted:
+                return
 
         base_id = str(matched_profile.get('id', matched_profile.get('name', target)))
         specialist_id = f"{base_id}_specialist"
@@ -233,6 +178,95 @@ class ProsimosRunner:
 
         task_hint = change_payload.get('task_target') or change_payload.get('task')
         self._assign_specialist_to_tasks(params, base_id, specialist_id, task_hint, change_type)
+
+    @staticmethod
+    def _normalize_role_label(label: str) -> str:
+        role = str(label or '').strip()
+        if role.lower().endswith('_profile'):
+            role = role[:-len('_profile')].strip()
+        return role
+
+    def _parse_role_redesign_target(self, target: str):
+        raw = str(target or '')
+        for sep in ['→', '->']:
+            if sep in raw:
+                left, right = raw.split(sep, 1)
+                return self._normalize_role_label(left), self._normalize_role_label(right)
+        normalized = self._normalize_role_label(raw)
+        return normalized, normalized
+
+    @staticmethod
+    def _resolve_shift_fraction(value) -> float:
+        """Resolve shift fraction from payload; handles fractions and integer severity values."""
+        try:
+            numeric = float(value)
+        except Exception:
+            return 0.5
+        if 0 < numeric < 1:
+            return max(0.1, min(0.9, numeric))
+        if numeric >= 1:
+            n = int(numeric)
+            return min(0.9, 0.1 + n * 0.2)  # 1→0.3, 2→0.5, 3→0.7, >=4→0.9
+        return 0.5
+
+    def _shift_role_responsibilities(
+        self,
+        params: Dict,
+        source_role: str,
+        destination_role: str,
+        shift_fraction: float = 0.5
+    ) -> bool:
+        """Redistribute source-role responsibilities to destination with bounded fraction.
+
+        Rebalances assignments globally across task-resource mappings by moving a
+        subset of source references to destination references.
+        """
+        if not source_role or not destination_role:
+            return False
+
+        source_refs = []
+        destination_count = 0
+        role_keys = ('resource_id', 'resource', 'resource_name', 'id', 'name')
+
+        def collect_references(entries: list):
+            nonlocal destination_count
+            for entry in entries:
+                for key in role_keys:
+                    if key not in entry:
+                        continue
+                    role_ref = str(entry.get(key, ''))
+                    if source_role in role_ref or role_ref == source_role:
+                        source_refs.append((entry, key))
+                        break
+                    if destination_role in role_ref or role_ref == destination_role:
+                        destination_count += 1
+                        break
+
+        task_distributions = params.get('task_resource_distribution', [])
+        for task in task_distributions:
+            collect_references(task.get('resources', []) or [])
+            collect_references(task.get('distribution', []) or [])
+
+        source_count = len(source_refs)
+        if source_count == 0:
+            return False
+
+        total_related = source_count + destination_count
+        if total_related <= 1:
+            return False
+
+        target_destination = int(round(total_related * shift_fraction))
+        target_destination = max(1, min(total_related - 1, target_destination))
+
+        max_movable = max(0, source_count - 1)
+        move_count = max(0, min(max_movable, target_destination - destination_count))
+        if move_count == 0:
+            return False
+
+        for entry, key in source_refs[:move_count]:
+            entry[key] = destination_role
+
+        return True
 
     def _assign_specialist_to_tasks(self, params: Dict, base_role_id: str, specialist_role_id: str, task_hint: str, change_type: str):
         """Attach specialist role to selected tasks and apply slight duration gain for specialization."""
@@ -332,127 +366,6 @@ class ProsimosRunner:
             pct = abs(reduction_pct)
             print(f"  ✓ Modified {modified_count} duration parameters ({pct:.0f}% reduction) for {target}")
     
-    def _modify_arrival_rate(self, params: Dict, adjustment_pct: float):
-        """Modify arrival rate in Prosimos parameters."""
-        if 'arrival_time_distribution' not in params:
-            return
-        
-        arrival_dist = params['arrival_time_distribution']
-        adjustment_factor = 1 + (adjustment_pct / 100)
-        
-        if 'distribution_params' in arrival_dist:
-            for param in arrival_dist['distribution_params']:
-                if 'value' in param:
-                    param['value'] *= adjustment_factor
-
-    def _modify_calendar_hours(self, params: Dict, target: str, change_type: str, value: float):
-        """Modify calendar hours in Prosimos parameters (best effort, schema-tolerant)."""
-        if not target:
-            return
-
-        calendars = params.get('calendars')
-        if isinstance(calendars, dict):
-            for cal_name, cal_data in calendars.items():
-                if target in str(cal_name) or str(cal_name) == target:
-                    self._increase_hours_in_calendar(cal_data, change_type, value)
-        elif isinstance(calendars, list):
-            for cal in calendars:
-                cal_name = cal.get('id') or cal.get('name')
-                if cal_name and (target in str(cal_name) or str(cal_name) == target):
-                    self._increase_hours_in_calendar(cal, change_type, value)
-
-    def _increase_hours_in_calendar(self, calendar_obj: Dict, change_type: str, value: float):
-        """Increase available calendar hours while preserving schema variability."""
-        if not isinstance(calendar_obj, dict):
-            return
-
-        hours_delta = float(value or 0)
-        if hours_delta <= 0 and (change_type and 'increase' in change_type):
-            hours_delta = 1.0
-
-        if 'hours_per_day' in calendar_obj and isinstance(calendar_obj['hours_per_day'], (int, float)):
-            calendar_obj['hours_per_day'] = min(24, calendar_obj['hours_per_day'] + hours_delta)
-
-        # If timetable exists with intervals, extend interval ends by delta where possible
-        timetables = calendar_obj.get('timetables') or calendar_obj.get('time_periods') or []
-        for period in timetables:
-            if not isinstance(period, dict):
-                continue
-            if 'to' in period and isinstance(period['to'], (int, float)):
-                period['to'] = min(24, period['to'] + hours_delta)
-            if 'end' in period and isinstance(period['end'], (int, float)):
-                period['end'] = min(24, period['end'] + hours_delta)
-
-    def _modify_gateway_probabilities(self, params: Dict, target: str, change_type: str, value: float):
-        """Modify gateway branch probabilities (best effort, schema-tolerant)."""
-        gateway_prob = params.get('gateway_branching_probabilities')
-        if not gateway_prob:
-            return
-
-        adjustment = abs(float(value or 0)) / 100.0
-        if adjustment == 0:
-            return
-
-        if isinstance(gateway_prob, dict):
-            for gw_id, branches in gateway_prob.items():
-                if target and not (target in str(gw_id) or str(gw_id) == target):
-                    continue
-                self._adjust_branch_probabilities(branches, change_type, adjustment)
-        elif isinstance(gateway_prob, list):
-            for gw in gateway_prob:
-                if not isinstance(gw, dict):
-                    continue
-                gw_id = gw.get('id') or gw.get('gateway_id')
-                if target and gw_id and not (target in str(gw_id) or str(gw_id) == target):
-                    continue
-                branches = gw.get('probabilities') or gw.get('branches')
-                self._adjust_branch_probabilities(branches, change_type, adjustment)
-
-    def _adjust_branch_probabilities(self, branches, change_type: str, adjustment: float):
-        """Adjust probabilities with normalization, supporting dict/list schemas."""
-        if isinstance(branches, dict):
-            keys = list(branches.keys())
-            if not keys:
-                return
-            primary = keys[0]
-            delta = adjustment if ('increase' in (change_type or '')) else -adjustment
-            branches[primary] = max(0.01, min(0.99, float(branches[primary]) + delta))
-            total_other = sum(float(branches[k]) for k in keys[1:])
-            remaining = max(0.01, 1.0 - float(branches[primary]))
-            if total_other > 0:
-                for k in keys[1:]:
-                    branches[k] = max(0.01, float(branches[k]) / total_other * remaining)
-            else:
-                share = remaining / max(1, len(keys) - 1)
-                for k in keys[1:]:
-                    branches[k] = share
-
-        elif isinstance(branches, list) and branches:
-            # Expect list of dicts each with prob field
-            prob_keys = ('probability', 'prob', 'value')
-            first = branches[0]
-            if not isinstance(first, dict):
-                return
-
-            primary_key = next((k for k in prob_keys if k in first), None)
-            if not primary_key:
-                return
-
-            delta = adjustment if ('increase' in (change_type or '')) else -adjustment
-            first[primary_key] = max(0.01, min(0.99, float(first[primary_key]) + delta))
-
-            others = [b for b in branches[1:] if isinstance(b, dict) and any(k in b for k in prob_keys)]
-            total_other = 0.0
-            for item in others:
-                k = next(k for k in prob_keys if k in item)
-                total_other += float(item[k])
-
-            remaining = max(0.01, 1.0 - float(first[primary_key]))
-            if total_other > 0:
-                for item in others:
-                    k = next(k for k in prob_keys if k in item)
-                    item[k] = max(0.01, float(item[k]) / total_other * remaining)
-    
     def _run_simulation(
         self,
         model: Dict,
@@ -462,7 +375,6 @@ class ProsimosRunner:
         time_horizon_seconds: Optional[float] = None
     ) -> Dict:
         """Run Prosimos simulation via Docker."""
-        import shutil
         
         # Get BPMN file path
         bpmn_path = None
@@ -534,7 +446,6 @@ class ProsimosRunner:
         simulated_log = os.path.join(output_dir, "simulation_log.csv")
         if os.path.exists(simulated_log):
             # Use simulator's metrics extractor for detailed analysis
-            from simulator.metrics_extractor import MetricsExtractor
             try:
                 extractor = MetricsExtractor()
                 metrics = extractor.extract_from_csv(
@@ -602,7 +513,6 @@ class ProsimosRunner:
                 'avg_throughput': baseline_throughput,
                 'avg_waiting_time': baseline_waiting * improvement_factor,
                 'resource_utilization': real_resources,
-                'total_cost': 2160,
                 'estimation_mode': True,  # Mark as estimation not actual simulation
                 'num_resources': len(real_resources),
                 'total_resource_capacity': total_capacity

@@ -33,8 +33,12 @@ else
 fi
 
 AGENT_SIM_PATH="$REPO_ROOT/src/AgentSimulator"
-if [[ ! -d "$AGENT_SIM_PATH/.git" ]]; then
-  echo "[setup] Cloning AgentSimulator into src/AgentSimulator..."
+if [[ -f "$REPO_ROOT/.gitmodules" ]]; then
+  echo "[setup] Syncing and initializing git submodules..."
+  git submodule sync --recursive
+  git submodule update --init --recursive src/AgentSimulator
+elif [[ ! -d "$AGENT_SIM_PATH/.git" ]]; then
+  echo "[setup] AgentSimulator submodule not configured; cloning fallback into src/AgentSimulator..."
   git clone https://github.com/lukaskirchdorfer/AgentSimulator "$AGENT_SIM_PATH"
 else
   echo "[setup] AgentSimulator already present at src/AgentSimulator."

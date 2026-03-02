@@ -1,5 +1,3 @@
-"""SIMOD discovery module for discovering baseline simulation models from event logs."""
-
 import os
 import json
 import subprocess
@@ -7,112 +5,70 @@ import shutil
 from typing import Tuple, Dict
 import yaml
 import pm4py
+import pandas as pd
+from collections import Counter
 
 
 class SIMODDiscoverer:
-    """Discovers baseline simulation models using SIMOD."""
-    
-    def __init__(self, docker_image: str = "nokal/simod:latest", use_sudo: bool = True):
+    def __init__(self, use_sudo: bool = True):
         """
         Initialize SIMOD discoverer.
         
         Args:
-            docker_image: Docker image for SIMOD
             use_sudo: Whether to use sudo for Docker commands
         """
-        self.docker_image = docker_image
+        self.docker_image = "nokal/simod:latest"
         self.use_sudo = use_sudo
     
     def discover(self, log_path: str, work_dir: str) -> Tuple[Dict, Dict]:
         """
         Discover baseline simulation model.
-        
         Args:
             log_path: Path to XES or CSV event log
             work_dir: Working directory for SIMOD outputs
-            
         Returns:
             Tuple of (model_dict, metrics_dict)
+        Raises:
+            RuntimeError if any step fails
         """
-        try:
-            # Extract real baseline metrics from the log FIRST (regardless of SIMOD)
-            baseline_metrics = self._extract_baseline_from_log(log_path)
-            
-            # Convert XES to CSV if needed
-            csv_path = self._convert_xes_to_csv(log_path)
-            
-            # Copy CSV to working directory
-            csv_name = os.path.basename(csv_path)
-            work_csv_path = os.path.join(work_dir, csv_name)
-            shutil.copy2(csv_path, work_csv_path)
-            
-            # Create SIMOD output directory
-            output_dir = os.path.join(work_dir, "baseline")
-            os.makedirs(output_dir, exist_ok=True)
-            
-            # Create and run SIMOD configuration (pass actual csv_path for column detection)
-            config_path = self._create_simod_config(
-                actual_csv_path=csv_path,
-                docker_csv_path=f"/data/{csv_name}",
-                output_dir="/data/baseline",
-                work_dir=work_dir
-            )
-            
-            # Run SIMOD discovery via Docker
-            self._run_simod_discovery(work_dir, output_dir)
-            
-            # Parse outputs
-            model_data = self._parse_simod_output(output_dir)
-            
-            if model_data:
-                # Use SIMOD model with real baseline metrics from log
-                return model_data, baseline_metrics
-            else:
-                print("Warning: Could not parse SIMOD output, using baseline model from log")
-                model = {
-                    "process_name": os.path.basename(log_path),
-                    "activities": {},
-                    "resources": {},
-                    "arrival_rate": {"mean": 300, "distribution": "exponential"},
-                    "calendars": {"default": {"hours_per_day": 8, "days_per_week": 5}}
-                }
-                return model, baseline_metrics
-                
-        except subprocess.TimeoutExpired:
-            print("SIMOD discovery timed out, extracting baseline from log")
-            return self._baseline_only_model(log_path)
-        except Exception as e:
-            print(f"Error during baseline discovery: {e}")
-            return self._baseline_only_model(log_path)
-    
-    def _baseline_only_model(self, log_path: str) -> Tuple[Dict, Dict]:
-        """Create minimal model with real baseline metrics from log."""
-        metrics = self._extract_baseline_from_log(log_path)
-        model = {
-            "process_name": os.path.basename(log_path),
-            "activities": {},
-            "resources": {},
-            "arrival_rate": {"mean": 300, "distribution": "exponential"},
-            "calendars": {"default": {"hours_per_day": 8, "days_per_week": 5}}
-        }
-        return model, metrics
-    
+        # Extract real baseline metrics from the log FIRST (regardless of SIMOD)
+        baseline_metrics = self._extract_baseline_from_log(log_path)
+        # Convert XES to CSV if needed
+        csv_path = self._convert_xes_to_csv(log_path)
+        # Copy CSV to working directory
+        csv_name = os.path.basename(csv_path)
+        work_csv_path = os.path.join(work_dir, csv_name)
+        shutil.copy2(csv_path, work_csv_path)
+        # Create SIMOD output directory
+        output_dir = os.path.join(work_dir, "baseline")
+        os.makedirs(output_dir, exist_ok=True)
+        # Create and run SIMOD configuration (pass actual csv_path for column detection)
+        config_path = self._create_simod_config(
+            actual_csv_path=csv_path,
+            docker_csv_path=f"/data/{csv_name}",
+            output_dir="/data/baseline",
+            work_dir=work_dir
+        )
+        # Run SIMOD discovery via Docker
+        self._run_simod_discovery(work_dir, output_dir)
+        # Parse outputs
+        model_data = self._parse_simod_output(output_dir)
+        if model_data:
+            # Use SIMOD model with real baseline metrics from log
+            return model_data, baseline_metrics
+        else:
+            raise RuntimeError("Could not parse SIMOD output.")
+
     def _convert_xes_to_csv(self, log_path: str) -> str:
         """Convert XES event log to CSV if needed. Returns existing CSV or converted path."""
         try:
-            # Check if already CSV
             if log_path.endswith('.csv'):
                 print(f"✓ Log is already in CSV format: {log_path}")
                 return log_path
             
-            # Convert XES to CSV
             print(f"Converting XES to CSV for SIMOD compatibility...")
-            
-            # Read XES log
             log = pm4py.read_xes(log_path)
             df = pm4py.convert_to_dataframe(log)
-            
-            # Map columns to SIMOD format
             column_mapping = {
                 'case:concept:name': 'case_id',
                 'concept:name': 'activity',
@@ -124,14 +80,11 @@ class SIMODDiscoverer:
                 if old_col in df.columns:
                     df.rename(columns={old_col: new_col}, inplace=True)
             
-            # Add start_time if missing
             if 'start_time' not in df.columns and 'end_time' in df.columns:
                 df['start_time'] = df['end_time']
             
-            # Save CSV
             csv_path = log_path.replace('.xes', '.csv')
             df.to_csv(csv_path, index=False)
-            
             print(f"✓ Converted to CSV: {csv_path}")
             print(f"  Rows: {len(df)}, Columns: {list(df.columns)[:5]}...")
             
@@ -150,7 +103,6 @@ class SIMODDiscoverer:
             output_dir: Output directory path in Docker
             work_dir: Working directory on host
         """
-        import pandas as pd
         
         # Read columns from the actual CSV file on disk
         try:
@@ -360,42 +312,7 @@ class SIMODDiscoverer:
         except Exception as e:
             print(f"Error parsing SIMOD output: {e}")
             return None
-    
-    def _extract_metrics(self, model_data: Dict, output_dir: str) -> Dict:
-        """Extract metrics from SIMOD output."""
-        metrics = {
-            'avg_cycle_time': 14400,
-            'avg_throughput': 20,
-            'avg_waiting_time': 5400,
-            'resource_utilization': {},
-            'total_cost': 8500
-        }
-        
-        try:
-            prosimos = model_data.get('prosimos_params', {})
-            
-            # Extract resource utilization
-            if 'resource_profiles' in prosimos:
-                resource_util = {}
-                for profile in prosimos['resource_profiles']:
-                    resource_id = profile.get('id', profile.get('resource_id', 'unknown'))
-                    resource_util[resource_id] = 0.75  # Default estimate
-                metrics['resource_utilization'] = resource_util
-            
-            # Extract arrival rate
-            if 'arrival_time_distribution' in prosimos:
-                arrival_dist = prosimos['arrival_time_distribution']
-                if 'distribution_params' in arrival_dist:
-                    params = arrival_dist['distribution_params'][0]
-                    metrics['avg_arrival_rate'] = params.get('value', 300)
-            
-            print(f"✓ Extracted metrics from SIMOD")
-            
-        except Exception as e:
-            print(f"Warning: Could not fully extract metrics: {e}")
-        
-        return metrics
-    
+
     def _extract_baseline_from_log(self, log_path: str) -> Dict:
         """Extract real baseline metrics from the event log using pm4py with smart column detection."""
         try:
@@ -403,7 +320,6 @@ class SIMODDiscoverer:
             
             # Read log (handle both XES and CSV)
             if log_path.endswith('.csv'):
-                import pandas as pd
                 df = pd.read_csv(log_path)
                 
                 # Smart column detection (same as SIMOD config)
@@ -428,12 +344,10 @@ class SIMODDiscoverer:
                 # If we found these columns, extract metrics from CSV
                 if case_col and activity_col and time_col:
                     print(f"  Found columns: case={case_col}, activity={activity_col}, time={time_col}")
-                    metrics = self._extract_metrics_from_csv(df, log_path, case_col, activity_col, time_col)
+                    metrics = self._extract_metrics_from_csv(df, case_col, time_col)
                 else:
                     print(f"  Warning: Could not find required columns. Found: case={case_col}, activity={activity_col}, time={time_col}")
-                    metrics = self._generate_default_metrics()
             else:
-                # Load XES log
                 log = pm4py.read_xes(log_path)
                 metrics = self._extract_metrics_from_xes_log(log)
             
@@ -449,19 +363,11 @@ class SIMODDiscoverer:
             
         except Exception as e:
             print(f"Warning: Could not extract metrics from log: {e}")
-            print("Using default fallback metrics...")
-            return self._generate_default_metrics()
+            return
     
     def _extract_metrics_from_xes_log(self, log) -> Dict:
-        """Extract real metrics from XES event log using pm4py."""
         try:
-            import pandas as pd
-            from pm4py.statistics.traces.generic.log import case_statistics
-            from collections import Counter
-            
             metrics = {}
-            
-            # Handle DataFrame format (from rustxes)
             if isinstance(log, pd.DataFrame):
                 # Cycle time: time difference per case
                 if 'case:concept:name' in log.columns and 'time:timestamp' in log.columns:
@@ -483,20 +389,12 @@ class SIMODDiscoverer:
                     metrics['avg_waiting_time'] = metrics['avg_cycle_time'] * 0.3
                 
                 # Resource utilization: from org:resource or Resource column
-                if 'org:resource' in log.columns:
-                    resources = log['org:resource'].unique()
-                    resource_counts = log['org:resource'].value_counts()
+                resource_col = next((c for c in ('org:resource', 'Resource') if c in log.columns), None)
+                if resource_col:
+                    resource_counts = log[resource_col].value_counts()
                     total = len(log)
                     metrics['resource_utilization'] = {
-                        str(res): round(min(count / total * 10, 0.95), 2) 
-                        for res, count in resource_counts.items() if pd.notna(res)
-                    }
-                elif 'Resource' in log.columns:
-                    resources = log['Resource'].unique()
-                    resource_counts = log['Resource'].value_counts()
-                    total = len(log)
-                    metrics['resource_utilization'] = {
-                        str(res): round(min(count / total * 10, 0.95), 2) 
+                        str(res): round(min(count / total * 10, 0.95), 2)
                         for res, count in resource_counts.items() if pd.notna(res)
                     }
                 else:
@@ -505,7 +403,7 @@ class SIMODDiscoverer:
             else:
                 # Handle event log object format (fallback)
                 try:
-                    cycle_times = case_statistics.get_all_case_durations(log)
+                    cycle_times = pm4py.statistics.traces.generic.log.case_statistics.get_all_case_durations(log)
                     if cycle_times:
                         metrics['avg_cycle_time'] = float(sum(cycle_times) / len(cycle_times))
                 except:
@@ -537,50 +435,33 @@ class SIMODDiscoverer:
                     metrics['resource_utilization'] = resources
                 else:
                     metrics['resource_utilization'] = {}
-            
-            metrics['total_cost'] = 8500  # Default estimate
-            
+
             return metrics
             
         except Exception as e:
             print(f"Error extracting from XES: {e}")
             return {}
     
-    def _extract_metrics_from_csv(self, df, log_path: str, case_col: str, activity_col: str, time_col: str) -> Dict:
-        """Extract real metrics from CSV log using provided column names."""
+    def _extract_metrics_from_csv(self, df, case_col: str, time_col: str) -> Dict:
         try:
-            import pandas as pd
-            from collections import Counter
-            
             metrics = {}
-            
-            # Cycle time: time difference per case
             if case_col in df.columns and time_col in df.columns:
-                df[time_col] = pd.to_datetime(df[time_col], errors='coerce')
-                
+                df[time_col] = pd.to_datetime(df[time_col], errors='coerce')                
                 try:
                     cycle_times = df.groupby(case_col)[time_col].apply(
-                        lambda x: (x.max() - x.min()).total_seconds()
-                    )
+                        lambda x: (x.max() - x.min()).total_seconds())
                     metrics['avg_cycle_time'] = float(cycle_times.mean())
                 except Exception as e:
                     print(f"    Warning: Could not calculate cycle time: {e}")
                     metrics['avg_cycle_time'] = 14400  # Default
-            
-            # Throughput: number of unique cases
             if case_col in df.columns:
                 metrics['avg_throughput'] = float(df[case_col].nunique())
-            
-            # Waiting time: estimate as 30% of cycle time
             if 'avg_cycle_time' in metrics:
                 metrics['avg_waiting_time'] = metrics['avg_cycle_time'] * 0.3
-            
-            # Resource utilization: from actual resource column if available
             resource_cols = [col for col in df.columns if 'resource' in col.lower()]
             if resource_cols:
                 resource_col = resource_cols[0]
                 resources_list = df[resource_col].dropna().tolist()
-                
                 if resources_list:
                     resource_counts = Counter(resources_list)
                     total_events = len(resources_list)
@@ -595,47 +476,7 @@ class SIMODDiscoverer:
             else:
                 print(f"    Warning: No resource column found. Available columns: {list(df.columns)[:10]}")
                 metrics['resource_utilization'] = {}
-            
-            metrics['total_cost'] = 8500  # Default estimate
-            
             return metrics
-            
         except Exception as e:
             print(f"    Error extracting from CSV: {e}")
             return {}
-    
-    def _generate_default_metrics_model(self) -> Tuple[Dict, Dict]:
-        """Generate default fallback model and metrics."""
-        print("Using default fallback metrics...")
-        
-        model = {
-            "process_name": "unknown",
-            "activities": {
-                "A": {"duration_mean": 3600, "duration_std": 600},
-                "B": {"duration_mean": 7200, "duration_std": 1200},
-            },
-            "resources": {
-                "Resource_1": {"count": 2, "cost_per_hour": 50},
-                "Resource_2": {"count": 3, "cost_per_hour": 40},
-            },
-        }
-        
-        metrics = {
-            "avg_cycle_time": 14400,
-            "avg_throughput": 20,
-            "avg_waiting_time": 5400,
-            "resource_utilization": {"Resource_1": 0.85, "Resource_2": 0.72},
-            "total_cost": 8500
-        }
-        
-        return model, metrics
-    
-    def _generate_default_metrics(self) -> Dict:
-        """Generate default fallback metrics (dict only)."""
-        return {
-            "avg_cycle_time": 14400,
-            "avg_throughput": 20,
-            "avg_waiting_time": 5400,
-            "resource_utilization": {"Resource_1": 0.85, "Resource_2": 0.72},
-            "total_cost": 8500
-        }

@@ -67,19 +67,7 @@ class ImprovementValidator:
                 "new": new_metrics["avg_waiting_time"],
                 "change_pct": wt_change
             }
-        
-        # Compare cost
-        if "total_cost" in baseline_metrics and "total_cost" in new_metrics:
-            cost_change = self._calculate_change(
-                baseline_metrics["total_cost"],
-                new_metrics["total_cost"]
-            )
-            improvements["cost"] = {
-                "baseline": baseline_metrics["total_cost"],
-                "new": new_metrics["total_cost"],
-                "change_pct": cost_change
-            }
-        
+
         # Determine if improvement
         is_improvement, summary = self._assess_improvement(
             improvements,
@@ -170,13 +158,6 @@ class ImprovementValidator:
             if wt_change > max_regression_pct:
                 regression_count += 1
                 guardrail_issues.append(f"waiting time increased by {wt_change:.1f}%")
-        
-        # Cost should decrease (but not required)
-        if "cost" in improvements:
-            cost_change = improvements["cost"]["change_pct"]
-            if cost_change < -threshold and not summary_parts:
-                improvement_count += 1
-                summary_parts.append(f"Cost reduced by {abs(cost_change):.1f}%")
 
         if hard_fail:
             is_improvement = False

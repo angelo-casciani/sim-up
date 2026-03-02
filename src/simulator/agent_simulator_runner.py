@@ -1,15 +1,15 @@
-"""AgentSimulator (ABS) wrapper for parallel execution with Prosimos (DES)."""
-
+import math
 import os
-import json
 import sys
 import logging
 from pathlib import Path
 from typing import Dict
 import pandas as pd
 from datetime import datetime
-import shutil
 import tempfile
+import warnings
+
+from simulator.metrics_extractor import MetricsExtractor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -17,23 +17,14 @@ logger = logging.getLogger(__name__)
 
 class AgentSimulatorRunner:
     """Runs AgentSimulator for agent-based simulation perspective (Organizational/Social View)."""
-    
-    def __init__(self, agent_simulator_path: str = None):
-        """
-        Initialize AgentSimulator runner.
-        
-        Args:
-            agent_simulator_path: Path to AgentSimulator repo (if None, tries to discover)
-        """
-        self.agent_simulator_path = agent_simulator_path or self._discover_agent_simulator()
+
+    def __init__(self):
+        self.agent_simulator_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "AgentSimulator"))
         self.available = False
         self.agent_simulator_module = None
-        
-        if self.agent_simulator_path and os.path.exists(self.agent_simulator_path):
-            # Add to sys.path to import source module
+        if os.path.exists(self.agent_simulator_path):
             if self.agent_simulator_path not in sys.path:
                 sys.path.insert(0, self.agent_simulator_path)
-            
             try:
                 from source.agent_simulator import AgentSimulator
                 self.agent_simulator_module = AgentSimulator
@@ -45,35 +36,6 @@ class AgentSimulatorRunner:
         else:
             logger.warning(f"AgentSimulator not found at {self.agent_simulator_path}. ABS simulations will be skipped.")
     
-    def _discover_agent_simulator(self) -> str:
-        """Try to find AgentSimulator installation."""
-        current_file = os.path.abspath(__file__)
-        src_dir = os.path.dirname(os.path.dirname(current_file))
-        repo_root = os.path.dirname(src_dir)
-        env_path = os.getenv("AGENT_SIMULATOR_PATH")
-
-        # Check preferred local and common locations
-        candidates = [
-            env_path,
-            os.path.join(src_dir, "AgentSimulator"),
-            os.path.join(repo_root, "AgentSimulator"),
-            "/home/angelo/projects/AgentSimulator",
-            "/opt/AgentSimulator",
-            os.path.expanduser("~/AgentSimulator"),
-            "../AgentSimulator",
-            "../../AgentSimulator"
-        ]
-        
-        for path in candidates:
-            if not path:
-                continue
-            full_path = os.path.abspath(path)
-            if os.path.exists(full_path):
-                source_path = os.path.join(full_path, "source")
-                if os.path.exists(source_path):
-                    return full_path
-        
-        return None
     def simulate(
         self,
         log_path: str,
@@ -114,9 +76,8 @@ class AgentSimulatorRunner:
         output_dir = os.path.join(os.path.dirname(log_path), f"agent_simulated_{log_basename}_{timestamp}")
         os.makedirs(output_dir, exist_ok=True)
         temp_modified_log = None
-        
+
         try:
-            import warnings
             warnings.filterwarnings("ignore")
             
             # Detect column names from the log
@@ -126,7 +87,7 @@ class AgentSimulatorRunner:
                 logger.error(f"Could not read log file: {log_path}")
                 raise RuntimeError(f"ABS input log is empty or unreadable: {log_path}")
             
-            columns = set(df.columns.tolist()) if not df.empty else set()
+            columns = df.columns.tolist() if not df.empty else []
             
             def find_column(patterns, fallback=None):
                 """Find column matching pattern."""
@@ -193,6 +154,30 @@ class AgentSimulatorRunner:
             
             logger.info(f"Using columns: case={case_col}, activity={activity_col}, resource={resource_col}, end_ts={end_ts_col}")
             
+            # Compute time-horizon-based case count so ABS generates a volume
+            # comparable to DES for the same observation window.
+            n_cases_override = None
+            if time_horizon_seconds and time_horizon_seconds > 0 and not df.empty and case_col in df.columns:
+                try:
+                    ts_col_for_rate = start_ts_col if start_ts_col in df.columns else end_ts_col
+                    if ts_col_for_rate in df.columns:
+                        case_starts = pd.to_datetime(
+                            df.groupby(case_col)[ts_col_for_rate].min(),
+                            errors='coerce', utc=True
+                        ).dropna()
+                        if len(case_starts) >= 2:
+                            log_span_seconds = (case_starts.max() - case_starts.min()).total_seconds()
+                            if log_span_seconds > 0:
+                                arrival_rate = len(case_starts) / log_span_seconds
+                                n_cases_override = max(10, int(math.ceil(arrival_rate * time_horizon_seconds)))
+                                logger.info(
+                                    f"Time-horizon case count override: {n_cases_override} cases "
+                                    f"(rate={arrival_rate:.5f} cases/s, horizon={time_horizon_seconds:.0f}s, "
+                                    f"log_cases={len(case_starts)}, log_span={log_span_seconds:.0f}s)"
+                                )
+                except Exception as e:
+                    logger.warning(f"Could not compute time-horizon case count: {e}")
+
             # Prepare parameters for AgentSimulator
             column_names = {
                 case_col: 'case_id',
@@ -201,7 +186,7 @@ class AgentSimulatorRunner:
                 end_ts_col: 'end_timestamp',
                 start_ts_col: 'start_timestamp'
             }
-            
+
             params = {
                 'discover_extr_delays': delay_discovery,
                 'discover_parallel_work': False,
@@ -212,7 +197,8 @@ class AgentSimulatorRunner:
                 'train_and_test': False,
                 'column_names': column_names,
                 'num_simulations': num_simulations,
-                'output_dir': output_dir
+                'output_dir': output_dir,
+                'num_cases_to_simulate': n_cases_override,
             }
 
             # Prepare AgentSimulator default output tree to avoid mkdir failures in its internals
@@ -259,11 +245,14 @@ class AgentSimulatorRunner:
                 logger.error(f"   Check AgentSimulator logs above for errors")
                 raise RuntimeError("AgentSimulator produced no output CSVs.")
             
-            # Extract metrics from simulated logs
+            # Extract metrics from simulated logs.
+            # Do NOT pass time_horizon_seconds here — ABS already generated the correct number
+            # of cases based on the time horizon (via n_cases_override); post-hoc filtering
+            # would double-filter and discard too many cases.
             metrics = self._extract_metrics_from_simulated_logs(
                 actual_output_dir,
                 log_path,
-                time_horizon_seconds=time_horizon_seconds
+                time_horizon_seconds=None
             )
             logger.info(f"Extracted ABS metrics: {metrics}")
             
@@ -316,9 +305,13 @@ class AgentSimulatorRunner:
                     end_ts_col
                 )
             elif param_type == 'resources':
-                df = self._apply_resource_modifications(df, specific_changes, resource_col)
+                df = self._apply_resource_modifications(df, specific_changes, case_col, resource_col)
             elif param_type == 'role_redesign':
-                df = self._apply_role_redesign_modifications(df, specific_changes, activity_col, resource_col)
+                df = self._apply_role_redesign_modifications(df, specific_changes, case_col, activity_col, resource_col)
+            elif param_type == 'calendar':
+                df = self._apply_calendar_modifications(df, specific_changes, start_ts_col, end_ts_col)
+
+            df = self._sync_resource_columns(df, resource_col)
 
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv', prefix='abs_modified_')
             temp_file.close()
@@ -344,7 +337,7 @@ class AgentSimulatorRunner:
         if df.empty:
             raise RuntimeError(f"ABS log is empty or unreadable: {log_path}")
 
-        columns = set(df.columns.tolist())
+        columns = df.columns.tolist()
 
         def find_column(patterns, fallback=None):
             for col in columns:
@@ -374,7 +367,12 @@ class AgentSimulatorRunner:
         )
 
         if not modified_log:
-            raise RuntimeError("ABS log modification failed; no output log was created.")
+            param_type = modifications.get('parameter_type')
+            logger.warning(
+                f"ABS log modification returned no output for param_type={param_type!r}; "
+                "using original log unchanged."
+            )
+            return log_path
 
         return modified_log
 
@@ -438,8 +436,19 @@ class AgentSimulatorRunner:
 
         return df
 
-    def _apply_resource_modifications(self, df: pd.DataFrame, changes: list, resource_col: str) -> pd.DataFrame:
-        """Apply resource changes by splitting workload onto synthetic resources."""
+    def _apply_resource_modifications(
+        self,
+        df: pd.DataFrame,
+        changes: list,
+        case_col: str,
+        resource_col: str
+    ) -> pd.DataFrame:
+        """Apply resource changes by splitting workload onto synthetic resources at case level.
+
+        Cases where the target resource appears are distributed evenly across the original
+        resource and N synthetic copies.  All events in a given case stay with one resource,
+        preserving within-case routing coherence for AgentSimulator.
+        """
         if resource_col not in df.columns:
             return df
 
@@ -453,17 +462,36 @@ class AgentSimulatorRunner:
             if not any(k in change_type for k in ['add', 'increase']):
                 continue
 
-            mask = df[resource_col].astype(str).str.contains(target, na=False) | (df[resource_col].astype(str) == target)
-            idx = df.index[mask]
-            if len(idx) == 0:
+            if case_col not in df.columns:
+                # Fallback: original row-level split when case column is unavailable
+                mask = df[resource_col].astype(str).str.contains(target, na=False) | (df[resource_col].astype(str) == target)
+                idx = df.index[mask]
+                if len(idx) == 0:
+                    continue
+                for i in range(value):
+                    synthetic_id = f"{target}_abs_extra_{i+1}"
+                    chosen_idx = idx[i::max(1, value + 1)]
+                    if len(chosen_idx) > 0:
+                        df.loc[chosen_idx, resource_col] = synthetic_id
                 continue
 
-            # Deterministically split a portion to synthetic additional resources
+            # Case-level split: find cases that involve this resource and distribute
+            # them evenly across (1 original + value synthetic) pools.
+            mask = df[resource_col].astype(str).str.contains(target, na=False) | (df[resource_col].astype(str) == target)
+            cases_with_target = df.loc[mask, case_col].unique()
+            if len(cases_with_target) == 0:
+                continue
+
+            total_pools = value + 1  # original + N synthetics
             for i in range(value):
                 synthetic_id = f"{target}_abs_extra_{i+1}"
-                chosen_idx = idx[i::max(1, value + 1)]
-                if len(chosen_idx) > 0:
-                    df.loc[chosen_idx, resource_col] = synthetic_id
+                # Assign every (i+1)-th case (0-indexed) to this synthetic resource
+                assigned_cases = cases_with_target[i + 1::total_pools]
+                if len(assigned_cases) == 0:
+                    continue
+                case_mask = df[case_col].isin(assigned_cases)
+                resource_mask = df[resource_col].astype(str).str.contains(target, na=False) | (df[resource_col].astype(str) == target)
+                df.loc[case_mask & resource_mask, resource_col] = synthetic_id
 
         return df
 
@@ -471,48 +499,118 @@ class AgentSimulatorRunner:
         self,
         df: pd.DataFrame,
         changes: list,
+        case_col: str,
         activity_col: str,
         resource_col: str
     ) -> pd.DataFrame:
-        """Apply role redesign by creating specialist resources and shifting selected workloads."""
+        """Apply role redesign by shifting workload between resources at case level.
+
+        For shift_responsibility: all events in a selected subset of cases where the
+        source resource appears are reassigned to the destination resource.  Operating at
+        case granularity preserves within-case routing sequences so AgentSimulator can
+        learn coherent agent behaviours from the modified log.
+
+        For create_specialist: selected cases are handled by a synthetic specialist agent.
+        """
         if resource_col not in df.columns:
             return df
 
         df = df.copy()
-        resources = df[resource_col].astype(str)
-        utilization = resources.value_counts(normalize=True)
-        underutilized = [r for r, u in utilization.items() if u < 0.05]
 
         for change in changes:
-            target = self._normalize_target_label(change.get('target', ''))
+            source_target, destination_target = self._parse_role_redesign_target(change.get('target', ''))
+            target = source_target
             change_type = str(change.get('change', ''))
-            raw_value = float(change.get('value', 0) or 0)
+            # Read value from the correct key; use it to derive shift fraction
+            shift_fraction = self._resolve_shift_fraction(change.get('value'))
+
+            resource_mask = (
+                df[resource_col].astype(str).str.contains(target, na=False) |
+                (df[resource_col].astype(str) == target)
+            )
 
             if 'create_specialist' in change_type:
-                mask = resources.str.contains(target, na=False) | (resources == target)
-                idx = df.index[mask]
-                if len(idx) == 0:
-                    continue
-                specialist_id = f"{target}_specialist_abs"
-                chosen_idx = idx[::2]
-                if len(chosen_idx) > 0:
-                    df.loc[chosen_idx, resource_col] = specialist_id
+                if case_col in df.columns:
+                    cases_with_source = df.loc[resource_mask, case_col].unique()
+                    shift_count = max(1, int(round(len(cases_with_source) * shift_fraction)))
+                    chosen_cases = cases_with_source[::max(1, len(cases_with_source) // shift_count)][:shift_count]
+                    specialist_id = f"{target}_specialist_abs"
+                    case_mask = df[case_col].isin(chosen_cases)
+                    df.loc[case_mask & resource_mask, resource_col] = specialist_id
+                else:
+                    # Fallback: row-level every-other-event
+                    idx = df.index[resource_mask]
+                    if len(idx) > 0:
+                        specialist_id = f"{target}_specialist_abs"
+                        df.loc[idx[::2], resource_col] = specialist_id
 
             elif 'shift_responsibility' in change_type:
-                shift_fraction = raw_value if 0 < raw_value <= 1 else 0.2
-                source_mask = resources.str.contains(target, na=False) | (resources == target)
-                source_idx = df.index[source_mask]
-                if len(source_idx) == 0:
-                    continue
+                destination = destination_target if destination_target else f"{target}_shifted_abs"
 
-                destination = underutilized[0] if underutilized else f"{target}_shifted_abs"
-                shift_count = max(1, int(len(source_idx) * shift_fraction))
-                chosen_idx = source_idx[:shift_count]
-                df.loc[chosen_idx, resource_col] = destination
+                if case_col in df.columns:
+                    cases_with_source = df.loc[resource_mask, case_col].unique()
+                    if len(cases_with_source) == 0:
+                        continue
+                    shift_count = max(1, int(round(len(cases_with_source) * shift_fraction)))
+                    shift_count = min(shift_count, len(cases_with_source))
+                    # Take the first shift_count cases deterministically
+                    chosen_cases = cases_with_source[:shift_count]
+                    case_mask = df[case_col].isin(chosen_cases)
+                    df.loc[case_mask & resource_mask, resource_col] = destination
+                else:
+                    # Fallback: row-level shift
+                    source_idx = df.index[resource_mask]
+                    source_count = len(source_idx)
+                    if source_count == 0:
+                        continue
+                    row_shift_count = max(1, int(round(source_count * shift_fraction)))
+                    row_shift_count = min(row_shift_count, source_count)
+                    df.loc[source_idx[:row_shift_count], resource_col] = destination
 
-        # Optional activity scoping if available in change payload and column exists
-        if activity_col in df.columns:
+        return df
+
+    def _apply_calendar_modifications(
+        self,
+        df: pd.DataFrame,
+        changes: list,
+        start_ts_col: str,
+        end_ts_col: str
+    ) -> pd.DataFrame:
+        """Apply calendar changes (increase_hours) by compressing activity durations across all events.
+
+        Simulates extended working hours by scaling down durations proportionally:
+        more available hours per day means work can be distributed more densely,
+        equivalent to a uniform throughput improvement.
+        Base working day is assumed to be 8 hours; increasing by N hours yields
+        a compression factor of 8 / (8 + N).
+        """
+        if start_ts_col not in df.columns or end_ts_col not in df.columns:
             return df
+
+        df = df.copy()
+        df[start_ts_col] = pd.to_datetime(df[start_ts_col], errors='coerce')
+        df[end_ts_col] = pd.to_datetime(df[end_ts_col], errors='coerce')
+
+        for change in changes:
+            change_type = str(change.get('change', ''))
+            if 'increase_hours' not in change_type:
+                continue
+            try:
+                extra_hours = float(change.get('value', 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if extra_hours <= 0:
+                continue
+
+            base_hours = 8.0
+            factor = base_hours / (base_hours + extra_hours)
+            factor = max(0.5, min(1.0, factor))  # clamp to sensible range
+
+            duration = (df[end_ts_col] - df[start_ts_col]).dt.total_seconds()
+            duration = duration.fillna(0).clip(lower=0)
+            new_duration_seconds = duration * factor
+            df[end_ts_col] = df[start_ts_col] + pd.to_timedelta(new_duration_seconds, unit='s')
+
         return df
 
     @staticmethod
@@ -531,6 +629,49 @@ class AgentSimulatorRunner:
             target_str = target_str[: -len("_profile")].strip()
 
         return target_str
+
+    def _parse_role_redesign_target(self, target) -> tuple:
+        """Parse role-redesign target into (source, destination) labels."""
+        raw = str(target or '').strip()
+        for separator in ["→", "->"]:
+            if separator in raw:
+                src, dst = raw.split(separator, 1)
+                return self._normalize_target_label(src), self._normalize_target_label(dst)
+        normalized = self._normalize_target_label(raw)
+        return normalized, ""
+
+    @staticmethod
+    def _resolve_shift_fraction(value) -> float:
+        """Resolve shift fraction from hypothesis value.
+
+        * Float in (0, 1): used directly as fraction.
+        * Integer >= 1: mapped to an increasing fraction scale
+          (1 → 0.3, 2 → 0.5, 3 → 0.7, >=4 → 0.9).
+        * None / zero / invalid: default 0.5.
+        """
+        try:
+            numeric = float(value)
+        except Exception:
+            return 0.5
+        if 0 < numeric < 1:
+            return max(0.1, min(0.9, numeric))
+        if numeric >= 1:
+            # Map integer "units to shift" to a shift fraction
+            n = int(numeric)
+            return min(0.9, 0.1 + n * 0.2)
+        return 0.5
+
+    @staticmethod
+    def _sync_resource_columns(df: pd.DataFrame, source_col: str) -> pd.DataFrame:
+        """Keep common resource columns synchronized after ABS modifications."""
+        if source_col not in df.columns:
+            return df
+
+        aliases = ['resource', 'org:resource']
+        for alias in aliases:
+            if alias in df.columns and alias != source_col:
+                df[alias] = df[source_col]
+        return df
     
     def _extract_metrics_from_simulated_logs(
         self,
@@ -556,8 +697,7 @@ class AgentSimulatorRunner:
                 raise RuntimeError("No CSV outputs found in AgentSimulator output directory.")
             
             logger.info(f"Found {len(simulated_logs)} AgentSimulator logs in {output_dir}")
-            
-            from simulator.metrics_extractor import MetricsExtractor
+        
             extractor = MetricsExtractor()
 
             # Consolidate metrics across all logs
@@ -602,7 +742,6 @@ class AgentSimulatorRunner:
                 "avg_throughput": round(avg_throughput, 2),
                 "avg_waiting_time": round(avg_waiting_time, 2),
                 "simulated_case_count": int(round(avg_throughput)),
-                "total_cost": 2160,
                 "resource_utilization": resource_utilization,
                 "num_agents": len(resource_utilization),
                 "simulation_source": "AgentSimulator (ABS)"

@@ -2,13 +2,8 @@ import os
 from argparse import ArgumentParser
 from datetime import datetime
 from dotenv import load_dotenv
-import sys
-import subprocess
-
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 load_dotenv()
+import subprocess
 
 from improvement_validation_pipeline import ImprovementValidationAgent
 
@@ -24,6 +19,7 @@ def parse_arguments():
     parser.add_argument('--no_sudo', action='store_true', help='Do not use sudo for Docker commands (default: use sudo)')
     parser.add_argument('--des_runs', type=int, default=10, help='Number of DES (Prosimos) runs to average (default: 10)')
     parser.add_argument('--abs_runs', type=int, default=10, help='Number of ABS (AgentSimulator) runs to request (default: 10)')
+    parser.add_argument('--des_constrain_total_cases', action='store_true', help='Constrain DES by baseline-derived max case budget (default: off)')
     
     return parser.parse_args()
 
@@ -67,13 +63,13 @@ def check_simod_image(image_name: str) -> bool:
         return False
 
 
-def test_improvement_agent():
+def main():
     print("\n" + "=" * 80)
-    print("PROCESS IMPROVEMENT VALIDATION AGENT - TEST")
+    print("PROCESS IMPROVEMENT VALIDATION AGENT")
     print("=" * 80 + "\n")
-    
+
     args = parse_arguments()
-    
+
     print("Configuration:")
     print(f"  LLM Model: {args.model}")
     print(f"  Event Log: {args.log}")
@@ -84,8 +80,9 @@ def test_improvement_agent():
     print(f"  Use Sudo: {not args.no_sudo}")
     print(f"  DES Runs: {args.des_runs}")
     print(f"  ABS Runs: {args.abs_runs}")
+    print(f"  DES Case-Budget Constraint: {args.des_constrain_total_cases}")
     print()
-    
+
     print("Checking prerequisites...")
     docker_ok = check_docker_available()
     if docker_ok:
@@ -97,56 +94,55 @@ def test_improvement_agent():
     else:
         print("\nWarning: Docker not available. Will use mock baseline data.")
         print("For full functionality, install Docker.")
-    
+
     print()
-    
+
     script_dir = os.path.dirname(os.path.abspath(__file__))
     log_path = os.path.join(script_dir, "..", "logs", args.log)
-    
+
     if not os.path.exists(log_path):
         print(f"ERROR: Log file not found: {log_path}")
         return
-    
+
     print(f"Event log path: {log_path}")
     print()
-    
+
     print("Initializing predictive agent for improvement hypotheses...")
     agent = ImprovementValidationAgent(
         model_name=args.model,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
         max_iterations=args.max_iterations,
-        docker_image=args.docker_image,
         use_sudo=not args.no_sudo,
         des_runs=args.des_runs,
-        abs_runs=args.abs_runs
+        abs_runs=args.abs_runs,
+        des_constrain_total_cases=args.des_constrain_total_cases
     )
-    
+
     print("Running improvement pipeline...")
     try:
         report = agent.run_improvement_pipeline(log_path)
-        
+
         print("\n" + "=" * 80)
         print("FINAL IMPROVEMENT REPORT")
         print("=" * 80)
         print(report)
         print("\n" + "=" * 80 + "\n")
-        
+
         print("Saving report...")
         report_dir = os.path.join(script_dir, "..", "reports")
         os.makedirs(report_dir, exist_ok=True)
-        
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # Strip file extension from log name and replace path separators with underscores
         log_name_no_ext = os.path.splitext(args.log)[0].replace(os.sep, "_").replace("/", "_")
         report_filename = (f"improvement_report_{args.model}_{log_name_no_ext}_{args.temperature}_{args.max_tokens}_{timestamp}.txt")
         report_path = os.path.join(report_dir, report_filename)
-        
+
         with open(report_path, 'w') as f:
             f.write(report)
-        
+
         print(f"Report saved to: {report_path}\n")
-        
+
     except KeyboardInterrupt:
         print("\n\nInterrupted by user")
     except Exception as e:
@@ -155,67 +151,5 @@ def test_improvement_agent():
         traceback.print_exc()
 
 
-def simple_test():
-    """
-    Simple test with minimal configuration.
-    Useful for quick verification without command-line arguments.
-    """
-    print("\n" + "=" * 80)
-    print("SIMPLE IMPROVEMENT AGENT TEST")
-    print("=" * 80 + "\n")
-    
-    # Use default settings
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    log_path = os.path.join(script_dir, "..", "logs", "road_traffic.xes")
-    
-    if not os.path.exists(log_path):
-        print(f"ERROR: Log file not found: {log_path}")
-        return
-    
-    # Create agent with default settings
-    agent = ImprovementValidationAgent(
-        model_name="gpt-4.1",
-        temperature=0.0,
-        max_tokens=4096,
-        max_iterations=2  # Fewer iterations for quick test
-    )
-    
-    print(f"Running improvement pipeline on: {log_path}\n")
-    
-    try:
-        report = agent.run_improvement_pipeline(log_path)
-        
-        print("\n" + "=" * 80)
-        print("IMPROVEMENT REPORT")
-        print("=" * 80)
-        print(report)
-        print("\n" + "=" * 80 + "\n")
-        
-    except Exception as e:
-        print(f"\nERROR: {e}")
-        import traceback
-        traceback.print_exc()
-
-
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        test_improvement_agent()
-    else:     # Show help
-        print("\nUsage:")
-        print("  python src/test_improvement_agent.py [options]")
-        print("\nOptions:")
-        print("  --model MODEL          LLM model (default: gpt-4.1)")
-        print("  --log LOGFILE          Event log file (default: road_traffic.xes)")
-        print("  --temperature TEMP     Temperature (default: 0.0)")
-        print("  --max_tokens NUM       Max tokens (default: 4096)")
-        print("  --max_iterations NUM   Max iterations (default: 3)")
-        print("  --docker_image IMAGE   SIMOD Docker image (default: nokal/simod:latest)")
-        print("\nExample:")
-        print("  python src/test_improvement_agent.py --log sepsis.xes --max_iterations 5")
-        print("\nOr run simple test (press Enter to continue, Ctrl+C to cancel):")
-        
-        try:
-            input()
-            simple_test()
-        except KeyboardInterrupt:
-            print("\nCancelled")
+    main()

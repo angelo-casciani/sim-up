@@ -89,6 +89,19 @@ class HypothesisGenerator:
 
 Your task is to generate actionable, predictive hypotheses to improve process performance.
 
+Validation oracle by change type (CRITICAL — use this to set realistic expected_impact):
+- resource_allocation (parameter_type=resources): validated by DES (Prosimos) ONLY.
+  ABS has no queue model and cannot detect capacity improvements. Do NOT expect ABS to confirm.
+  Main KPIs to improve: waiting_time (primary), cycle_time, throughput.
+- calendar_adjustment (parameter_type=calendar): validated by DES ONLY.
+  Same reason: calendar controls resource availability windows handled only in DES.
+  Main KPIs to improve: waiting_time (primary), cycle_time, throughput.
+- role_redesign (parameter_type=role_redesign): validated by ABS (AgentSimulator) ONLY.
+  ABS explicitly models agent handover and routing behaviour. DES only checks throughput does not hard-fail.
+  Main KPIs to improve: cycle_time (primary). ABS waiting_time is always 0 by design.
+- activity_duration_optimization (parameter_type=activity_durations): validated by DES OR ABS (OR rule).
+  Both simulators compress durations. Main KPIs to improve: cycle_time, throughput.
+
     Proposal strategy:
     - Propose ONE change only (single specific change entry).
         - Use only this safe intervention palette:
@@ -98,14 +111,28 @@ Your task is to generate actionable, predictive hypotheses to improve process pe
             * resource_allocation (add or increase_count by 1-2)
         - Do NOT propose arrival_rate_adjustment or routing_adjustment.
         - Do NOT propose remove/decrease_count/increase_duration/decrease_hours.
-    - Avoid hypotheses that are likely to increase cycle time or waiting time, or decrease throughput.
-    - Prefer changes that improve at least two of: cycle time, throughput, waiting time.
+    - Avoid hypotheses that are likely to increase cycle time or decrease throughput.
+    - Prefer changes that improve at least two KPIs among: cycle_time, throughput, waiting_time.
+
+Canonical taxonomy mapping (must be respected exactly):
+- improvement_type=resource_allocation  <-> changes.parameter_type=resources
+- improvement_type=role_redesign       <-> changes.parameter_type=role_redesign
+- improvement_type=activity_duration_optimization <-> changes.parameter_type=activity_durations
+- improvement_type=calendar_adjustment <-> changes.parameter_type=calendar
 
 For each hypothesis, provide:
 - Clear description of the improvement
 - Type: resource_allocation, role_redesign, activity_duration_optimization, or calendar_adjustment
 - Specific changes to simulation parameters
 - Expected impact on metrics
+
+Strict output rules:
+- Return ONLY valid JSON object.
+- Include exactly one specific_changes entry.
+- Keep description/rationale concise and consistent with the exact executed target/change/value.
+- expected_impact must include: cycle_time, throughput, waiting_time.
+  (cost is not tracked; omit it)
+- throughput must be >= 0%.
 
 Return a JSON object with the following structure:
 {
@@ -125,7 +152,7 @@ Return a JSON object with the following structure:
   "expected_impact": {
     "cycle_time": "percentage_change",
     "throughput": "percentage_change",
-    "cost": "percentage_change"
+        "waiting_time": "percentage_change"
   }
 }"""
     
@@ -165,11 +192,23 @@ BASELINE METRICS:
         allowed_types = strategy_hints.get("allowed_parameter_types", [])
         disallowed_types = strategy_hints.get("disallowed_parameter_types", [])
         high_priority_targets = strategy_hints.get("high_priority_targets", [])
+        _oracle_map = {
+            "resources": "DES only",
+            "calendar": "DES only",
+            "activity_durations": "DES or ABS (OR rule)",
+            "role_redesign": "ABS primary (DES throughput safety)",
+        }
         prompt += "ITERATION STRATEGY CONSTRAINTS (must follow):\n"
         if allowed_types:
             prompt += f"- Allowed parameter_type values this iteration: {', '.join(allowed_types)}\n"
+            oracle_notes = [f"{t} -> {_oracle_map.get(t, 'OR')}" for t in allowed_types]
+            prompt += f"- Validation oracle for each allowed type: {'; '.join(oracle_notes)}\n"
         if disallowed_types:
             prompt += f"- Disallowed parameter_type values: {', '.join(disallowed_types)}\n"
+        recently_tried = strategy_hints.get("recently_tried", [])
+        if recently_tried:
+            prompt += f"- Do NOT propose these (type:target) combinations again — already attempted in a previous iteration: {', '.join(recently_tried)}\n"
+            prompt += "  Each hypothesis is tested independently against the same fixed baseline; repeating an already-tried combination yields no new information.\n"
         if high_priority_targets:
             prompt += f"- Prefer these targets first: {', '.join(high_priority_targets[:6])}\n"
         prompt += (
@@ -182,31 +221,31 @@ BASELINE METRICS:
             for attempt in previous_attempts[-3:]:
                 hypothesis = attempt.get("hypothesis", {})
                 outcome = attempt.get("improvement", {})
-                unified = attempt.get("unified_metrics", {})
                 des = attempt.get("des_metrics", {})
                 abs_metrics = attempt.get("abs_metrics", {})
                 prompt += f"- {hypothesis.get('description', 'Unknown')}\n"
                 prompt += f"  Changes: {json.dumps(hypothesis.get('changes', {}))}\n"
                 prompt += f"  Outcome: {outcome.get('summary', 'Unknown')}\n"
-                if unified:
-                    prompt += f"  Unified metrics: {json.dumps(unified)}\n"
+                prompt += f"  Decision oracle: {attempt.get('decision_rule', 'OR')}\n"
+                prompt += f"  DES validated: {attempt.get('des_validated', False)}\n"
+                prompt += f"  ABS validated: {attempt.get('abs_validated', False)}\n"
                 if des and abs_metrics:
                     prompt += f"  DES metrics: {json.dumps(des)}\n"
                     prompt += f"  ABS metrics: {json.dumps(abs_metrics)}\n"
-            prompt += "\nBuild incrementally on the most recent attempt if it was promising; otherwise change direction.\n"
+            prompt += "\nEach hypothesis is tested independently against the same fixed baseline. Choose the single best untried change.\n"
         else:
             prompt += "This is the first improvement attempt.\n"
         
         prompt += """
 Focus on:
 1. Resource bottlenecks (look for utilization > 0.8)
-2. High waiting times (> 40% of cycle time)
-3. Long cycle times (> 12000 seconds)
+2. High waiting times (> 40% of cycle time) — address with resources or calendar changes (DES-validated)
+3. Long cycle times (> 12000 seconds) — address with duration reduction or role_redesign (ABS-validated)
 
     Safety rules:
     - Use meaningful deltas (5-25% duration reduction, +1 to +2 resources, +1 to +2 hours calendar).
     - Avoid any change likely to worsen cycle time or waiting time.
-    - Prefer improvements that help at least two of: cycle time, throughput, waiting time.
+    - Prefer improvements that help at least two of: cycle_time, throughput, waiting_time.
     - Prefer role_redesign over pure resource addition when overloaded and underutilized roles coexist.
     - If prior attempts fail repeatedly, switch intervention type among allowed types only.
     - Do not use placeholders like "Activity_with_highest_waiting_time"; choose from the known targets.
@@ -226,7 +265,7 @@ Return ONLY the JSON object, no additional text."""
                 "parameter_type": "resources",
                 "specific_changes": [{"target": "Resource_1", "change": "add", "value": 1}]
             },
-            "expected_impact": {"cycle_time": "-8", "throughput": "6", "cost": "4"}
+            "expected_impact": {"cycle_time": "-8", "throughput": "6", "waiting_time": "-5"}
         }
         return hypothesis
     
@@ -244,8 +283,19 @@ Return ONLY the JSON object, no additional text."""
             return False
         if not isinstance(specific_changes, list) or len(specific_changes) != 1:
             return False
+        change_item = specific_changes[0] if specific_changes else {}
+        if not isinstance(change_item, dict):
+            return False
+        required_change_keys = {"target", "change", "value"}
+        if not required_change_keys.issubset(change_item.keys()):
+            return False
 
         expected = hypothesis.get("expected_impact", {})
+        if not isinstance(expected, dict):
+            return False
+        required_impact_keys = {"cycle_time", "throughput", "waiting_time"}
+        if not required_impact_keys.issubset(expected.keys()):
+            return False
         throughput = self._extract_pct(expected.get("throughput", "0"))
         if throughput < 0:
             return False
@@ -268,7 +318,7 @@ Return ONLY the JSON object, no additional text."""
                 "parameter_type": primary_type,
                 "specific_changes": [{"target": target, "change": change, "value": value}]
             },
-            "expected_impact": {"cycle_time": "-8%", "throughput": "+3%", "cost": "+2%"}
+            "expected_impact": {"cycle_time": "-8%", "throughput": "+3%", "waiting_time": "-5%"}
         }
 
     def _build_strategy_hints(self, baseline_metrics: Dict, previous_attempts: List[Dict], target_hints: Dict) -> Dict:
@@ -323,6 +373,21 @@ Return ONLY the JSON object, no additional text."""
         if not high_priority_targets:
             high_priority_targets = overloaded + underutilized
 
+        # Track recently tried (parameter_type, target) tuples so the LLM doesn't repeat them.
+        # Include BOTH failed AND validated+applied attempts:
+        # - Failed: obviously shouldn't retry the same thing
+        # - Validated+applied: already embedded in working log; re-applying doubles the effect
+        recently_tried = []
+        for attempt in (previous_attempts or [])[-3:]:
+            h = attempt.get("hypothesis", {})
+            pt = h.get("changes", {}).get("parameter_type", "")
+            for sc in (h.get("changes", {}).get("specific_changes") or []):
+                t = sc.get("target", "")
+                if pt and t:
+                    entry = f"{pt}:{t}"
+                    if entry not in recently_tried:
+                        recently_tried.append(entry)
+
         return {
             "allowed_parameter_types": list(dict.fromkeys(allowed)),
             "disallowed_parameter_types": ["arrival_rate", "gateway_probabilities"],
@@ -331,7 +396,8 @@ Return ONLY the JSON object, no additional text."""
             "underutilized_targets": underutilized,
             "mappable_overloaded_targets": mappable_overloaded,
             "mappable_underutilized_targets": mappable_underutilized,
-            "waiting_ratio": waiting_ratio
+            "waiting_ratio": waiting_ratio,
+            "recently_tried": recently_tried,
         }
 
     def _sanitize_hypothesis(self, hypothesis: Dict, strategy_hints: Dict, target_hints: Dict) -> Dict:
@@ -367,7 +433,7 @@ Return ONLY the JSON object, no additional text."""
         if throughput < 0:
             expected["throughput"] = "+2%"
         expected.setdefault("cycle_time", "-5%")
-        expected.setdefault("cost", "+2%")
+        expected.setdefault("waiting_time", "-5%")
 
         description, rationale = self._build_consistent_narrative(
             parameter_type,
@@ -468,29 +534,46 @@ Return ONLY the JSON object, no additional text."""
             return None
 
         if parameter_type == "role_redesign":
-            from_role = None
-            to_role = None
-            for role in overloaded_targets:
-                resolved = resolve_resource_name(role)
-                if resolved and from_role is None:
-                    from_role = resolved
-            for role in underutilized_targets:
-                resolved = resolve_resource_name(role)
-                if resolved and resolved != from_role:
-                    to_role = resolved
-                    break
+            recently_tried = strategy_hints.get("recently_tried", [])
+
+            def _rd_entry(src, dst):
+                return f"role_redesign:{src} → {dst}"
+
+            # Build the candidate from/to lists from overloaded and underutilized mappable resources.
+            # Fall back to full resource list if mappable lists are empty.
+            from_candidates = [resolve_resource_name(r) for r in overloaded_targets]
+            from_candidates = [r for r in from_candidates if r]
+            to_candidates = [resolve_resource_name(r) for r in underutilized_targets]
+            to_candidates = [r for r in to_candidates if r]
+
+            # Prefer the LLM's proposed target if it parses correctly and hasn't been tried.
+            from_role = to_role = None
+            if preferred_target and "→" in str(preferred_target):
+                pref_src, pref_dst = [p.strip() for p in str(preferred_target).split("→", 1)]
+                pref_src_r = resolve_resource_name(pref_src)
+                pref_dst_r = resolve_resource_name(pref_dst)
+                if (pref_src_r and pref_dst_r and pref_src_r != pref_dst_r
+                        and _rd_entry(pref_src_r, pref_dst_r) not in recently_tried):
+                    from_role, to_role = pref_src_r, pref_dst_r
+
+            # Otherwise find the first overloaded→underutilized pair not in recently_tried.
+            if not (from_role and to_role):
+                for src in from_candidates:
+                    for dst in to_candidates:
+                        if src != dst and _rd_entry(src, dst) not in recently_tried:
+                            from_role, to_role = src, dst
+                            break
+                    if from_role and to_role:
+                        break
+
+            # Hard fallbacks: just pick first valid pair regardless of recently_tried.
             if not from_role:
-                from_role = resolve_resource_name("NOT_SET")
-            if not from_role and resources:
-                from_role = resources[0]
-            if not to_role and len(resources) > 1:
-                # Prefer a non-artificial target for receiving work
-                non_artificial = [r for r in resources if not str(r).startswith("artificial_") and r != from_role]
-                to_role = non_artificial[-1] if non_artificial else resources[-1]
-            if not from_role:
-                from_role = "NOT_SET"
+                from_role = from_candidates[0] if from_candidates else (resources[0] if resources else "NOT_SET")
             if not to_role:
-                to_role = from_role
+                non_artificial = [r for r in (to_candidates or resources)
+                                  if not str(r).startswith("artificial_") and r != from_role]
+                to_role = non_artificial[0] if non_artificial else (resources[-1] if resources else from_role)
+
             target = f"{from_role} → {to_role}"
             change = preferred_change if preferred_change in {"shift_responsibility", "create_specialist_role"} else "shift_responsibility"
             value = 1

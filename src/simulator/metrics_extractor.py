@@ -125,15 +125,12 @@ class MetricsExtractor:
                 resource_utilization = {'Resource_1': 0.9, 'Resource_2': 0.9}
             
             metrics['resource_utilization'] = resource_utilization
-            metrics['total_cost'] = 2160
-            
+
             print(f"  ✓ Extracted metrics: cycle_time={metrics.get('avg_cycle_time', 0):.0f}s, throughput={metrics.get('avg_throughput', 0):.0f}, resources={len(resource_utilization)}")
             return metrics
             
         except Exception as e:
             print(f"Error extracting metrics from CSV: {e}")
-            import traceback
-            traceback.print_exc()
             return {}
     
     def _basic_extraction(self, df: pd.DataFrame) -> Dict:
@@ -143,7 +140,6 @@ class MetricsExtractor:
             'avg_throughput': 345.6,
             'avg_waiting_time': 3150.0,
             'resource_utilization': {},
-            'total_cost': 2160
         }
         
         try:
