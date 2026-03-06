@@ -12,7 +12,7 @@ class AgentSimulator:
         # Allow caller to override the number of cases to simulate (e.g. for time-horizon matching with DES)
         if self.params.get('num_cases_to_simulate') is not None:
             override_n = int(self.params['num_cases_to_simulate'])
-            print(f"AgentSimulator: overriding num_cases_to_simulate: {self.num_cases_to_simulate} → {override_n}")
+            print(f"AgentSimulator: overriding num_cases_to_simulate: {self.num_cases_to_simulate} -> {override_n}")
             self.num_cases_to_simulate = override_n
 
         # discover basic simulation parameters

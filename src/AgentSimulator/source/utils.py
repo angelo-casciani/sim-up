@@ -4,9 +4,8 @@ import scipy.stats as st
 
 def store_preprocessed_data(df_train, df_test, df_val, data_dir):
     print(data_dir)
-    os.system(f"mkdir {data_dir}")
+    # Use os.makedirs instead of os.system to handle paths with spaces
     if not os.path.exists(data_dir):
-    # If it doesn't exist, create the directory
         os.makedirs(data_dir)
 
     path_to_train_file = os.path.join(data_dir,"train_preprocessed.csv")

@@ -152,7 +152,7 @@ Format with markdown for readability."""
                     new_val = data['new']
                     change_pct = data['change_pct']
                     improvements_text += (
-                        f"     - {metric}: {baseline_val:.2f} → {new_val:.2f} ({change_pct:+.1f}%)\n"
+                        f"     - {metric}: {baseline_val:.2f} -> {new_val:.2f} ({change_pct:+.1f}%)\n"
                     )
                 improvements_text += "\n"
         else:

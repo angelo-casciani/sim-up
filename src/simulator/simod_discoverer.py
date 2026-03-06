@@ -8,6 +8,8 @@ import pm4py
 import pandas as pd
 from collections import Counter
 
+from utils.column_utils import find_column
+
 
 class SIMODDiscoverer:
     def __init__(self, use_sudo: bool = True):
@@ -63,7 +65,7 @@ class SIMODDiscoverer:
         """Convert XES event log to CSV if needed. Returns existing CSV or converted path."""
         try:
             if log_path.endswith('.csv'):
-                print(f"✓ Log is already in CSV format: {log_path}")
+                print(f"[OK] Log is already in CSV format: {log_path}")
                 return log_path
             
             print(f"Converting XES to CSV for SIMOD compatibility...")
@@ -85,7 +87,7 @@ class SIMODDiscoverer:
             
             csv_path = log_path.replace('.xes', '.csv')
             df.to_csv(csv_path, index=False)
-            print(f"✓ Converted to CSV: {csv_path}")
+            print(f"[OK] Converted to CSV: {csv_path}")
             print(f"  Rows: {len(df)}, Columns: {list(df.columns)[:5]}...")
             
             return csv_path
@@ -103,7 +105,7 @@ class SIMODDiscoverer:
             output_dir: Output directory path in Docker
             work_dir: Working directory on host
         """
-        
+
         # Read columns from the actual CSV file on disk
         try:
             df = pd.read_csv(actual_csv_path, nrows=1)
@@ -111,39 +113,24 @@ class SIMODDiscoverer:
         except Exception as e:
             print(f"Warning: Could not read CSV {actual_csv_path}, using defaults: {e}")
             columns = set()
-        
-        # Column mapping with priority-based detection
-        def find_column(patterns, fallback='case_id'):
-            """Find column matching any pattern (case-insensitive), with exact match priority."""
-            # First try exact matches (case-insensitive)
-            for col in columns:
-                if col.lower() in [p.lower() for p in patterns]:
-                    return col
-            # Then try substring matches
-            for col in columns:
-                col_lower = col.lower()
-                for pattern in patterns:
-                    if pattern.lower() in col_lower:
-                        return col
-            return fallback
-        
+
         # SIMOD expects specific column names in log_ids
         # We detect actual columns and map them
-        case_col = find_column(['case_id', 'case'], 'case_id')
-        
+        case_col = find_column(columns, ['case_id', 'case'], 'case_id')
+
         # Activity: try concept:name first (XES standard), then activity_name, then Activity
-        activity_col = find_column(['concept:name', 'activity_name', 'activity'], 'activity_name')
-        
+        activity_col = find_column(columns, ['concept:name', 'activity_name', 'activity'], 'activity_name')
+
         # Resource: try org:resource first, then resource
-        resource_col = find_column(['org:resource', 'resourceid', 'resource'], 'resource')
-        
+        resource_col = find_column(columns, ['org:resource', 'resourceid', 'resource'], 'resource')
+
         # Start time - optional, many logs don't have it
-        start_col = find_column(['start_timestamp', 'start_time', 'start'], None)
-        
+        start_col = find_column(columns, ['start_timestamp', 'start_time', 'start'], None)
+
         # End time - critical, always needed
-        end_col = find_column(['end_timestamp', 'end_time', 'end'], 'end_timestamp')
-        
-        print(f"✓ Detected SIMOD columns from {os.path.basename(actual_csv_path)}:")
+        end_col = find_column(columns, ['end_timestamp', 'end_time', 'end'], 'end_timestamp')
+
+        print(f"[OK] Detected SIMOD columns from {os.path.basename(actual_csv_path)}:")
         print(f"  case_id={case_col}, activity={activity_col}, resource={resource_col}")
         if start_col:
             print(f"  start_time={start_col}")
@@ -196,7 +183,7 @@ class SIMODDiscoverer:
         with open(config_path, 'w') as f:
             yaml.dump(config, f, default_flow_style=False)
         
-        print(f"✓ Created SIMOD config: {config_path}")
+        print(f"[OK] Created SIMOD config: {config_path}")
         return config_path
     def _run_simod_discovery(self, work_dir: str, output_dir: str):
         """Run SIMOD discovery via Docker."""
@@ -233,7 +220,7 @@ class SIMODDiscoverer:
             print(f"SIMOD error (exit code {result.returncode}): {result.stderr}")
             raise RuntimeError(f"SIMOD discovery failed: {result.stderr}")
         
-        print("✓ SIMOD discovery completed")
+        print("[OK] SIMOD discovery completed")
     
     def _parse_simod_output(self, output_dir: str) -> Dict:
         """Parse SIMOD output files."""
@@ -257,25 +244,25 @@ class SIMODDiscoverer:
             # SIMOD outputs files in a best_result/ subdirectory
             best_result_dir = os.path.join(output_dir, "best_result")
             if not os.path.exists(best_result_dir):
-                print(f"✗ ERROR: No best_result/ subdirectory found!")
+                print(f"[X] ERROR: No best_result/ subdirectory found!")
                 return None
             
-            print(f"✓ Found best_result/ subdirectory")
+            print(f"[OK] Found best_result/ subdirectory")
             
             # Look for BPMN file
             bpmn_files = [f for f in os.listdir(best_result_dir) if f.endswith('.bpmn')]
             if not bpmn_files:
-                print(f"✗ ERROR: No BPMN file found in best_result/")
+                print(f"[X] ERROR: No BPMN file found in best_result/")
                 return None
             
             bpmn_path = os.path.join(best_result_dir, bpmn_files[0])
             bpmn_basename = os.path.splitext(bpmn_files[0])[0]  # e.g., "sepsis"
-            print(f"✓ Found BPMN model: {bpmn_files[0]}")
+            print(f"[OK] Found BPMN model: {bpmn_files[0]}")
             
             # Look for Prosimos JSON parameters - prefer one with same base name as BPMN
             json_files = [f for f in os.listdir(best_result_dir) if f.endswith('.json')]
             if not json_files:
-                print(f"✗ ERROR: No JSON parameter file found in best_result/")
+                print(f"[X] ERROR: No JSON parameter file found in best_result/")
                 return None
             
             # Prefer JSON with same base name as BPMN (e.g., sepsis.json for sepsis.bpmn)
@@ -292,14 +279,14 @@ class SIMODDiscoverer:
                 prosimos_file = next((f for f in json_files if f not in metadata_files), json_files[0])
             
             prosimos_path = os.path.join(best_result_dir, prosimos_file)
-            print(f"✓ Found Prosimos parameters: {prosimos_file}")
+            print(f"[OK] Found Prosimos parameters: {prosimos_file}")
             
             with open(prosimos_path, 'r') as f:
                 prosimos_data = json.load(f)
             
             # Validate that prosimos_data has expected structure
             if not isinstance(prosimos_data, dict):
-                print(f"✗ WARNING: Prosimos parameters not a dict, got {type(prosimos_data)}")
+                print(f"[X] WARNING: Prosimos parameters not a dict, got {type(prosimos_data)}")
                 return None
             
             return {
@@ -317,30 +304,18 @@ class SIMODDiscoverer:
         """Extract real baseline metrics from the event log using pm4py with smart column detection."""
         try:
             print("Extracting baseline metrics from event log...")
-            
+
             # Read log (handle both XES and CSV)
             if log_path.endswith('.csv'):
                 df = pd.read_csv(log_path)
-                
+
                 # Smart column detection (same as SIMOD config)
                 columns = set(df.columns.tolist())
-                
-                def find_column(patterns, fallback=None):
-                    """Find column matching any pattern (exact match first, then substring)."""
-                    for col in columns:
-                        if col.lower() in [p.lower() for p in patterns]:
-                            return col
-                    for col in columns:
-                        col_lower = col.lower()
-                        for pattern in patterns:
-                            if pattern.lower() in col_lower:
-                                return col
-                    return fallback
-                
-                case_col = find_column(['case_id', 'case'], None)
-                activity_col = find_column(['concept:name', 'activity_name', 'activity'], None)
-                time_col = find_column(['end_timestamp', 'end_time', 'end', 'time:timestamp'], None)
-                
+
+                case_col = find_column(columns, ['case_id', 'case'], None)
+                activity_col = find_column(columns, ['concept:name', 'activity_name', 'activity'], None)
+                time_col = find_column(columns, ['end_timestamp', 'end_time', 'end', 'time:timestamp'], None)
+
                 # If we found these columns, extract metrics from CSV
                 if case_col and activity_col and time_col:
                     print(f"  Found columns: case={case_col}, activity={activity_col}, time={time_col}")
@@ -350,8 +325,8 @@ class SIMODDiscoverer:
             else:
                 log = pm4py.read_xes(log_path)
                 metrics = self._extract_metrics_from_xes_log(log)
-            
-            print(f"✓ Extracted baseline metrics from log:")
+
+            print(f"[OK] Extracted baseline metrics from log:")
             avg_cycle = metrics.get('avg_cycle_time', 0)
             avg_through = metrics.get('avg_throughput', 0)
             avg_wait = metrics.get('avg_waiting_time', 0)
@@ -470,7 +445,7 @@ class SIMODDiscoverer:
                         utilization = min(count / total_events * 10, 0.95)
                         resources[str(res)] = round(utilization, 2)
                     metrics['resource_utilization'] = resources
-                    print(f"    ✓ Found {len(resources)} real resources from '{resource_col}' column")
+                    print(f"    [OK] Found {len(resources)} real resources from '{resource_col}' column")
                 else:
                     metrics['resource_utilization'] = {}
             else:

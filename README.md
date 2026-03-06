@@ -57,7 +57,6 @@ poetry run python src/main.py --log P2P/train_preprocessed.csv --max_iterations 
 --temperature TEMP
 --max_tokens NUM
 --max_iterations NUM
---docker_image IMAGE
 --no_sudo
 --des_runs NUM
 --abs_runs NUM

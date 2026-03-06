@@ -10,6 +10,12 @@ import tempfile
 import warnings
 
 from simulator.metrics_extractor import MetricsExtractor
+from utils.column_utils import (
+    find_column,
+    normalize_role_label,
+    parse_role_redesign_target,
+    resolve_shift_fraction,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -70,53 +76,42 @@ class AgentSimulatorRunner:
             logger.error("AgentSimulator not available. Cannot run ABS simulation.")
             raise RuntimeError("AgentSimulator not available; ABS simulation cannot run.")
         
-        # Use timestamp-based output dir to avoid conflicts between runs
+        # Use timestamp-based output dir in temp folder to avoid polluting logs directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:15]
         log_basename = os.path.splitext(os.path.basename(log_path))[0]
-        output_dir = os.path.join(os.path.dirname(log_path), f"agent_simulated_{log_basename}_{timestamp}")
+        import tempfile
+        output_dir = os.path.join(tempfile.gettempdir(), f"agent_simulated_{log_basename}_{timestamp}")
         os.makedirs(output_dir, exist_ok=True)
         temp_modified_log = None
 
         try:
             warnings.filterwarnings("ignore")
-            
+
             # Detect column names from the log
             df = pd.read_csv(log_path) if log_path.endswith('.csv') else pd.DataFrame()
-            
+
             if df.empty and log_path.endswith('.csv'):
                 logger.error(f"Could not read log file: {log_path}")
                 raise RuntimeError(f"ABS input log is empty or unreadable: {log_path}")
-            
+
             columns = df.columns.tolist() if not df.empty else []
-            
-            def find_column(patterns, fallback=None):
-                """Find column matching pattern."""
-                for col in columns:
-                    if col.lower() in [p.lower() for p in patterns]:
-                        return col
-                for col in columns:
-                    col_lower = col.lower()
-                    for pattern in patterns:
-                        if pattern.lower() in col_lower:
-                            return col
-                return fallback
-            
-            # Map column names
-            case_col = find_column(['case_id', 'case'], 'case_id')
-            activity_col = find_column(['activity_name', 'concept:name', 'activity'], 'activity_name')
-            resource_col = find_column(['resource', 'org:resource', 'resourceid'], 'resource')
-            end_ts_col = find_column(['end_timestamp', 'end_time', 'end'], 'end_timestamp')
-            start_ts_col = find_column(['start_timestamp', 'start_time', 'start'], 'start_timestamp')
-            
+
+            # Map column names using shared utility
+            case_col = find_column(columns, ['case_id', 'case'], 'case_id')
+            activity_col = find_column(columns, ['activity_name', 'concept:name', 'activity'], 'activity_name')
+            resource_col = find_column(columns, ['resource', 'org:resource', 'resourceid'], 'resource')
+            end_ts_col = find_column(columns, ['end_timestamp', 'end_time', 'end'], 'end_timestamp')
+            start_ts_col = find_column(columns, ['start_timestamp', 'start_time', 'start'], 'start_timestamp')
+
             # Validate columns actually exist in data (not just using fallbacks)
             detected_cols = {case_col, activity_col, resource_col, end_ts_col, start_ts_col}
             actual_cols = set(df.columns)
             missing_cols = detected_cols - actual_cols
             if missing_cols:
-                logger.warning(f"⚠️  Using fallback column names for: {missing_cols}")
+                logger.warning(f"[!]  Using fallback column names for: {missing_cols}")
                 logger.warning(f"   Available columns: {actual_cols}")
             else:
-                logger.info(f"✓ All required columns detected: case={case_col}, activity={activity_col}, resource={resource_col}, end_ts={end_ts_col}, start_ts={start_ts_col}")
+                logger.info(f"[OK] All required columns detected: case={case_col}, activity={activity_col}, resource={resource_col}, end_ts={end_ts_col}, start_ts={start_ts_col}")
 
             # Apply modifications to a temporary log for ABS so hypotheses affect both simulators
             abs_log_path = log_path
@@ -239,7 +234,7 @@ class AgentSimulatorRunner:
                         break
             
             if not actual_output_dir:
-                logger.error(f"❌ AgentSimulator execution failed: No output files found")
+                logger.error(f"[ERROR] AgentSimulator execution failed: No output files found")
                 logger.error(f"   Searched paths: {possible_paths}")
                 logger.error(f"   This means execute_pipeline() did not produce output CSVs")
                 logger.error(f"   Check AgentSimulator logs above for errors")
@@ -264,7 +259,7 @@ class AgentSimulatorRunner:
             return result
             
         except Exception as e:
-            logger.error(f"❌ AgentSimulator.simulate() threw exception: {type(e).__name__}: {e}")
+            logger.error(f"[ERROR] AgentSimulator.simulate() threw exception: {type(e).__name__}: {e}")
             logger.error("   Full traceback:", exc_info=True)
             raise
         finally:
@@ -454,7 +449,7 @@ class AgentSimulatorRunner:
 
         df = df.copy()
         for change in changes:
-            target = self._normalize_target_label(change.get('target', ''))
+            target = normalize_role_label(change.get('target', ''))
             change_type = str(change.get('change', ''))
             value = int(float(change.get('value', 0) or 0))
             if value <= 0:
@@ -518,11 +513,11 @@ class AgentSimulatorRunner:
         df = df.copy()
 
         for change in changes:
-            source_target, destination_target = self._parse_role_redesign_target(change.get('target', ''))
+            source_target, destination_target = parse_role_redesign_target(change.get('target', ''))
             target = source_target
             change_type = str(change.get('change', ''))
             # Read value from the correct key; use it to derive shift fraction
-            shift_fraction = self._resolve_shift_fraction(change.get('value'))
+            shift_fraction = resolve_shift_fraction(change.get('value'))
 
             resource_mask = (
                 df[resource_col].astype(str).str.contains(target, na=False) |
@@ -614,54 +609,6 @@ class AgentSimulatorRunner:
         return df
 
     @staticmethod
-    def _normalize_target_label(target) -> str:
-        """Normalize LLM-proposed target labels to actual resource ids in logs."""
-        target_str = str(target or "").strip()
-        if not target_str:
-            return ""
-
-        for separator in ["→", "->"]:
-            if separator in target_str:
-                target_str = target_str.split(separator)[0].strip()
-                break
-
-        if target_str.lower().endswith("_profile"):
-            target_str = target_str[: -len("_profile")].strip()
-
-        return target_str
-
-    def _parse_role_redesign_target(self, target) -> tuple:
-        """Parse role-redesign target into (source, destination) labels."""
-        raw = str(target or '').strip()
-        for separator in ["→", "->"]:
-            if separator in raw:
-                src, dst = raw.split(separator, 1)
-                return self._normalize_target_label(src), self._normalize_target_label(dst)
-        normalized = self._normalize_target_label(raw)
-        return normalized, ""
-
-    @staticmethod
-    def _resolve_shift_fraction(value) -> float:
-        """Resolve shift fraction from hypothesis value.
-
-        * Float in (0, 1): used directly as fraction.
-        * Integer >= 1: mapped to an increasing fraction scale
-          (1 → 0.3, 2 → 0.5, 3 → 0.7, >=4 → 0.9).
-        * None / zero / invalid: default 0.5.
-        """
-        try:
-            numeric = float(value)
-        except Exception:
-            return 0.5
-        if 0 < numeric < 1:
-            return max(0.1, min(0.9, numeric))
-        if numeric >= 1:
-            # Map integer "units to shift" to a shift fraction
-            n = int(numeric)
-            return min(0.9, 0.1 + n * 0.2)
-        return 0.5
-
-    @staticmethod
     def _sync_resource_columns(df: pd.DataFrame, source_col: str) -> pd.DataFrame:
         """Keep common resource columns synchronized after ABS modifications."""
         if source_col not in df.columns:
@@ -672,7 +619,7 @@ class AgentSimulatorRunner:
             if alias in df.columns and alias != source_col:
                 df[alias] = df[source_col]
         return df
-    
+
     def _extract_metrics_from_simulated_logs(
         self,
         output_dir: str,
@@ -692,7 +639,7 @@ class AgentSimulatorRunner:
                 simulated_logs = sorted(Path(output_dir).glob("*.csv"))
             
             if not simulated_logs:
-                logger.error(f"❌ No CSV files found in AgentSimulator output directory: {output_dir}")
+                logger.error(f"[ERROR] No CSV files found in AgentSimulator output directory: {output_dir}")
                 logger.error(f"   Contents of output dir: {list(Path(output_dir).iterdir()) if Path(output_dir).exists() else 'DIR DOES NOT EXIST'}")
                 raise RuntimeError("No CSV outputs found in AgentSimulator output directory.")
             
@@ -728,7 +675,7 @@ class AgentSimulatorRunner:
                 avg_throughput = sum(all_throughputs) / len(all_throughputs)
                 avg_waiting_time = sum(all_waiting_times) / len(all_waiting_times)
             else:
-                logger.error(f"❌ Could not extract metrics from any of {len(simulated_logs)} simulated logs")
+                logger.error(f"[ERROR] Could not extract metrics from any of {len(simulated_logs)} simulated logs")
                 raise RuntimeError("Failed to extract metrics from AgentSimulator outputs.")
             
             # Calculate resource utilization
@@ -751,6 +698,6 @@ class AgentSimulatorRunner:
             return metrics
             
         except Exception as e:
-            logger.error(f"❌ Error consolidating AgentSimulator metrics: {type(e).__name__}: {e}")
+            logger.error(f"[ERROR] Error consolidating AgentSimulator metrics: {type(e).__name__}: {e}")
             logger.error("   Full traceback:", exc_info=True)
             raise

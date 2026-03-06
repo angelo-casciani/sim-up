@@ -14,8 +14,7 @@ def parse_arguments():
     parser.add_argument('--log', type=str, default='road_traffic.xes', help='Event log file name in logs/ directory')
     parser.add_argument('--temperature', type=float, default=0.0, help='Temperature for LLM generation (default: 0.0)')
     parser.add_argument('--max_tokens', type=int, default=4096, help='Max tokens for LLM responses (default: 4096)')
-    parser.add_argument('--max_iterations', type=int, default=3, help='Maximum improvement iterations (default: 3)')    
-    parser.add_argument('--docker_image', type=str, default='nokal/simod:latest', help='SIMOD Docker image (default: nokal/simod:latest)')
+    parser.add_argument('--max_iterations', type=int, default=3, help='Maximum improvement iterations (default: 3)')
     parser.add_argument('--no_sudo', action='store_true', help='Do not use sudo for Docker commands (default: use sudo)')
     parser.add_argument('--des_runs', type=int, default=10, help='Number of DES (Prosimos) runs to average (default: 10)')
     parser.add_argument('--abs_runs', type=int, default=10, help='Number of ABS (AgentSimulator) runs to request (default: 10)')
@@ -33,13 +32,13 @@ def check_docker_available() -> bool:
             timeout=5
         )
         if result.returncode == 0:
-            print(f"✓ Docker found: {result.stdout.strip()}")
+            print(f"[OK] Docker found: {result.stdout.strip()}")
             return True
         else:
-            print("✗ Docker not found or not working")
+            print("[X] Docker not found or not working")
             return False
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        print("✗ Docker not found or not working")
+        print("[X] Docker not found or not working")
         return False
 
 
@@ -53,10 +52,10 @@ def check_simod_image(image_name: str) -> bool:
         )
         
         if result.returncode == 0 and result.stdout.strip():
-            print(f"✓ SIMOD image '{image_name}' found")
+            print(f"[OK] SIMOD image '{image_name}' found")
             return True
         else:
-            print(f"✗ SIMOD image '{image_name}' not found")
+            print(f"[X] SIMOD image '{image_name}' not found")
             print(f"  To pull it, run: docker pull {image_name}")
             return False
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -76,7 +75,6 @@ def main():
     print(f"  Temperature: {args.temperature}")
     print(f"  Max Tokens: {args.max_tokens}")
     print(f"  Max Iterations: {args.max_iterations}")
-    print(f"  Docker Image: {args.docker_image}")
     print(f"  Use Sudo: {not args.no_sudo}")
     print(f"  DES Runs: {args.des_runs}")
     print(f"  ABS Runs: {args.abs_runs}")
@@ -86,11 +84,11 @@ def main():
     print("Checking prerequisites...")
     docker_ok = check_docker_available()
     if docker_ok:
-        simod_ok = check_simod_image(args.docker_image)
+        simod_ok = check_simod_image("nokal/simod:latest")
         if not simod_ok:
             print("\nWarning: SIMOD image not found. Will use mock baseline data.")
             print("For full functionality, install SIMOD:")
-            print(f"  docker pull {args.docker_image}")
+            print(f"  docker pull nokal/simod:latest")
     else:
         print("\nWarning: Docker not available. Will use mock baseline data.")
         print("For full functionality, install Docker.")
@@ -138,7 +136,7 @@ def main():
         report_filename = (f"improvement_report_{args.model}_{log_name_no_ext}_{args.temperature}_{args.max_tokens}_{timestamp}.txt")
         report_path = os.path.join(report_dir, report_filename)
 
-        with open(report_path, 'w') as f:
+        with open(report_path, 'w', encoding='utf-8') as f:
             f.write(report)
 
         print(f"Report saved to: {report_path}\n")

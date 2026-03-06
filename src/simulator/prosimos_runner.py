@@ -4,6 +4,11 @@ import subprocess
 import copy
 from typing import Dict, Optional
 from simulator.metrics_extractor import MetricsExtractor
+from utils.column_utils import (
+    normalize_role_label,
+    parse_role_redesign_target,
+    resolve_shift_fraction,
+)
 import shutil
 
 
@@ -127,7 +132,7 @@ class ProsimosRunner:
         if 'resource_profiles' not in params or not target:
             return
 
-        source_role, destination_role = self._parse_role_redesign_target(target)
+        source_role, destination_role = parse_role_redesign_target(target)
         resource_profiles = params.get('resource_profiles', [])
         matched_profile = None
         for resource in resource_profiles:
@@ -140,7 +145,7 @@ class ProsimosRunner:
             return
 
         if 'shift_responsibility' in str(change_type) and destination_role:
-            shift_fraction = self._resolve_shift_fraction(
+            shift_fraction = resolve_shift_fraction(
                 change_payload.get('value')
             )
             shifted = self._shift_role_responsibilities(
@@ -178,36 +183,6 @@ class ProsimosRunner:
 
         task_hint = change_payload.get('task_target') or change_payload.get('task')
         self._assign_specialist_to_tasks(params, base_id, specialist_id, task_hint, change_type)
-
-    @staticmethod
-    def _normalize_role_label(label: str) -> str:
-        role = str(label or '').strip()
-        if role.lower().endswith('_profile'):
-            role = role[:-len('_profile')].strip()
-        return role
-
-    def _parse_role_redesign_target(self, target: str):
-        raw = str(target or '')
-        for sep in ['→', '->']:
-            if sep in raw:
-                left, right = raw.split(sep, 1)
-                return self._normalize_role_label(left), self._normalize_role_label(right)
-        normalized = self._normalize_role_label(raw)
-        return normalized, normalized
-
-    @staticmethod
-    def _resolve_shift_fraction(value) -> float:
-        """Resolve shift fraction from payload; handles fractions and integer severity values."""
-        try:
-            numeric = float(value)
-        except Exception:
-            return 0.5
-        if 0 < numeric < 1:
-            return max(0.1, min(0.9, numeric))
-        if numeric >= 1:
-            n = int(numeric)
-            return min(0.9, 0.1 + n * 0.2)  # 1→0.3, 2→0.5, 3→0.7, >=4→0.9
-        return 0.5
 
     def _shift_role_responsibilities(
         self,
@@ -364,7 +339,7 @@ class ProsimosRunner:
         
         if modified_count > 0:
             pct = abs(reduction_pct)
-            print(f"  ✓ Modified {modified_count} duration parameters ({pct:.0f}% reduction) for {target}")
+            print(f"  [OK] Modified {modified_count} duration parameters ({pct:.0f}% reduction) for {target}")
     
     def _run_simulation(
         self,
@@ -384,10 +359,10 @@ class ProsimosRunner:
             # Use path from SIMOD output
             bpmn_path = model['bpmn_path']
             if os.path.exists(bpmn_path):
-                print(f"✓ Found BPMN file: {bpmn_path}")
+                print(f"[OK] Found BPMN file: {bpmn_path}")
                 shutil.copy2(bpmn_path, bpmn_work_file)
             else:
-                print(f"✗ BPMN file not found: {bpmn_path}")
+                print(f"[X] BPMN file not found: {bpmn_path}")
                 print(f"  WARNING: Using estimation fallback with real resources from params")
                 return self._estimate_metrics_from_model(model, params_file)
         elif 'bpmn_model' in model:
@@ -434,13 +409,13 @@ class ProsimosRunner:
         )
         
         if result.returncode != 0:
-            print(f"⚠️  Prosimos simulation failed (exit code {result.returncode})")
+            print(f"[!]  Prosimos simulation failed (exit code {result.returncode})")
             if result.stderr:
                 print(f"  Error: {result.stderr[:300]}")
             print(f"  Using estimation fallback with real resources from params")
             return self._estimate_metrics_from_model(model, params_file)
         
-        print(f"✓ Prosimos simulation completed")
+        print(f"[OK] Prosimos simulation completed")
         
         # Extract metrics from output
         simulated_log = os.path.join(output_dir, "simulation_log.csv")
@@ -452,7 +427,7 @@ class ProsimosRunner:
                     simulated_log,
                     time_horizon_seconds=time_horizon_seconds
                 )
-                print(f"  ✓ Extracted metrics: {list(metrics.keys())}")
+                print(f"  [OK] Extracted metrics: {list(metrics.keys())}")
                 return metrics
             except Exception as e:
                 print(f"Warning: Failed to extract metrics: {e}")
@@ -518,7 +493,7 @@ class ProsimosRunner:
                 'total_resource_capacity': total_capacity
             }
             
-            print(f"✓ Estimated metrics for {len(real_resources)} resources (capacity={total_capacity})")
+            print(f"[OK] Estimated metrics for {len(real_resources)} resources (capacity={total_capacity})")
             return est_metrics
             
         except Exception as e:

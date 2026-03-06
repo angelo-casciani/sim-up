@@ -206,14 +206,14 @@ if __name__ == '__main__':
     
     baseline, calibrated, factor = extract_and_calibrate_baseline(log_path, simod_path)
     
-    print(f"\n✓ Baseline metrics extracted:")
+    print(f"\n[OK] Baseline metrics extracted:")
     print(f"  - Cases: {baseline['num_traces']}")
     print(f"  - Events: {baseline['num_events']}")
     print(f"  - Activities: {baseline['num_activities']}")
     print(f"  - Mean activity duration: {baseline['overall_mean_duration']:.0f}s")
     print(f"  - Mean case cycle time: {baseline['case_mean_cycle_time']:.0f}s ({baseline['case_mean_cycle_time']/3600:.1f} hours)")
     
-    print(f"\n✓ Calibration factor: {factor:.2f}x")
+    print(f"\n[OK] Calibration factor: {factor:.2f}x")
     print(f"  SIMOD will be scaled by {factor:.2f} to match log ground truth")
     
     # Save calibrated model
@@ -221,4 +221,4 @@ if __name__ == '__main__':
     with open(output_path, 'w') as f:
         json.dump(calibrated, f, indent=2)
     
-    print(f"\n✓ Calibrated model saved to: {output_path}")
+    print(f"\n[OK] Calibrated model saved to: {output_path}")

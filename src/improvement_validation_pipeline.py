@@ -16,6 +16,7 @@ from simulator import SIMODDiscoverer, ProsimosRunner, AgentSimulatorRunner
 from llm import HypothesisGenerator
 from validation import ImprovementValidator
 from reporting import ReportGenerator
+from utils.column_utils import find_column
 
 
 class ImprovementValidationAgent:
@@ -94,20 +95,22 @@ class ImprovementValidationAgent:
         self.des_train_log_path, self.des_test_log_path = self._prepare_des_train_test_logs(log_path)
         self.train_log_path = self.des_train_log_path or log_path
         self.test_log_path = self.des_test_log_path or log_path
-        self.abs_source_log_path = self.test_log_path
+        # AgentSimulator does its own internal 80/20 split, so pass the FULL log
+        # This ensures SIMOD and AgentSimulator work on equivalent data splits
+        self.abs_source_log_path = self.full_log_path
 
         if self.des_train_log_path and self.des_train_log_path != log_path:
-            print(f"✓ DES input log (train split): {self.des_train_log_path}")
+            print(f"[OK] DES input log (train split): {self.des_train_log_path}")
             if self.des_test_log_path:
-                print(f"✓ DES held-out test split: {self.des_test_log_path}")
+                print(f"[OK] DES held-out test split: {self.des_test_log_path}")
             self._log_interaction(f"DES train split log: {self.des_train_log_path}")
             if self.des_test_log_path:
                 self._log_interaction(f"DES test split log: {self.des_test_log_path}")
         else:
-            print("⚠️  DES split unavailable, using original log")
+            print("[!]  DES split unavailable, using original log")
             self._log_interaction("DES split unavailable, using original log")
 
-        print("✓ Split policy: train=discovery, test=simulation/validation, full=train+test context")
+        print("[OK] Split policy: train=discovery, test=simulation/validation, full=train+test context")
         self._log_interaction(
             "Split policy: "
             f"train={self.train_log_path}, test={self.test_log_path}, full={self.full_log_path}"
@@ -117,7 +120,7 @@ class ImprovementValidationAgent:
             full_cases = pd.read_csv(self.full_log_path)["case_id"].nunique()
             train_cases = pd.read_csv(self.train_log_path)["case_id"].nunique()
             test_cases = pd.read_csv(self.test_log_path)["case_id"].nunique()
-            print(f"✓ Split sizes (cases): full={full_cases}, train={train_cases}, test={test_cases}")
+            print(f"[OK] Split sizes (cases): full={full_cases}, train={train_cases}, test={test_cases}")
             self._log_interaction(f"Split sizes (cases): full={full_cases}, train={train_cases}, test={test_cases}")
         except Exception:
             pass
@@ -126,7 +129,7 @@ class ImprovementValidationAgent:
         self.des_time_horizon_seconds = self.time_horizon_seconds  # always constrain DES to test-split horizon
         if self.time_horizon_seconds:
             days = self.time_horizon_seconds / 86400
-            print(f"✓ DES time horizon (always constrained to test split): {self.time_horizon_seconds:.0f} seconds ({days:.1f} days)")
+            print(f"[OK] DES time horizon (always constrained to test split): {self.time_horizon_seconds:.0f} seconds ({days:.1f} days)")
             self._log_interaction(f"DES time horizon (always constrained to test split): {self.time_horizon_seconds:.0f} seconds ({days:.1f} days)")
         
         # Setup interaction log
@@ -165,7 +168,7 @@ class ImprovementValidationAgent:
             pm4py_baseline_metrics = None
             
             if calibrated_model_path:
-                print(f"✓ Found calibrated SIMOD model: {calibrated_model_path}")
+                print(f"[OK] Found calibrated SIMOD model: {calibrated_model_path}")
                 with open(calibrated_model_path) as f:
                     baseline_model = json.load(f)
                 
@@ -187,13 +190,13 @@ class ImprovementValidationAgent:
                         'ground_truth_source': 'pm4py'
                     }
                     
-                    print(f"✓ Loaded PM4PY baseline metrics:")
+                    print(f"[OK] Loaded PM4PY baseline metrics:")
                     print(f"  - Cases: {baseline_metrics['avg_throughput']}")
                     print(f"  - Mean cycle time: {baseline_metrics['avg_cycle_time']:.0f}s ({baseline_metrics['avg_cycle_time']/3600:.2f} hours)")
                     print(f"  - Activities: {baseline_metrics['num_activities']}")
                     
                 except Exception as e:
-                    print(f"⚠️  Could not load PM4PY metrics: {e}")
+                    print(f"[!]  Could not load PM4PY metrics: {e}")
                     # Fall back to SIMOD discovery
                     baseline_model = None
             
@@ -205,14 +208,14 @@ class ImprovementValidationAgent:
 
                 # Enforce DES baseline from SIMOD assets (BPMN + Prosimos params).
                 if not self._is_simod_ready_model(baseline_model):
-                    print("⚠️  SIMOD discovery from DES-train split did not produce executable Prosimos assets.")
+                    print("[!]  SIMOD discovery from DES-train split did not produce executable Prosimos assets.")
                     if discovery_input_log != self.full_log_path:
                         print("↻ Retrying SIMOD discovery from original log as fallback source...")
                         retry_model, retry_metrics = self.discoverer.discover(self.full_log_path, self.work_dir)
                         if self._is_simod_ready_model(retry_model):
                             baseline_model = retry_model
                             baseline_metrics = retry_metrics
-                            print("✓ SIMOD fallback discovery from original log succeeded.")
+                            print("[OK] SIMOD fallback discovery from original log succeeded.")
                         else:
                             raise RuntimeError(
                                 "SIMOD discovery failed to produce BPMN/Prosimos assets for DES baseline "
@@ -230,7 +233,7 @@ class ImprovementValidationAgent:
                 return "ERROR: Failed to discover baseline model"
             
             print(f"Baseline metrics: {json.dumps(baseline_metrics, indent=2)}")
-            print(f"⏱️  Baseline discovery took {step1_time:.1f} seconds ({step1_time/60:.1f} minutes)\n")
+            print(f"[TIME]  Baseline discovery took {step1_time:.1f} seconds ({step1_time/60:.1f} minutes)\n")
             
             # VALIDATION: Check if resources are real (not fake)
             resource_util = baseline_metrics.get('resource_utilization', {})
@@ -238,13 +241,13 @@ class ImprovementValidationAgent:
             real_resource_count = len(resource_util) - fake_resource_count
             
             if resource_util:
-                print(f"✓ Resource Analysis: {real_resource_count} real resources, {fake_resource_count} synthetic")
+                print(f"[OK] Resource Analysis: {real_resource_count} real resources, {fake_resource_count} synthetic")
                 if real_resource_count > 0:
                     print(f"  Sample real resources: {list(str(r) for r in list(resource_util.keys())[:5])}")
                 if fake_resource_count > 0:
-                    print(f"  ⚠️  WARNING: Found {fake_resource_count} fake Resource_X entries - simulation may be using fallback")
+                    print(f"  [!]  WARNING: Found {fake_resource_count} fake Resource_X entries - simulation may be using fallback")
             else:
-                print(f"⚠️  WARNING: No resource utilization extracted - check event log format")
+                print(f"[!]  WARNING: No resource utilization extracted - check event log format")
             
             self._log_interaction("\nBaseline Model Structure:")
             self._log_interaction(json.dumps({
@@ -253,7 +256,7 @@ class ImprovementValidationAgent:
             }, indent=2))
             self._log_interaction("\nBaseline Metrics:")
             self._log_interaction(json.dumps(baseline_metrics, indent=2))
-            self._log_interaction(f"\n⏱️  Baseline discovery time: {step1_time:.1f} seconds ({step1_time/60:.1f} minutes)")
+            self._log_interaction(f"\n[TIME]  Baseline discovery time: {step1_time:.1f} seconds ({step1_time/60:.1f} minutes)")
             
             self.history.append({
                 "step": "baseline",
@@ -269,12 +272,12 @@ class ImprovementValidationAgent:
                 try:
                     des_case_count = int(round(float(baseline_case_count)))
                     self.des_total_cases = des_case_count * 2
-                    print(f"✓ DES case-budget constraint enabled: max {self.des_total_cases} cases (2x baseline)")
+                    print(f"[OK] DES case-budget constraint enabled: max {self.des_total_cases} cases (2x baseline)")
                 except (TypeError, ValueError):
                     self.des_total_cases = 2000
-                    print(f"⚠️  Could not parse baseline case count, DES case-budget constraint defaults to {self.des_total_cases} cases")
+                    print(f"[!]  Could not parse baseline case count, DES case-budget constraint defaults to {self.des_total_cases} cases")
             else:
-                print("✓ DES total cases unconstrained by default")
+                print("[OK] DES total cases unconstrained by default")
 
             # Build simulator-relative baseline for validation (preferred for relative comparisons).
             baseline_des_metrics = None
@@ -287,16 +290,16 @@ class ImprovementValidationAgent:
                     baseline_metrics
                 )
                 if baseline_unified_metrics:
-                    print("✓ Validation mode: relative (simulator baseline)")
+                    print("[OK] Validation mode: relative (simulator baseline)")
                     print(f"  - Baseline cycle time: {baseline_unified_metrics.get('avg_cycle_time', 0):.0f}s")
                     print(f"  - Baseline throughput: {baseline_unified_metrics.get('avg_throughput', 0):.2f}")
                     self._log_interaction("\nValidation mode: relative (simulator baseline)")
                     self._log_interaction(json.dumps(baseline_unified_metrics, indent=2))
                 else:
-                    print("⚠️  Simulator baseline unavailable, using PM4PY baseline fallback")
+                    print("[!]  Simulator baseline unavailable, using PM4PY baseline fallback")
                     self._log_interaction("\nValidation mode: PM4PY fallback (simulator baseline unavailable)")
             except Exception as baseline_sim_error:
-                print(f"⚠️  Baseline simulation failed: {baseline_sim_error}")
+                print(f"[!]  Baseline simulation failed: {baseline_sim_error}")
                 print("   Falling back to PM4PY baseline for validation")
                 self._log_interaction(f"\nBaseline simulation failed: {baseline_sim_error}")
                 self._log_interaction("Validation mode: PM4PY fallback")
@@ -379,7 +382,7 @@ class ImprovementValidationAgent:
                 
                 print(f"Hypothesis: {hypothesis['description']}")
                 print(f"Proposed changes: {json.dumps(hypothesis['changes'], indent=2)}")
-                print(f"⏱️  Hypothesis generation took {hyp_time:.1f} seconds")
+                print(f"[TIME]  Hypothesis generation took {hyp_time:.1f} seconds")
                 
                 self._log_interaction("\nLLM Generated Hypothesis:")
                 self._log_interaction(json.dumps(hypothesis, indent=2))
@@ -387,7 +390,7 @@ class ImprovementValidationAgent:
                     self._log_interaction("\nStrategic screening notes:")
                     for note in strategic_screening_notes:
                         self._log_interaction(f"- {note}")
-                self._log_interaction(f"\n⏱️  Hypothesis generation time: {hyp_time:.1f} seconds")
+                self._log_interaction(f"\n[TIME]  Hypothesis generation time: {hyp_time:.1f} seconds")
                 
                 # Simulate with modifications
                 print(f"\n[STEP 3.{iteration+1}] Running simulation with modifications...")
@@ -406,7 +409,7 @@ class ImprovementValidationAgent:
                 sim_start = time.time()
                 
                 # Run Prosimos (DES) in main thread
-                print(f"  ├─ Prosimos (Structural/DES)...")
+                print(f"  |- Prosimos (Structural/DES)...")
                 des_metrics = self._run_des_simulations(
                     baseline_model,
                     hypothesis['changes'],
@@ -419,7 +422,7 @@ class ImprovementValidationAgent:
                 def run_agent_simulator():
                     nonlocal abs_metrics, abs_thread_error
                     try:
-                        print(f"  ├─ AgentSimulator (Behavioral/ABS)...")
+                        print(f"  |- AgentSimulator (Behavioral/ABS)...")
                         abs_metrics = self.agent_simulator.simulate(
                             self.abs_source_log_path,
                             hypothesis['changes'],
@@ -445,26 +448,26 @@ class ImprovementValidationAgent:
                 
                 if not des_metrics:
                     print("Warning: DES simulation failed, skipping hypothesis")
-                    print(f"⏱️  Simulation took {sim_time:.1f} seconds (DES failed)")
+                    print(f"[TIME]  Simulation took {sim_time:.1f} seconds (DES failed)")
                     self._log_interaction("\nDES Simulation FAILED - no metrics returned")
-                    self._log_interaction(f"\n⏱️  Simulation time: {sim_time:.1f} seconds")
+                    self._log_interaction(f"\n[TIME]  Simulation time: {sim_time:.1f} seconds")
                     iteration_time = time.time() - iteration_start
                     iterations_times.append({'iteration': iteration + 1, 'total_time': iteration_time, 'status': 'failed'})
                     continue
                 
-                print(f"  └─ DES Metrics: {json.dumps(des_metrics, indent=2)[:100]}...")
+                print(f"  |- DES Metrics: {json.dumps(des_metrics, indent=2)[:100]}...")
                 if abs_metrics:
-                    print(f"  └─ ABS Metrics: {json.dumps(abs_metrics, indent=2)[:100]}...")
+                    print(f"  |- ABS Metrics: {json.dumps(abs_metrics, indent=2)[:100]}...")
                 else:
                     raise RuntimeError("ABS metrics unavailable; cannot proceed.")
                 
-                print(f"⏱️  Parallel simulations took {sim_time:.1f} seconds")
+                print(f"[TIME]  Parallel simulations took {sim_time:.1f} seconds")
                 
                 self._log_interaction("\nDES (Prosimos) Results:")
                 self._log_interaction(json.dumps(des_metrics, indent=2))
                 self._log_interaction("\nABS (AgentSimulator) Results:")
                 self._log_interaction(json.dumps(abs_metrics, indent=2))
-                self._log_interaction(f"\n⏱️  Parallel simulation time: {sim_time:.1f} seconds")
+                self._log_interaction(f"\n[TIME]  Parallel simulation time: {sim_time:.1f} seconds")
                 
                 # STEP 3.5: Keep simulator outputs independent (no reconciliation/arbitration)
                 print(f"\n[STEP 3.5.{iteration+1}] Independent simulator assessment (no reconciliation)...")
@@ -536,7 +539,7 @@ class ImprovementValidationAgent:
                 conflict_reason = improvement_result['cross_simulator_conflict']['reason']
                 val_time = time.time() - val_start
                 
-                print(f"⏱️  Validation took {val_time:.1f} seconds")
+                print(f"[TIME]  Validation took {val_time:.1f} seconds")
                 
                 self._log_interaction("\nMetric Comparison:")
                 for metric_name, metric_data in improvement_result.get('improvements', {}).items():
@@ -545,15 +548,15 @@ class ImprovementValidationAgent:
                     self._log_interaction(f"  New:      {metric_data.get('new', 'N/A')}")
                     self._log_interaction(f"  Change:   {metric_data.get('change_pct', 0):.1f}%")
                 
-                self._log_interaction(f"\nValidation Result: {'✓ IMPROVEMENT' if improvement_result['is_improvement'] else '✗ NO IMPROVEMENT'}")
+                self._log_interaction(f"\nValidation Result: {'[OK] IMPROVEMENT' if improvement_result['is_improvement'] else '[X] NO IMPROVEMENT'}")
                 self._log_interaction(f"Summary: {improvement_result['summary']}")
                 self._log_interaction(f"Decision rule: {improvement_result['decision_rule']}")
                 if conflict_detected:
                     self._log_interaction(f"Cross-simulator conflict guardrail: {conflict_reason}")
-                self._log_interaction(f"DES validation [{improvement_result.get('des_role', 'active')}]: {'✓' if des_validation.get('is_improvement') else '✗'} {des_validation.get('summary', '')}")
-                self._log_interaction(f"ABS validation [{improvement_result.get('abs_role', 'active')}]: {'✓' if abs_validation.get('is_improvement') else '✗'} {abs_validation.get('summary', '')}")
+                self._log_interaction(f"DES validation [{improvement_result.get('des_role', 'active')}]: {'[OK]' if des_validation.get('is_improvement') else '[X]'} {des_validation.get('summary', '')}")
+                self._log_interaction(f"ABS validation [{improvement_result.get('abs_role', 'active')}]: {'[OK]' if abs_validation.get('is_improvement') else '[X]'} {abs_validation.get('summary', '')}")
                 
-                self._log_interaction(f"\n⏱️  Validation time: {val_time:.1f} seconds")
+                self._log_interaction(f"\n[TIME]  Validation time: {val_time:.1f} seconds")
                 
                 iteration_time = time.time() - iteration_start
                 iterations_times.append({
@@ -565,7 +568,7 @@ class ImprovementValidationAgent:
                     'status': 'validated' if improvement_result['is_improvement'] else 'not_improved'
                 })
                 
-                print(f"⏱️  Iteration {iteration + 1} total time: {iteration_time:.1f} seconds ({iteration_time/60:.1f} minutes)")
+                print(f"[TIME]  Iteration {iteration + 1} total time: {iteration_time:.1f} seconds ({iteration_time/60:.1f} minutes)")
                 
                 self.history.append({
                     "step": f"iteration_{iteration+1}",
@@ -597,7 +600,7 @@ class ImprovementValidationAgent:
                     attempt_history.pop(0)
                 
                 if improvement_result['is_improvement']:
-                    self._log_interaction(f"\n✅ IMPROVEMENT VALIDATED")
+                    self._log_interaction(f"\n[SUCCESS] IMPROVEMENT VALIDATED")
                     validated_improvements.append({
                         "iteration": iteration + 1,
                         "hypothesis": hypothesis,
@@ -613,10 +616,10 @@ class ImprovementValidationAgent:
                             "abs_throughput": improvement_result['improvements'].get('abs_throughput', {}).get('change_pct', 0),
                         }
                     })
-                    print(f"\n✅ IMPROVEMENT VALIDATED!")
+                    print(f"\n[SUCCESS] IMPROVEMENT VALIDATED!")
                     print(f"  Impact: {improvement_result['summary']}")
                 else:
-                    print(f"✗ No improvement: {improvement_result['summary']}")
+                    print(f"[X] No improvement: {improvement_result['summary']}")
             
             # Step 6: Generate final report
             print(f"\n[STEP 6] Generating final reality check report...")
@@ -657,7 +660,7 @@ class ImprovementValidationAgent:
                     self._log_interaction(f"  - Validation: {it_time['validation_time']:.1f} seconds")
             self._log_interaction(f"\nReport Generation: {report_time:.1f} seconds")
             
-            print(f"\n⏱️  Total pipeline time: {total_time:.1f} seconds ({total_time/60:.1f} minutes)")
+            print(f"\n[TIME]  Total pipeline time: {total_time:.1f} seconds ({total_time/60:.1f} minutes)")
             
             return report
             
@@ -695,6 +698,14 @@ class ImprovementValidationAgent:
                                 shutil.rmtree(path, ignore_errors=True)
         except Exception as cleanup_err:
             print(f"Warning: Could not clean agent_simulated_* folders: {cleanup_err}")
+
+        # Clean up AgentSimulator's simulated_data folder in project root
+        try:
+            simulated_data_dir = os.path.join(os.getcwd(), "simulated_data")
+            if os.path.isdir(simulated_data_dir):
+                shutil.rmtree(simulated_data_dir, ignore_errors=True)
+        except Exception as cleanup_err:
+            print(f"Warning: Could not clean simulated_data folder: {cleanup_err}")
 
         if self.work_dir and os.path.exists(self.work_dir):
             try:
@@ -822,29 +833,18 @@ class ImprovementValidationAgent:
         try:
             from source.train_test_split import split_data
         except Exception as import_error:
-            print(f"⚠️  Could not import AgentSimulator split_data ({import_error}); using original log for DES")
+            print(f"[!]  Could not import AgentSimulator split_data ({import_error}); using original log for DES")
             return log_path, None
 
         try:
             sample_df = pd.read_csv(log_path, nrows=1)
             cols = set(sample_df.columns.tolist())
 
-            def find_column(patterns, fallback=None):
-                for col in cols:
-                    if col.lower() in [p.lower() for p in patterns]:
-                        return col
-                for col in cols:
-                    col_lower = col.lower()
-                    for pattern in patterns:
-                        if pattern.lower() in col_lower:
-                            return col
-                return fallback
-
-            case_col = find_column(["case_id", "case"], "case_id")
-            activity_col = find_column(["activity_name", "concept:name", "activity", "Activity"], "activity_name")
-            resource_col = find_column(["org:resource", "resource", "resourceid"], "resource")
-            start_ts_col = find_column(["start_timestamp", "start_time", "start"], "start_timestamp")
-            end_ts_col = find_column(["end_timestamp", "end_time", "end", "time:timestamp"], "end_timestamp")
+            case_col = find_column(cols, ["case_id", "case"], "case_id")
+            activity_col = find_column(cols, ["activity_name", "concept:name", "activity", "Activity"], "activity_name")
+            resource_col = find_column(cols, ["org:resource", "resource", "resourceid"], "resource")
+            start_ts_col = find_column(cols, ["start_timestamp", "start_time", "start"], "start_timestamp")
+            end_ts_col = find_column(cols, ["end_timestamp", "end_time", "end", "time:timestamp"], "end_timestamp")
 
             column_names = {
                 case_col: "case_id",
@@ -866,10 +866,10 @@ class ImprovementValidationAgent:
 
             train_cases = train_df["case_id"].nunique() if "case_id" in train_df.columns else "n/a"
             test_cases = test_df["case_id"].nunique() if "case_id" in test_df.columns else "n/a"
-            print(f"✓ DES split created via AgentSimulator logic: train_cases={train_cases}, test_cases={test_cases}")
+            print(f"[OK] DES split created via AgentSimulator logic: train_cases={train_cases}, test_cases={test_cases}")
             return train_path, test_path
         except Exception as split_error:
-            print(f"⚠️  DES split creation failed ({split_error}); using original log")
+            print(f"[!]  DES split creation failed ({split_error}); using original log")
             return log_path, None
 
     @staticmethod

@@ -210,6 +210,6 @@ reports/
 
 # Logs - exclude only pure .xes files, not compressed variants
 logs/*.xes
-logs/*confidential*
 misc/
 simulated_data/
+.claude/
