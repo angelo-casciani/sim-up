@@ -2,6 +2,7 @@
 
 import json
 import os
+import traceback
 from typing import Dict, List
 from dotenv import load_dotenv
 
@@ -9,10 +10,14 @@ load_dotenv()
 
 from gen_ai_hub.proxy.native.openai import chat
 
+# Models that use Amazon Bedrock Converse API (Anthropic Claude models)
+AMAZON_BEDROCK_MODELS = {'anthropic--claude-4.5-opus', 'anthropic--claude-4.5-sonnet', 'anthropic--claude-4.5-haiku',
+                         'anthropic--claude-4-opus', 'anthropic--claude-4-sonnet'}
+
 
 class ReportGenerator:
     """Generates comprehensive process improvement reports."""
-    
+
     def __init__(
         self,
         model_name: str = "gpt-4.1",
@@ -23,6 +28,50 @@ class ReportGenerator:
         self.model_name = model_name
         self.temperature = temperature
         self.max_tokens = max_tokens
+
+    def _is_amazon_bedrock_model(self) -> bool:
+        """Check if the model uses Amazon Bedrock Converse API."""
+        model_lower = self.model_name.lower()
+        return any(m in model_lower for m in AMAZON_BEDROCK_MODELS)
+
+    def _call_openai_chat(self, system_prompt: str, user_prompt: str) -> str:
+        """Call OpenAI-compatible chat API (works for GPT, Mistral models)."""
+        response = chat.completions.create(
+            model_name=self.model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=self.temperature,
+            max_tokens=self.max_tokens
+        )
+        return response.choices[0].message.content
+
+    def _call_amazon_bedrock(self, system_prompt: str, user_prompt: str) -> str:
+        """Call Amazon Bedrock Converse API for Anthropic models."""
+        from gen_ai_hub.proxy.native.amazon.clients import Session
+
+        bedrock = Session().client(model_name=self.model_name)
+        conversation = [
+            {
+                "role": "user",
+                "content": [{"text": f"{system_prompt}\n\n{user_prompt}"}],
+            }
+        ]
+        response = bedrock.converse(
+            messages=conversation,
+            inferenceConfig={"maxTokens": self.max_tokens, "temperature": self.temperature},
+        )
+        return response["output"]["message"]["content"][0]["text"]
+
+    def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
+        """Route LLM call to the appropriate provider based on model name."""
+        if self._is_amazon_bedrock_model():
+            print(f"[ReportGenerator] Using Amazon Bedrock Converse API for {self.model_name}")
+            return self._call_amazon_bedrock(system_prompt, user_prompt)
+        else:
+            print(f"[ReportGenerator] Using OpenAI Chat API for {self.model_name}")
+            return self._call_openai_chat(system_prompt, user_prompt)
     
     def generate(
         self,
@@ -61,16 +110,12 @@ class ReportGenerator:
         )
         
         try:
-            response = chat.completions.create(
-                model_name=self.model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=self.temperature,
-                max_tokens=self.max_tokens
-            )
-            
+            print(f"[ReportGenerator] Calling LLM with model={self.model_name}, temperature={self.temperature}")
+
+            # Route to appropriate provider based on model
+            response_text = self._call_llm(system_prompt, user_prompt)
+            print(f"[ReportGenerator] LLM call successful, response length: {len(response_text)} chars")
+
             # Build report header with metadata
             report_header = self._build_report_header(
                 log_path,
@@ -79,12 +124,16 @@ class ReportGenerator:
             )
 
             grounded_ledger = self._build_grounded_validation_ledger(validated_improvements)
-            
+
             # Return header + deterministic facts + LLM narrative
-            return report_header + "\n\n" + grounded_ledger + "\n\n" + response.choices[0].message.content
-            
+            return report_header + "\n\n" + grounded_ledger + "\n\n" + response_text
+
         except Exception as e:
-            print(f"Error generating report: {e}")
+            print(f"[ReportGenerator] ERROR: LLM call failed!")
+            print(f"[ReportGenerator] Exception type: {type(e).__name__}")
+            print(f"[ReportGenerator] Exception message: {e}")
+            print(f"[ReportGenerator] Traceback:\n{traceback.format_exc()}")
+            print(f"[ReportGenerator] Falling back to template report...")
             return self._generate_fallback_report(
                 baseline_metrics,
                 validated_improvements,
@@ -102,23 +151,54 @@ Create a clear, actionable report that highlights validated process improvements
 DO NOT include generation date, event log name, model name, temperature, or max tokens - those are provided separately in the report header.
 
 Structure the report with:
-1. EXECUTIVE SUMMARY - Key findings and overall impact
-2. BASELINE ANALYSIS - Current process performance
-3. VALIDATED IMPROVEMENTS - Each improvement with specific metrics
-4. IMPLEMENTATION ROADMAP - Recommended sequence and dependencies
-5. EXPECTED ROI - Quantified business value
+
+1. EXECUTIVE SUMMARY
+   - Lead with the single most impactful finding
+   - Quantify total potential savings (time, cost, throughput)
+   - State confidence level based on DES/ABS agreement
+
+2. BASELINE ANALYSIS
+   - Current process performance with context (is it good/bad vs industry benchmarks if known?)
+   - Identify the TOP 3 bottlenecks or inefficiencies from the data
+   - Explain WHY these bottlenecks likely exist (root cause hypothesis based on the metrics)
+
+3. VALIDATED IMPROVEMENTS (for each)
+   - What was changed and why it works (causal mechanism)
+   - Before/after metrics with percentage improvement
+   - Confidence assessment: Did DES and ABS agree? Any caveats?
+   - Prerequisites: What must be true for this to succeed in production?
+   - Risks: What could go wrong? Dependencies on other changes?
+
+4. IMPLEMENTATION ROADMAP
+   - Prioritized sequence with SPECIFIC justification for ordering
+   - Quick wins (< 1 week effort) vs strategic changes (> 1 month effort)
+   - Resource requirements for each change (FTEs, systems, budget estimates)
+   - Dependencies between improvements (which must happen first?)
+   - Suggested pilot scope before full rollout
+
+5. EXPECTED ROI & BUSINESS CASE
+   - Quantified savings per improvement (hours/week, cases/day)
+   - Translate to business terms (cost savings, revenue impact, SLA improvement)
+   - Payback period estimate where possible
+   - Comparison: effort to implement vs. expected benefit
+
+6. RISKS & MONITORING
+   - What metrics to track post-implementation
+   - Warning signs that improvements aren't working as expected
+   - Rollback criteria and contingency recommendations
 
 Critical consistency rules:
 - Use ONLY facts present in the provided input payload.
 - Do NOT invent iterations, targets, people, or metric values.
 - Keep DES and ABS evidence separate; never merge them into one synthetic metric.
-- If DES and ABS differ, explicitly acknowledge the divergence.
+- If DES and ABS differ, explicitly acknowledge the divergence and recommend caution.
 - For each validated improvement, reference the executed change target from input data.
 - Do not claim causality beyond what metrics support.
-- If evidence is mixed, use cautious language.
+- If evidence is mixed, use cautious language like "preliminary evidence suggests".
+- When estimating ROI or effort, clearly state these are estimates based on the simulation data.
 
-Use clear language suitable for business stakeholders, not just technical experts.
-Format with markdown for readability."""
+Tone: Write for a VP of Operations who needs to decide whether to fund implementation.
+Format with markdown for readability. Use tables for metric comparisons where appropriate."""
     
     def _get_user_prompt(
         self,
@@ -273,11 +353,14 @@ Mandatory reporting rules:
             execution_times = {}
         if iterations_times is None:
             iterations_times = []
-        
+
         # Build header with metadata
         report = self._build_report_header(log_path, execution_times, iterations_times)
-        
+
         report += f"""
+
+⚠️ **WARNING: THIS IS A FALLBACK TEMPLATE REPORT** ⚠️
+The LLM-based report generation failed. Check logs for details.
 
 **Generated:** {os.path.basename(log_path)}
 

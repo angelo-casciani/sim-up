@@ -27,7 +27,7 @@ sentence_transformers = "^2.2.2"
 sap-llm-commons = "^0.2.0"
 ipykernel = "^6.29.4"
 python-dotenv = "^1.0.1"
-generative-ai-hub-sdk = {extras = ["all"], version = "^3.1.1"}
+generative-ai-hub-sdk = {version = "^4.12.4", extras = ["all"]}
 datasets = "^2.18.0"
 setfit = "^1.0.3"
 bertopic = "^0.16.2"

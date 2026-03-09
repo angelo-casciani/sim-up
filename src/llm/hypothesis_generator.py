@@ -1,5 +1,5 @@
 import json
-from typing import Dict, List
+from typing import Dict, List, Optional
 from dotenv import load_dotenv
 import re
 
@@ -7,12 +7,82 @@ load_dotenv()
 
 from gen_ai_hub.proxy.native.openai import chat
 
+# Models that use Amazon Bedrock Converse API (Anthropic Claude models)
+AMAZON_BEDROCK_MODELS = {'anthropic--claude-4.5-opus', 'anthropic--claude-4.5-sonnet', 'anthropic--claude-4.5-haiku',
+                         'anthropic--claude-4-opus', 'anthropic--claude-4-sonnet'}
+
+# OpenAI reasoning models (use max_completion_tokens, no temperature)
+OPENAI_REASONING_MODELS = {'gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'o3', 'o3-mini', 'o1', 'o1-mini', 'o1-preview'}
+
 
 class HypothesisGenerator:
     def __init__(self, model_name: str = "gpt-4.1", temperature: float = 0.0, max_tokens: int = 4096):
         self.model_name = model_name
         self.temperature = temperature
         self.max_tokens = max_tokens
+
+    def _is_amazon_bedrock_model(self) -> bool:
+        """Check if the model uses Amazon Bedrock Converse API."""
+        model_lower = self.model_name.lower()
+        return any(m in model_lower for m in AMAZON_BEDROCK_MODELS)
+
+    def _is_reasoning_model(self) -> bool:
+        """Check if the model is an OpenAI reasoning model (o-series, gpt-5 series)."""
+        return self.model_name in OPENAI_REASONING_MODELS
+
+    def _call_openai_chat(self, system_prompt: str, user_prompt: str) -> str:
+        """Call OpenAI-compatible chat API (works for GPT, Mistral models)."""
+        response = chat.completions.create(
+            model_name=self.model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=self.temperature,
+            max_tokens=self.max_tokens
+        )
+        return response.choices[0].message.content
+
+    def _call_openai_reasoning(self, system_prompt: str, user_prompt: str) -> str:
+        """Call OpenAI reasoning model API (o-series, gpt-5 series - no temperature, use max_completion_tokens)."""
+        response = chat.completions.create(
+            model_name=self.model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            extra_body={"max_completion_tokens": self.max_tokens}
+        )
+        return response.choices[0].message.content
+
+    def _call_amazon_bedrock(self, system_prompt: str, user_prompt: str) -> str:
+        """Call Amazon Bedrock Converse API for Anthropic models."""
+        from gen_ai_hub.proxy.native.amazon.clients import Session
+
+        bedrock = Session().client(model_name=self.model_name)
+        conversation = [
+            {
+                "role": "user",
+                "content": [{"text": f"{system_prompt}\n\n{user_prompt}"}],
+            }
+        ]
+        response = bedrock.converse(
+            messages=conversation,
+            inferenceConfig={"maxTokens": self.max_tokens, "temperature": self.temperature},
+        )
+        return response["output"]["message"]["content"][0]["text"]
+
+    def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
+        """Route LLM call to the appropriate provider based on model name."""
+        if self._is_amazon_bedrock_model():
+            print(f"[HypothesisGenerator] Using Amazon Bedrock Converse API for {self.model_name}")
+            return self._call_amazon_bedrock(system_prompt, user_prompt)
+        elif self._is_reasoning_model():
+            print(f"[HypothesisGenerator] Using OpenAI Reasoning API for {self.model_name}")
+            return self._call_openai_reasoning(system_prompt, user_prompt)
+        else:
+            print(f"[HypothesisGenerator] Using OpenAI Chat API for {self.model_name}")
+            return self._call_openai_chat(system_prompt, user_prompt)
     
     
     def generate(
@@ -48,18 +118,10 @@ class HypothesisGenerator:
         )
         
         try:
-            response = chat.completions.create(
-                model_name=self.model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=self.temperature,
-                max_tokens=self.max_tokens
-            )
-            
+            # Route to appropriate provider based on model
+            response_text = self._call_llm(system_prompt, user_prompt)
+
             # Parse LLM response and extract JSON
-            response_text = response.choices[0].message.content
             try:
                 start_idx = response_text.find('{')
                 end_idx = response_text.rfind('}') + 1
@@ -70,7 +132,7 @@ class HypothesisGenerator:
                     hypothesis = self._parse_hypothesis_text(response_text)
             except json.JSONDecodeError:
                 hypothesis = self._parse_hypothesis_text(response_text)
-            
+
             hypothesis = self._sanitize_hypothesis(hypothesis, strategy_hints, target_hints)
 
             if self._validate_hypothesis(hypothesis):
@@ -78,7 +140,7 @@ class HypothesisGenerator:
             else:
                 print("Warning: Invalid hypothesis structure, using fallback")
                 return self._get_fallback_hypothesis(strategy_hints, target_hints)
-                
+
         except Exception as e:
             print(f"Error generating hypothesis: {e}")
             return self._get_fallback_hypothesis(strategy_hints, target_hints)
