@@ -170,7 +170,11 @@ Validation oracle by change type (CRITICAL — use this to set realistic expecte
             * role_redesign (shift_responsibility or create_specialist_role)
             * activity_duration_optimization (reduce_duration 5-25%)
             * calendar_adjustment (increase_hours 1-2)
-            * resource_allocation (add or increase_count by 1-2)
+            * resource_allocation (add or increase_count):
+              - For utilization >= 95%: add 4-6 resources (critical bottleneck)
+              - For utilization >= 90%: add 3-5 resources (severe bottleneck)
+              - For utilization >= 80%: add 2-4 resources (high bottleneck)
+              - Otherwise: add 1-2 resources
         - Do NOT propose arrival_rate_adjustment or routing_adjustment.
         - Do NOT propose remove/decrease_count/increase_duration/decrease_hours.
     - Avoid hypotheses that are likely to increase cycle time or decrease throughput.
@@ -396,6 +400,16 @@ Return ONLY the JSON object, no additional text."""
         sorted_utils = sorted(((str(k), float(v)) for k, v in util.items()), key=lambda x: x[1], reverse=True)
         overloaded = [r for r, u in sorted_utils if u >= 0.80][:3]
         underutilized = [r for r, u in sorted_utils if u <= 0.25][:5]
+        # Track utilization values for overloaded resources (for scaling increments)
+        # Store both with and without _profile suffix for robust lookups
+        overloaded_utilizations = {}
+        for r, u in sorted_utils:
+            if u >= 0.80:
+                overloaded_utilizations[r] = u
+                # Also store normalized version
+                r_norm = r.replace("_profile", "")
+                if r_norm != r:
+                    overloaded_utilizations[r_norm] = u
 
         resources = target_hints.get("resources", [])
         resource_norms = {str(r).replace("_profile", "") for r in resources}
@@ -458,6 +472,7 @@ Return ONLY the JSON object, no additional text."""
             "underutilized_targets": underutilized,
             "mappable_overloaded_targets": mappable_overloaded,
             "mappable_underutilized_targets": mappable_underutilized,
+            "overloaded_utilizations": overloaded_utilizations,
             "waiting_ratio": waiting_ratio,
             "recently_tried": recently_tried,
         }
@@ -672,11 +687,39 @@ Return ONLY the JSON object, no additional text."""
             target = resources[0] if resources else "Resource_1"
 
         change = preferred_change if preferred_change in {"add", "increase_count"} else "add"
+
+        # Determine increment based on utilization severity
+        # Critical bottleneck (>90% util) needs bolder action (3-6 resources)
+        # High bottleneck (>80% util) needs moderate action (2-4 resources)
+        overloaded_utils = strategy_hints.get("overloaded_utilizations", {})
+
+        # Try multiple key formats to find utilization
+        target_norm = target.replace("_profile", "")
+        target_util = (
+            overloaded_utils.get(target, 0) or  # Try exact match first
+            overloaded_utils.get(target_norm, 0) or  # Try without _profile
+            overloaded_utils.get(f"{target_norm}_profile", 0)  # Try with _profile
+        )
+
         try:
             value = int(float(preferred_value))
         except Exception:
-            value = 1
-        value = max(1, min(2, value))
+            value = 2  # Default to 2 instead of 1
+
+        # Scale increment based on utilization severity
+        if target_util >= 0.95:
+            # Critical: allow 4-6 resources
+            value = max(4, min(6, value)) if value >= 3 else 4
+        elif target_util >= 0.90:
+            # Very high: allow 3-5 resources
+            value = max(3, min(5, value)) if value >= 2 else 3
+        elif target_util >= 0.80:
+            # High: allow 2-4 resources
+            value = max(2, min(4, value))
+        else:
+            # Normal: 1-2 resources
+            value = max(1, min(2, value))
+
         return target, change, value, "resource_allocation"
 
     @staticmethod

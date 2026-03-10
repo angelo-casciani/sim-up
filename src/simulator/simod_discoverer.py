@@ -37,6 +37,8 @@ class SIMODDiscoverer:
         baseline_metrics = self._extract_baseline_from_log(log_path)
         # Convert XES to CSV if needed
         csv_path = self._convert_xes_to_csv(log_path)
+        # Ensure working directory exists
+        os.makedirs(work_dir, exist_ok=True)
         # Copy CSV to working directory
         csv_name = os.path.basename(csv_path)
         work_csv_path = os.path.join(work_dir, csv_name)
@@ -314,14 +316,15 @@ class SIMODDiscoverer:
 
                 case_col = find_column(columns, ['case_id', 'case'], None)
                 activity_col = find_column(columns, ['concept:name', 'activity_name', 'activity'], None)
-                time_col = find_column(columns, ['end_timestamp', 'end_time', 'end', 'time:timestamp'], None)
+                start_col = find_column(columns, ['start_timestamp', 'start_time', 'start'], None)
+                end_col = find_column(columns, ['end_timestamp', 'end_time', 'end', 'time:timestamp'], None)
 
                 # If we found these columns, extract metrics from CSV
-                if case_col and activity_col and time_col:
-                    print(f"  Found columns: case={case_col}, activity={activity_col}, time={time_col}")
-                    metrics = self._extract_metrics_from_csv(df, case_col, time_col)
+                if case_col and activity_col and end_col:
+                    print(f"  Found columns: case={case_col}, activity={activity_col}, start={start_col}, end={end_col}")
+                    metrics = self._extract_metrics_from_csv(df, case_col, start_col, end_col)
                 else:
-                    print(f"  Warning: Could not find required columns. Found: case={case_col}, activity={activity_col}, time={time_col}")
+                    print(f"  Warning: Could not find required columns. Found: case={case_col}, activity={activity_col}, end={end_col}")
             else:
                 log = pm4py.read_xes(log_path)
                 metrics = self._extract_metrics_from_xes_log(log)
@@ -417,22 +420,46 @@ class SIMODDiscoverer:
             print(f"Error extracting from XES: {e}")
             return {}
     
-    def _extract_metrics_from_csv(self, df, case_col: str, time_col: str) -> Dict:
+    def _extract_metrics_from_csv(self, df, case_col: str, start_col: str, end_col: str) -> Dict:
+        """Extract metrics from CSV using same methodology as simulation."""
         try:
             metrics = {}
-            if case_col in df.columns and time_col in df.columns:
-                df[time_col] = pd.to_datetime(df[time_col], errors='coerce')                
-                try:
-                    cycle_times = df.groupby(case_col)[time_col].apply(
-                        lambda x: (x.max() - x.min()).total_seconds())
-                    metrics['avg_cycle_time'] = float(cycle_times.mean())
-                except Exception as e:
-                    print(f"    Warning: Could not calculate cycle time: {e}")
-                    metrics['avg_cycle_time'] = 14400  # Default
-            if case_col in df.columns:
-                metrics['avg_throughput'] = float(df[case_col].nunique())
+
+            # Parse timestamps
+            if end_col and end_col in df.columns:
+                df[end_col] = pd.to_datetime(df[end_col], errors='coerce')
+            if start_col and start_col in df.columns:
+                df[start_col] = pd.to_datetime(df[start_col], errors='coerce')
+
+            # Calculate cycle time: max(end) - min(start) per case
+            if start_col and start_col in df.columns and end_col and end_col in df.columns:
+                case_start = df.groupby(case_col)[start_col].min()
+                case_end = df.groupby(case_col)[end_col].max()
+                cycle_times = (case_end - case_start).dt.total_seconds()
+                metrics['avg_cycle_time'] = float(cycle_times.mean())
+            elif end_col and end_col in df.columns:
+                # Fallback: use end_timestamp only
+                cycle_times = df.groupby(case_col)[end_col].apply(
+                    lambda x: (x.max() - x.min()).total_seconds())
+                metrics['avg_cycle_time'] = float(cycle_times.mean())
+
+            # Calculate throughput as cases/day (matching simulation)
+            num_cases = df[case_col].nunique()
+            time_anchor = end_col if end_col and end_col in df.columns else start_col
+            if time_anchor and time_anchor in df.columns and df[time_anchor].notna().any():
+                time_span_seconds = (df[time_anchor].max() - df[time_anchor].min()).total_seconds()
+                if time_span_seconds > 0:
+                    metrics['avg_throughput'] = float(num_cases / (time_span_seconds / 86400.0))
+                else:
+                    metrics['avg_throughput'] = float(num_cases)
+            else:
+                metrics['avg_throughput'] = float(num_cases)
+
+            # Waiting time estimate
             if 'avg_cycle_time' in metrics:
                 metrics['avg_waiting_time'] = metrics['avg_cycle_time'] * 0.3
+
+            # Resource utilization (unchanged)
             resource_cols = [col for col in df.columns if 'resource' in col.lower()]
             if resource_cols:
                 resource_col = resource_cols[0]
@@ -451,6 +478,7 @@ class SIMODDiscoverer:
             else:
                 print(f"    Warning: No resource column found. Available columns: {list(df.columns)[:10]}")
                 metrics['resource_utilization'] = {}
+
             return metrics
         except Exception as e:
             print(f"    Error extracting from CSV: {e}")

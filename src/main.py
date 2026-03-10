@@ -1,4 +1,5 @@
 import os
+import platform
 from argparse import ArgumentParser
 from datetime import datetime
 from dotenv import load_dotenv
@@ -10,16 +11,19 @@ from improvement_validation_pipeline import ImprovementValidationAgent
 
 def parse_arguments():
     parser = ArgumentParser(description="Test Process Improvement Validation Agent")
+    is_windows = platform.system() == "Windows"
+
     parser.add_argument('--model', type=str, default='gpt-4.1', help='LLM model id')
     parser.add_argument('--log', type=str, default='road_traffic.xes', help='Event log file name in logs/ directory')
     parser.add_argument('--temperature', type=float, default=0.0, help='Temperature for LLM generation (default: 0.0)')
     parser.add_argument('--max_tokens', type=int, default=4096, help='Max tokens for LLM responses (default: 4096)')
     parser.add_argument('--max_iterations', type=int, default=3, help='Maximum improvement iterations (default: 3)')
-    parser.add_argument('--no_sudo', action='store_true', help='Do not use sudo for Docker commands (default: use sudo)')
+    parser.add_argument('--no_sudo', action='store_true', default=is_windows,
+                        help='Do not use sudo for Docker commands (auto-detected: disabled on Windows)')
     parser.add_argument('--des_runs', type=int, default=10, help='Number of DES (Prosimos) runs to average (default: 10)')
     parser.add_argument('--abs_runs', type=int, default=10, help='Number of ABS (AgentSimulator) runs to request (default: 10)')
     parser.add_argument('--des_constrain_total_cases', action='store_true', help='Constrain DES by baseline-derived max case budget (default: off)')
-    
+
     return parser.parse_args()
 
 
@@ -68,6 +72,7 @@ def main():
     print("=" * 80 + "\n")
 
     args = parse_arguments()
+    use_sudo = not args.no_sudo
 
     print("Configuration:")
     print(f"  LLM Model: {args.model}")
@@ -75,7 +80,7 @@ def main():
     print(f"  Temperature: {args.temperature}")
     print(f"  Max Tokens: {args.max_tokens}")
     print(f"  Max Iterations: {args.max_iterations}")
-    print(f"  Use Sudo: {not args.no_sudo}")
+    print(f"  Use Sudo: {use_sudo}")
     print(f"  DES Runs: {args.des_runs}")
     print(f"  ABS Runs: {args.abs_runs}")
     print(f"  DES Case-Budget Constraint: {args.des_constrain_total_cases}")
@@ -111,7 +116,7 @@ def main():
         temperature=args.temperature,
         max_tokens=args.max_tokens,
         max_iterations=args.max_iterations,
-        use_sudo=not args.no_sudo,
+        use_sudo=use_sudo,
         des_runs=args.des_runs,
         abs_runs=args.abs_runs,
         des_constrain_total_cases=args.des_constrain_total_cases

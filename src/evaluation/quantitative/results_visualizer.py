@@ -1,0 +1,378 @@
+"""
+Results Visualizer for Quantitative Evaluation.
+
+Generates charts for the paper comparing LLM-guided search vs Grid Search:
+- X-Axis: Number of Simulation Calls (iterations)
+- Y-Axis: Process KPI (Cycle Time)
+
+Shows the "semantic heuristic" advantage of LLM over systematic search.
+"""
+
+import os
+import json
+from typing import Dict, List, Optional
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import numpy as np
+
+
+class ResultsVisualizer:
+    """Generate publication-quality charts from evaluation results."""
+
+    def __init__(self, output_dir: str):
+        """
+        Initialize visualizer.
+
+        Args:
+            output_dir: Directory to save generated charts
+        """
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Publication-quality style settings
+        plt.style.use('seaborn-v0_8-whitegrid')
+        self.colors = {
+            'grid': '#E74C3C',      # Red for grid search
+            'llm': '#2ECC71',       # Green for LLM
+            'optimal': '#3498DB',   # Blue for optimal line
+            'faulty': '#95A5A6'     # Gray for faulty baseline
+        }
+
+    def plot_single_experiment(
+        self,
+        experiment: Dict,
+        save_name: Optional[str] = None
+    ) -> str:
+        """
+        Plot convergence comparison for a single experiment.
+
+        Args:
+            experiment: Experiment result dictionary
+            save_name: Output filename (default: log_name)
+
+        Returns:
+            Path to saved figure
+        """
+        log_name = experiment.get("log_name", "unknown")
+        grid_data = experiment.get("grid_search", {})
+        llm_data = experiment.get("llm_search", {})
+        optimal_metrics = experiment.get("optimal_metrics", {})
+        faulty_metrics = experiment.get("faulty_metrics", {})
+
+        optimal_cycle = optimal_metrics.get("avg_cycle_time", 0)
+        faulty_cycle = faulty_metrics.get("avg_cycle_time", 0)
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        # Plot Grid Search trajectory
+        grid_iters = grid_data.get("iterations", [])
+        if grid_iters:
+            x_grid = [it["iteration"] for it in grid_iters]
+            y_grid = [it["cycle_time"] for it in grid_iters]
+            ax.plot(x_grid, y_grid, 'o-', color=self.colors['grid'],
+                    linewidth=2, markersize=8, label='Grid Search')
+
+            # Mark solution point for grid
+            sol_iter = grid_data.get("solution_found_at")
+            if sol_iter:
+                sol_idx = sol_iter - 1
+                ax.plot(x_grid[sol_idx], y_grid[sol_idx], 's',
+                        color=self.colors['grid'], markersize=15,
+                        markeredgecolor='black', markeredgewidth=2)
+
+        # Plot LLM Search trajectory
+        llm_iters = llm_data.get("iterations", [])
+        if llm_iters:
+            x_llm = [it["iteration"] for it in llm_iters]
+            y_llm = [it["cycle_time"] for it in llm_iters]
+            ax.plot(x_llm, y_llm, 's-', color=self.colors['llm'],
+                    linewidth=2, markersize=8, label='LLM Agent')
+
+            # Mark solution point for LLM
+            sol_iter = llm_data.get("solution_found_at")
+            if sol_iter:
+                sol_idx = sol_iter - 1
+                ax.plot(x_llm[sol_idx], y_llm[sol_idx], 's',
+                        color=self.colors['llm'], markersize=15,
+                        markeredgecolor='black', markeredgewidth=2)
+
+        # Reference lines
+        max_iter = max(
+            max(x_grid) if x_grid else 1,
+            max(x_llm) if x_llm else 1
+        )
+        ax.axhline(y=optimal_cycle, color=self.colors['optimal'],
+                   linestyle='--', linewidth=2, label=f'Optimal ({optimal_cycle:.0f}s)')
+        ax.axhline(y=faulty_cycle, color=self.colors['faulty'],
+                   linestyle=':', linewidth=2, label=f'Faulty ({faulty_cycle:.0f}s)')
+
+        # Formatting
+        ax.set_xlabel('Simulation Calls (Iterations)', fontsize=12)
+        ax.set_ylabel('Cycle Time (seconds)', fontsize=12)
+        ax.set_title(f'Convergence Comparison: {log_name}', fontsize=14, fontweight='bold')
+        ax.legend(loc='upper right', fontsize=10)
+        ax.set_xlim(0, max_iter + 1)
+
+        # Add annotation for speedup
+        grid_sol = grid_data.get("solution_found_at")
+        llm_sol = llm_data.get("solution_found_at")
+        if grid_sol and llm_sol:
+            speedup = grid_sol / llm_sol
+            ax.text(0.02, 0.98, f'Speedup: {speedup:.1f}x',
+                    transform=ax.transAxes, fontsize=12,
+                    verticalalignment='top', fontweight='bold',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+        plt.tight_layout()
+
+        # Save
+        if save_name is None:
+            save_name = os.path.splitext(log_name)[0]
+        fig_path = os.path.join(self.output_dir, f"{save_name}_convergence.png")
+        plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+        plt.savefig(fig_path.replace('.png', '.pdf'), bbox_inches='tight')
+        plt.close()
+
+        print(f"  Saved: {fig_path}")
+        return fig_path
+
+    def plot_aggregate_comparison(
+        self,
+        summary: Dict,
+        save_name: str = "aggregate_comparison"
+    ) -> str:
+        """
+        Plot aggregate comparison across all experiments.
+
+        Args:
+            summary: Full evaluation summary dictionary
+            save_name: Output filename
+
+        Returns:
+            Path to saved figure
+        """
+        experiments = summary.get("experiments", [])
+        if not experiments:
+            print("No experiments to plot")
+            return ""
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+        # Left plot: Iterations to solution comparison
+        ax1 = axes[0]
+        log_names = []
+        grid_iters = []
+        llm_iters = []
+
+        for exp in experiments:
+            name = exp.get("log_name", "").replace(".csv", "").replace(".xes", "")
+            grid_sol = exp.get("grid_iterations_to_solution")
+            llm_sol = exp.get("llm_iterations_to_solution")
+
+            if grid_sol is not None and llm_sol is not None:
+                log_names.append(name[:15])  # Truncate long names
+                grid_iters.append(grid_sol)
+                llm_iters.append(llm_sol)
+
+        if log_names:
+            x = np.arange(len(log_names))
+            width = 0.35
+
+            bars1 = ax1.bar(x - width/2, grid_iters, width,
+                           label='Grid Search', color=self.colors['grid'])
+            bars2 = ax1.bar(x + width/2, llm_iters, width,
+                           label='LLM Agent', color=self.colors['llm'])
+
+            ax1.set_xlabel('Event Log', fontsize=12)
+            ax1.set_ylabel('Iterations to Solution', fontsize=12)
+            ax1.set_title('Simulation Calls Required', fontsize=14, fontweight='bold')
+            ax1.set_xticks(x)
+            ax1.set_xticklabels(log_names, rotation=45, ha='right')
+            ax1.legend()
+
+            # Add value labels on bars
+            for bar in bars1:
+                height = bar.get_height()
+                ax1.annotate(f'{int(height)}',
+                            xy=(bar.get_x() + bar.get_width() / 2, height),
+                            xytext=(0, 3), textcoords="offset points",
+                            ha='center', va='bottom', fontsize=9)
+            for bar in bars2:
+                height = bar.get_height()
+                ax1.annotate(f'{int(height)}',
+                            xy=(bar.get_x() + bar.get_width() / 2, height),
+                            xytext=(0, 3), textcoords="offset points",
+                            ha='center', va='bottom', fontsize=9)
+
+        # Right plot: Speedup ratios
+        ax2 = axes[1]
+        speedups = []
+        speedup_names = []
+
+        for exp in experiments:
+            name = exp.get("log_name", "").replace(".csv", "").replace(".xes", "")
+            speedup = exp.get("speedup_ratio")
+            if speedup is not None:
+                speedup_names.append(name[:15])
+                speedups.append(speedup)
+
+        if speedups:
+            colors = [self.colors['llm'] if s > 1 else self.colors['grid'] for s in speedups]
+            bars = ax2.bar(speedup_names, speedups, color=colors)
+
+            ax2.axhline(y=1, color='black', linestyle='--', linewidth=1)
+            ax2.set_xlabel('Event Log', fontsize=12)
+            ax2.set_ylabel('Speedup Ratio (Grid/LLM)', fontsize=12)
+            ax2.set_title('LLM Speedup over Grid Search', fontsize=14, fontweight='bold')
+            ax2.set_xticklabels(speedup_names, rotation=45, ha='right')
+
+            # Add value labels
+            for bar, val in zip(bars, speedups):
+                ax2.annotate(f'{val:.1f}x',
+                            xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
+                            xytext=(0, 3), textcoords="offset points",
+                            ha='center', va='bottom', fontsize=10, fontweight='bold')
+
+            # Add legend
+            green_patch = mpatches.Patch(color=self.colors['llm'], label='LLM faster')
+            red_patch = mpatches.Patch(color=self.colors['grid'], label='Grid faster')
+            ax2.legend(handles=[green_patch, red_patch], loc='upper right')
+
+        plt.tight_layout()
+
+        # Save
+        fig_path = os.path.join(self.output_dir, f"{save_name}.png")
+        plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+        plt.savefig(fig_path.replace('.png', '.pdf'), bbox_inches='tight')
+        plt.close()
+
+        print(f"  Saved: {fig_path}")
+        return fig_path
+
+    def plot_convergence_overlay(
+        self,
+        summary: Dict,
+        save_name: str = "convergence_overlay"
+    ) -> str:
+        """
+        Plot overlaid convergence curves for all experiments.
+
+        Shows the pattern: Grid Search is a slow stepped line,
+        LLM Agent is a vertical jump to solution.
+
+        Args:
+            summary: Full evaluation summary dictionary
+            save_name: Output filename
+
+        Returns:
+            Path to saved figure
+        """
+        experiments = summary.get("experiments", [])
+        if not experiments:
+            return ""
+
+        fig, ax = plt.subplots(figsize=(12, 7))
+
+        # Normalize cycle times to percentage of faulty baseline
+        for i, exp in enumerate(experiments):
+            grid_data = exp.get("grid_search", {})
+            llm_data = exp.get("llm_search", {})
+            faulty_cycle = exp.get("faulty_metrics", {}).get("avg_cycle_time", 1)
+            optimal_cycle = exp.get("optimal_metrics", {}).get("avg_cycle_time", 1)
+
+            alpha = 0.6
+
+            # Grid search (normalized)
+            grid_iters = grid_data.get("iterations", [])
+            if grid_iters:
+                x_grid = [it["iteration"] for it in grid_iters]
+                y_grid = [(it["cycle_time"] - optimal_cycle) / (faulty_cycle - optimal_cycle) * 100
+                          for it in grid_iters]
+                ax.plot(x_grid, y_grid, 'o-', color=self.colors['grid'],
+                        alpha=alpha, linewidth=1.5, markersize=5)
+
+            # LLM search (normalized)
+            llm_iters = llm_data.get("iterations", [])
+            if llm_iters:
+                x_llm = [it["iteration"] for it in llm_iters]
+                y_llm = [(it["cycle_time"] - optimal_cycle) / (faulty_cycle - optimal_cycle) * 100
+                         for it in llm_iters]
+                ax.plot(x_llm, y_llm, 's-', color=self.colors['llm'],
+                        alpha=alpha, linewidth=1.5, markersize=5)
+
+        # Reference lines
+        ax.axhline(y=0, color=self.colors['optimal'], linestyle='--',
+                   linewidth=2, label='Optimal (target)')
+        ax.axhline(y=100, color=self.colors['faulty'], linestyle=':',
+                   linewidth=2, label='Faulty (start)')
+
+        # Legend for search types
+        grid_line = plt.Line2D([0], [0], color=self.colors['grid'],
+                               linewidth=2, marker='o', label='Grid Search')
+        llm_line = plt.Line2D([0], [0], color=self.colors['llm'],
+                              linewidth=2, marker='s', label='LLM Agent')
+
+        ax.legend(handles=[grid_line, llm_line,
+                          plt.Line2D([0], [0], color=self.colors['optimal'],
+                                     linestyle='--', label='Optimal'),
+                          plt.Line2D([0], [0], color=self.colors['faulty'],
+                                     linestyle=':', label='Faulty')],
+                  loc='upper right', fontsize=10)
+
+        ax.set_xlabel('Simulation Calls (Iterations)', fontsize=12)
+        ax.set_ylabel('Distance from Optimal (%)', fontsize=12)
+        ax.set_title('Convergence Pattern: Grid Search vs LLM Agent\n(All Experiments Overlaid)',
+                     fontsize=14, fontweight='bold')
+        ax.set_ylim(-10, 110)
+
+        # Add annotation
+        ax.text(0.5, 0.95, '"Semantic Heuristic" Effect:\nLLM jumps to solution using queue/utilization signals',
+                transform=ax.transAxes, fontsize=11, ha='center', va='top',
+                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+
+        plt.tight_layout()
+
+        # Save
+        fig_path = os.path.join(self.output_dir, f"{save_name}.png")
+        plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+        plt.savefig(fig_path.replace('.png', '.pdf'), bbox_inches='tight')
+        plt.close()
+
+        print(f"  Saved: {fig_path}")
+        return fig_path
+
+    def generate_all_plots(self, summary_path: str) -> List[str]:
+        """
+        Generate all plots from a saved evaluation summary.
+
+        Args:
+            summary_path: Path to evaluation_summary.json
+
+        Returns:
+            List of generated figure paths
+        """
+        with open(summary_path, 'r') as f:
+            summary = json.load(f)
+
+        figures = []
+
+        print("\nGenerating visualizations...")
+
+        # Individual experiment plots
+        for exp in summary.get("experiments", []):
+            fig_path = self.plot_single_experiment(exp)
+            if fig_path:
+                figures.append(fig_path)
+
+        # Aggregate comparison
+        fig_path = self.plot_aggregate_comparison(summary)
+        if fig_path:
+            figures.append(fig_path)
+
+        # Convergence overlay
+        fig_path = self.plot_convergence_overlay(summary)
+        if fig_path:
+            figures.append(fig_path)
+
+        print(f"\nGenerated {len(figures)} visualizations")
+        return figures

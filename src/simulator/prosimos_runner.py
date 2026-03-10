@@ -8,6 +8,9 @@ from utils.column_utils import (
     normalize_role_label,
     parse_role_redesign_target,
     resolve_shift_fraction,
+    find_resources_matching_role,
+    extract_resource_role,
+    calculate_target_distribution,
 )
 import shutil
 
@@ -114,18 +117,89 @@ class ProsimosRunner:
         return modified_params
     
     def _modify_resources(self, params: Dict, target: str, change_type: str, value: int):
-        """Modify resource profiles in Prosimos parameters."""
+        """Modify resource profiles in Prosimos parameters with role-aware distribution.
+
+        Handles resource modifications by:
+        1. Identifying all profiles belonging to the target role (e.g., "Loan Officer")
+        2. Distributing the requested change across all matching profiles
+        3. Creating new profiles if needed to reach the target count
+
+        This ensures that "increase Loan Officer to 4" correctly handles cases where
+        the log has "Loan Officer-000001", "Loan Officer-000002", etc.
+        """
         if 'resource_profiles' not in params:
             return
-        
-        for resource in params['resource_profiles']:
-            res_id = resource.get('id', resource.get('name'))
-            if target in res_id or res_id == target:
-                current_amount = resource.get('amount', 1)
-                if 'add' in change_type or 'increase' in change_type:
-                    resource['amount'] = current_amount + int(value)
-                elif 'remove' in change_type or 'decrease' in change_type:
-                    resource['amount'] = max(1, current_amount - int(value))
+
+        resource_profiles = params['resource_profiles']
+
+        # Find all profiles matching the target role
+        matching_profiles, matched_role = find_resources_matching_role(
+            resource_profiles, target
+        )
+
+        if not matching_profiles:
+            print(f"  [!] No resources found matching role '{target}'")
+            return
+
+        # Calculate current total for this role
+        current_total = sum(p.get('amount', 1) for p in matching_profiles)
+        n_profiles = len(matching_profiles)
+
+        # Use calculate_target_distribution to determine the target total
+        # Pass the raw value - the function handles change_type interpretation
+        distribution = calculate_target_distribution(
+            matching_profiles, int(value), change_type
+        )
+
+        # Calculate the target total from distribution result
+        target_total = sum(amt for _, amt in distribution)
+
+        print(f"  [OK] Role '{matched_role}': {n_profiles} profiles, "
+              f"current total={current_total}, target total={target_total}")
+
+        for profile, new_amount in distribution:
+            old_amount = profile.get('amount', 1)
+            profile['amount'] = new_amount
+            res_id = profile.get('id', profile.get('name', ''))
+            if old_amount != new_amount:
+                print(f"    - {res_id}: {old_amount} -> {new_amount}")
+
+        # If we need more resources than can be distributed across existing profiles,
+        # create new profiles based on the first matching profile as template
+        distributed_total = sum(amt for _, amt in distribution)
+        if distributed_total < target_total:
+            shortfall = target_total - distributed_total
+            template = matching_profiles[0]
+            template_id = template.get('id', template.get('name', ''))
+            role_base = extract_resource_role(template_id)
+
+            # Find the highest existing suffix number for this role
+            max_suffix = 0
+            for p in resource_profiles:
+                p_id = p.get('id', p.get('name', ''))
+                if extract_resource_role(p_id) == role_base:
+                    # Try to extract numeric suffix
+                    import re
+                    match = re.search(r'-(\d+)$', p_id)
+                    if match:
+                        max_suffix = max(max_suffix, int(match.group(1)))
+
+            # Create new profiles
+            for i in range(shortfall):
+                new_profile = copy.deepcopy(template)
+                new_suffix = max_suffix + i + 1
+                new_id = f"{role_base}-{new_suffix:06d}"
+
+                if 'id' in new_profile:
+                    new_profile['id'] = new_id
+                elif 'name' in new_profile:
+                    new_profile['name'] = new_id
+                else:
+                    new_profile['id'] = new_id
+
+                new_profile['amount'] = 1
+                resource_profiles.append(new_profile)
+                print(f"    + Created new profile: {new_id} (amount=1)")
 
     def _modify_role_redesign(self, params: Dict, target: str, change_type: str, value: int, change_payload: Dict):
         """Create/reshape roles to model specialization without only adding generic capacity."""
