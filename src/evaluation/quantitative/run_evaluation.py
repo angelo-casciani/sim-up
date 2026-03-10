@@ -35,8 +35,8 @@ def parse_args():
                         help='Max resource count for grid search (default: 10)')
     parser.add_argument('--fault-count', type=int, default=1,
                         help='Resource count to inject as fault (default: 1)')
-    parser.add_argument('--tolerance', type=float, default=5.0,
-                        help='Tolerance %% for solution matching (default: 5.0)')
+    parser.add_argument('--tolerance', type=float, default=2.0,
+                        help='Tolerance %% for solution matching (default: 2.0)')
     parser.add_argument('--max-llm-iters', type=int, default=10,
                         help='Max LLM search iterations (default: 10)')
     parser.add_argument('--logs', type=str, nargs='*', default=None,
@@ -115,9 +115,12 @@ def main():
     for exp in summary.experiments:
         viz.plot_single_experiment(exp.to_dict())
 
-    # Aggregate plots
+    # Aggregate comparison (iterations to solution)
     viz.plot_aggregate_comparison(summary.to_dict())
-    viz.plot_convergence_overlay(summary.to_dict())
+
+    # Convergence overlays for all three KPIs
+    for metric in ["cycle_time", "throughput", "waiting_time"]:
+        viz.plot_convergence_overlay(summary.to_dict(), metric=metric)
 
     print("\n" + "=" * 60)
     print("EVALUATION COMPLETE")

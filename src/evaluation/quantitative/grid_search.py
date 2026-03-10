@@ -65,7 +65,7 @@ class GridSearch:
         self,
         min_count: int = 1,
         max_count: int = 10,
-        tolerance_pct: float = 5.0
+        tolerance_pct: float = 2.0
     ):
         """
         Initialize grid search.
@@ -109,7 +109,6 @@ class GridSearch:
         )
 
         optimal_cycle = optimal_metrics.get("avg_cycle_time", 0)
-        optimal_waiting = optimal_metrics.get("avg_waiting_time", 0)
 
         print(f"\n[Grid Search] Starting systematic search for {target_resource}")
         print(f"  Target optimal count: {optimal_count}")
@@ -138,7 +137,7 @@ class GridSearch:
             waiting_time = metrics.get("avg_waiting_time", float("inf"))
             throughput = metrics.get("avg_throughput", 0)
 
-            # Check if solution found (within tolerance of optimal)
+            # Check if KPIs are within tolerance of optimal
             is_solution = self._is_within_tolerance(cycle_time, optimal_cycle)
 
             result = GridSearchResult(
@@ -155,13 +154,14 @@ class GridSearch:
             status = "FOUND!" if is_solution else ""
             print(f"cycle_time={cycle_time:.2f}s {status}")
 
+            # Record first hit and stop searching
             if is_solution and history.solution_found_at is None:
                 history.solution_found_at = iteration
                 print(f"  [OK] Solution found at iteration {iteration} (count={count})")
-                # Continue to complete the search for full data
+                break
 
         if history.solution_found_at is None:
-            print(f"  [X] No solution found in search range")
+            print(f"  [X] No solution found in search range [{self.min_count}-{self.max_count}]")
 
         return history
 

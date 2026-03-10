@@ -3,9 +3,7 @@ Results Visualizer for Quantitative Evaluation.
 
 Generates charts for the paper comparing LLM-guided search vs Grid Search:
 - X-Axis: Number of Simulation Calls (iterations)
-- Y-Axis: Process KPI (Cycle Time)
-
-Shows the "semantic heuristic" advantage of LLM over systematic search.
+- Y-Axis: Process KPIs (Cycle Time, Throughput, Waiting Time)
 """
 
 import os
@@ -66,6 +64,8 @@ class ResultsVisualizer:
 
         # Plot Grid Search trajectory
         grid_iters = grid_data.get("iterations", [])
+        x_grid = []
+        y_grid = []
         if grid_iters:
             x_grid = [it["iteration"] for it in grid_iters]
             y_grid = [it["cycle_time"] for it in grid_iters]
@@ -82,6 +82,8 @@ class ResultsVisualizer:
 
         # Plot LLM Search trajectory
         llm_iters = llm_data.get("iterations", [])
+        x_llm = []
+        y_llm = []
         if llm_iters:
             x_llm = [it["iteration"] for it in llm_iters]
             y_llm = [it["cycle_time"] for it in llm_iters]
@@ -113,16 +115,6 @@ class ResultsVisualizer:
         ax.legend(loc='upper right', fontsize=10)
         ax.set_xlim(0, max_iter + 1)
 
-        # Add annotation for speedup
-        grid_sol = grid_data.get("solution_found_at")
-        llm_sol = llm_data.get("solution_found_at")
-        if grid_sol and llm_sol:
-            speedup = grid_sol / llm_sol
-            ax.text(0.02, 0.98, f'Speedup: {speedup:.1f}x',
-                    transform=ax.transAxes, fontsize=12,
-                    verticalalignment='top', fontweight='bold',
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-
         plt.tight_layout()
 
         # Save
@@ -143,6 +135,7 @@ class ResultsVisualizer:
     ) -> str:
         """
         Plot aggregate comparison across all experiments.
+        Shows only the iterations-to-solution bar chart.
 
         Args:
             summary: Full evaluation summary dictionary
@@ -156,10 +149,8 @@ class ResultsVisualizer:
             print("No experiments to plot")
             return ""
 
-        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        fig, ax = plt.subplots(figsize=(10, 6))
 
-        # Left plot: Iterations to solution comparison
-        ax1 = axes[0]
         log_names = []
         grid_iters = []
         llm_iters = []
@@ -174,69 +165,39 @@ class ResultsVisualizer:
                 grid_iters.append(grid_sol)
                 llm_iters.append(llm_sol)
 
-        if log_names:
-            x = np.arange(len(log_names))
-            width = 0.35
+        if not log_names:
+            print("No successful experiments to plot")
+            plt.close()
+            return ""
 
-            bars1 = ax1.bar(x - width/2, grid_iters, width,
-                           label='Grid Search', color=self.colors['grid'])
-            bars2 = ax1.bar(x + width/2, llm_iters, width,
-                           label='LLM Agent', color=self.colors['llm'])
+        x = np.arange(len(log_names))
+        width = 0.35
 
-            ax1.set_xlabel('Event Log', fontsize=12)
-            ax1.set_ylabel('Iterations to Solution', fontsize=12)
-            ax1.set_title('Simulation Calls Required', fontsize=14, fontweight='bold')
-            ax1.set_xticks(x)
-            ax1.set_xticklabels(log_names, rotation=45, ha='right')
-            ax1.legend()
+        bars1 = ax.bar(x - width/2, grid_iters, width,
+                       label='Grid Search', color=self.colors['grid'])
+        bars2 = ax.bar(x + width/2, llm_iters, width,
+                       label='LLM Agent', color=self.colors['llm'])
 
-            # Add value labels on bars
-            for bar in bars1:
-                height = bar.get_height()
-                ax1.annotate(f'{int(height)}',
-                            xy=(bar.get_x() + bar.get_width() / 2, height),
-                            xytext=(0, 3), textcoords="offset points",
-                            ha='center', va='bottom', fontsize=9)
-            for bar in bars2:
-                height = bar.get_height()
-                ax1.annotate(f'{int(height)}',
-                            xy=(bar.get_x() + bar.get_width() / 2, height),
-                            xytext=(0, 3), textcoords="offset points",
-                            ha='center', va='bottom', fontsize=9)
+        ax.set_xlabel('Event Log', fontsize=12)
+        ax.set_ylabel('Iterations to Solution', fontsize=12)
+        ax.set_title('Simulation Calls Required to Find Solution', fontsize=14, fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(log_names, rotation=45, ha='right')
+        ax.legend()
 
-        # Right plot: Speedup ratios
-        ax2 = axes[1]
-        speedups = []
-        speedup_names = []
-
-        for exp in experiments:
-            name = exp.get("log_name", "").replace(".csv", "").replace(".xes", "")
-            speedup = exp.get("speedup_ratio")
-            if speedup is not None:
-                speedup_names.append(name[:15])
-                speedups.append(speedup)
-
-        if speedups:
-            colors = [self.colors['llm'] if s > 1 else self.colors['grid'] for s in speedups]
-            bars = ax2.bar(speedup_names, speedups, color=colors)
-
-            ax2.axhline(y=1, color='black', linestyle='--', linewidth=1)
-            ax2.set_xlabel('Event Log', fontsize=12)
-            ax2.set_ylabel('Speedup Ratio (Grid/LLM)', fontsize=12)
-            ax2.set_title('LLM Speedup over Grid Search', fontsize=14, fontweight='bold')
-            ax2.set_xticklabels(speedup_names, rotation=45, ha='right')
-
-            # Add value labels
-            for bar, val in zip(bars, speedups):
-                ax2.annotate(f'{val:.1f}x',
-                            xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
-                            xytext=(0, 3), textcoords="offset points",
-                            ha='center', va='bottom', fontsize=10, fontweight='bold')
-
-            # Add legend
-            green_patch = mpatches.Patch(color=self.colors['llm'], label='LLM faster')
-            red_patch = mpatches.Patch(color=self.colors['grid'], label='Grid faster')
-            ax2.legend(handles=[green_patch, red_patch], loc='upper right')
+        # Add value labels on bars
+        for bar in bars1:
+            height = bar.get_height()
+            ax.annotate(f'{int(height)}',
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 3), textcoords="offset points",
+                        ha='center', va='bottom', fontsize=9)
+        for bar in bars2:
+            height = bar.get_height()
+            ax.annotate(f'{int(height)}',
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 3), textcoords="offset points",
+                        ha='center', va='bottom', fontsize=9)
 
         plt.tight_layout()
 
@@ -252,17 +213,24 @@ class ResultsVisualizer:
     def plot_convergence_overlay(
         self,
         summary: Dict,
-        save_name: str = "convergence_overlay"
+        metric: str = "cycle_time",
+        save_name: Optional[str] = None
     ) -> str:
         """
         Plot overlaid convergence curves for all experiments.
 
-        Shows the pattern: Grid Search is a slow stepped line,
-        LLM Agent is a vertical jump to solution.
+        The chart shows normalized KPI values across iterations:
+        - Y-axis: Normalized value (0% = optimal, 100% = faulty baseline)
+        - X-axis: Simulation calls (iterations)
+
+        Note: Grid search runs ALL iterations (1 to max) to collect complete data,
+        even after finding a solution. The solution point is where the KPI first
+        reaches the tolerance threshold, but exploration continues.
 
         Args:
             summary: Full evaluation summary dictionary
-            save_name: Output filename
+            metric: Which metric to plot ("cycle_time", "throughput", "waiting_time")
+            save_name: Output filename (default: convergence_overlay_{metric})
 
         Returns:
             Path to saved figure
@@ -271,68 +239,124 @@ class ResultsVisualizer:
         if not experiments:
             return ""
 
+        # Metric configuration
+        metric_config = {
+            "cycle_time": {
+                "key": "cycle_time",
+                "optimal_key": "avg_cycle_time",
+                "faulty_key": "avg_cycle_time",
+                "label": "Cycle Time",
+                "lower_is_better": True
+            },
+            "throughput": {
+                "key": "throughput",
+                "optimal_key": "avg_throughput",
+                "faulty_key": "avg_throughput",
+                "label": "Throughput",
+                "lower_is_better": False  # Higher throughput is better
+            },
+            "waiting_time": {
+                "key": "waiting_time",
+                "optimal_key": "avg_waiting_time",
+                "faulty_key": "avg_waiting_time",
+                "label": "Waiting Time",
+                "lower_is_better": True
+            }
+        }
+
+        config = metric_config.get(metric, metric_config["cycle_time"])
+
         fig, ax = plt.subplots(figsize=(12, 7))
 
-        # Normalize cycle times to percentage of faulty baseline
         for i, exp in enumerate(experiments):
             grid_data = exp.get("grid_search", {})
             llm_data = exp.get("llm_search", {})
-            faulty_cycle = exp.get("faulty_metrics", {}).get("avg_cycle_time", 1)
-            optimal_cycle = exp.get("optimal_metrics", {}).get("avg_cycle_time", 1)
+            faulty_val = exp.get("faulty_metrics", {}).get(config["faulty_key"], 1)
+            optimal_val = exp.get("optimal_metrics", {}).get(config["optimal_key"], 1)
 
-            alpha = 0.6
+            # Avoid division by zero
+            if abs(faulty_val - optimal_val) < 0.001:
+                continue
 
-            # Grid search (normalized)
+            alpha = 0.7
+            log_name = exp.get("log_name", "").replace(".csv", "").replace(".xes", "")
+
+            # Normalize: 0% = optimal, 100% = faulty
+            def normalize(val):
+                if config["lower_is_better"]:
+                    # Lower is better: optimal < faulty
+                    return (val - optimal_val) / (faulty_val - optimal_val) * 100
+                else:
+                    # Higher is better: optimal > faulty
+                    return (optimal_val - val) / (optimal_val - faulty_val) * 100
+
+            # Grid search
             grid_iters = grid_data.get("iterations", [])
             if grid_iters:
                 x_grid = [it["iteration"] for it in grid_iters]
-                y_grid = [(it["cycle_time"] - optimal_cycle) / (faulty_cycle - optimal_cycle) * 100
-                          for it in grid_iters]
-                ax.plot(x_grid, y_grid, 'o-', color=self.colors['grid'],
+                y_grid = [normalize(it[config["key"]]) for it in grid_iters]
+                line_grid, = ax.plot(x_grid, y_grid, 'o-', color=self.colors['grid'],
                         alpha=alpha, linewidth=1.5, markersize=5)
 
-            # LLM search (normalized)
+                # Mark solution point
+                sol_iter = grid_data.get("solution_found_at")
+                if sol_iter and sol_iter <= len(x_grid):
+                    ax.plot(x_grid[sol_iter - 1], y_grid[sol_iter - 1], 'o',
+                            color=self.colors['grid'], markersize=12,
+                            markeredgecolor='black', markeredgewidth=2, alpha=1.0)
+
+            # LLM search
             llm_iters = llm_data.get("iterations", [])
             if llm_iters:
                 x_llm = [it["iteration"] for it in llm_iters]
-                y_llm = [(it["cycle_time"] - optimal_cycle) / (faulty_cycle - optimal_cycle) * 100
-                         for it in llm_iters]
-                ax.plot(x_llm, y_llm, 's-', color=self.colors['llm'],
+                y_llm = [normalize(it[config["key"]]) for it in llm_iters]
+                line_llm, = ax.plot(x_llm, y_llm, 's-', color=self.colors['llm'],
                         alpha=alpha, linewidth=1.5, markersize=5)
+
+                # Mark solution point
+                sol_iter = llm_data.get("solution_found_at")
+                if sol_iter and sol_iter <= len(x_llm):
+                    ax.plot(x_llm[sol_iter - 1], y_llm[sol_iter - 1], 's',
+                            color=self.colors['llm'], markersize=12,
+                            markeredgecolor='black', markeredgewidth=2, alpha=1.0)
 
         # Reference lines
         ax.axhline(y=0, color=self.colors['optimal'], linestyle='--',
-                   linewidth=2, label='Optimal (target)')
+                   linewidth=2, label='Optimal (0%)')
         ax.axhline(y=100, color=self.colors['faulty'], linestyle=':',
-                   linewidth=2, label='Faulty (start)')
+                   linewidth=2, label='Faulty baseline (100%)')
 
-        # Legend for search types
+        # Tolerance band (2% threshold)
+        ax.axhspan(-2, 2, alpha=0.2, color=self.colors['optimal'], label='Solution zone (±2%)')
+
+        # Legend
         grid_line = plt.Line2D([0], [0], color=self.colors['grid'],
                                linewidth=2, marker='o', label='Grid Search')
         llm_line = plt.Line2D([0], [0], color=self.colors['llm'],
                               linewidth=2, marker='s', label='LLM Agent')
+        solution_marker = plt.Line2D([0], [0], color='black', marker='o',
+                                      linestyle='None', markersize=10,
+                                      markerfacecolor='white', markeredgewidth=2,
+                                      label='Solution found')
 
-        ax.legend(handles=[grid_line, llm_line,
+        ax.legend(handles=[grid_line, llm_line, solution_marker,
                           plt.Line2D([0], [0], color=self.colors['optimal'],
                                      linestyle='--', label='Optimal'),
                           plt.Line2D([0], [0], color=self.colors['faulty'],
-                                     linestyle=':', label='Faulty')],
+                                     linestyle=':', label='Faulty baseline')],
                   loc='upper right', fontsize=10)
 
         ax.set_xlabel('Simulation Calls (Iterations)', fontsize=12)
-        ax.set_ylabel('Distance from Optimal (%)', fontsize=12)
-        ax.set_title('Convergence Pattern: Grid Search vs LLM Agent\n(All Experiments Overlaid)',
+        ax.set_ylabel(f'{config["label"]} - Distance from Optimal (%)', fontsize=12)
+        ax.set_title(f'Convergence Pattern: {config["label"]}\n(Grid search runs all iterations for complete data)',
                      fontsize=14, fontweight='bold')
-        ax.set_ylim(-10, 110)
-
-        # Add annotation
-        ax.text(0.5, 0.95, '"Semantic Heuristic" Effect:\nLLM jumps to solution using queue/utilization signals',
-                transform=ax.transAxes, fontsize=11, ha='center', va='top',
-                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+        ax.set_ylim(-15, 115)
 
         plt.tight_layout()
 
         # Save
+        if save_name is None:
+            save_name = f"convergence_overlay_{metric}"
         fig_path = os.path.join(self.output_dir, f"{save_name}.png")
         plt.savefig(fig_path, dpi=300, bbox_inches='tight')
         plt.savefig(fig_path.replace('.png', '.pdf'), bbox_inches='tight')
@@ -364,15 +388,16 @@ class ResultsVisualizer:
             if fig_path:
                 figures.append(fig_path)
 
-        # Aggregate comparison
+        # Aggregate comparison (iterations only, no speedup chart)
         fig_path = self.plot_aggregate_comparison(summary)
         if fig_path:
             figures.append(fig_path)
 
-        # Convergence overlay
-        fig_path = self.plot_convergence_overlay(summary)
-        if fig_path:
-            figures.append(fig_path)
+        # Convergence overlays for all three metrics
+        for metric in ["cycle_time", "throughput", "waiting_time"]:
+            fig_path = self.plot_convergence_overlay(summary, metric=metric)
+            if fig_path:
+                figures.append(fig_path)
 
         print(f"\nGenerated {len(figures)} visualizations")
         return figures

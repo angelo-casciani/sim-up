@@ -5,26 +5,15 @@ This module constrains the LLM to only propose resource_allocation changes
 (increase_count) and iteratively updates it based on simulation results.
 The goal is to show that the LLM can use semantic clues (high queue, high utilization)
 to "jump" to the solution faster than systematic grid search.
+
+Uses the existing HypothesisGenerator for LLM calls to avoid code duplication.
 """
 
 import json
 from typing import Dict, List, Callable, Optional
 from dataclasses import dataclass, field
 
-from dotenv import load_dotenv
-load_dotenv()
-
-from gen_ai_hub.proxy.native.openai import chat
-
-
-# Models that use Amazon Bedrock Converse API (Anthropic Claude models)
-AMAZON_BEDROCK_MODELS = {
-    'anthropic--claude-4.5-opus', 'anthropic--claude-4.5-sonnet', 'anthropic--claude-4.5-haiku',
-    'anthropic--claude-4-opus', 'anthropic--claude-4-sonnet'
-}
-
-# OpenAI reasoning models
-OPENAI_REASONING_MODELS = {'gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'o3', 'o3-mini', 'o1', 'o1-mini', 'o1-preview'}
+from llm import HypothesisGenerator
 
 
 @dataclass
@@ -79,6 +68,8 @@ class LLMResourceSearch:
     The LLM sees simulation metrics (queue times, utilization) and proposes
     resource count changes. It is constrained to only increase_count operations
     for the target resource.
+
+    Uses HypothesisGenerator from the main pipeline for LLM calls.
     """
 
     def __init__(
@@ -87,7 +78,7 @@ class LLMResourceSearch:
         temperature: float = 0.0,
         max_tokens: int = 2048,
         max_iterations: int = 10,
-        tolerance_pct: float = 5.0
+        tolerance_pct: float = 2.0
     ):
         """
         Initialize LLM-guided search.
@@ -105,48 +96,12 @@ class LLMResourceSearch:
         self.max_iterations = max_iterations
         self.tolerance_pct = tolerance_pct
 
-    def _is_amazon_bedrock_model(self) -> bool:
-        model_lower = self.model_name.lower()
-        return any(m in model_lower for m in AMAZON_BEDROCK_MODELS)
-
-    def _is_reasoning_model(self) -> bool:
-        return self.model_name in OPENAI_REASONING_MODELS
-
-    def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
-        """Route LLM call to appropriate provider."""
-        if self._is_amazon_bedrock_model():
-            from gen_ai_hub.proxy.native.amazon.clients import Session
-            bedrock = Session().client(model_name=self.model_name)
-            conversation = [{
-                "role": "user",
-                "content": [{"text": f"{system_prompt}\n\n{user_prompt}"}],
-            }]
-            response = bedrock.converse(
-                messages=conversation,
-                inferenceConfig={"maxTokens": self.max_tokens, "temperature": self.temperature},
-            )
-            return response["output"]["message"]["content"][0]["text"]
-        elif self._is_reasoning_model():
-            response = chat.completions.create(
-                model_name=self.model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                extra_body={"max_completion_tokens": self.max_tokens}
-            )
-            return response.choices[0].message.content
-        else:
-            response = chat.completions.create(
-                model_name=self.model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=self.temperature,
-                max_tokens=self.max_tokens
-            )
-            return response.choices[0].message.content
+        # Reuse HypothesisGenerator for LLM calls (handles routing to different providers)
+        self._llm = HypothesisGenerator(
+            model_name=model_name,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
 
     def search(
         self,
@@ -180,7 +135,6 @@ class LLMResourceSearch:
         )
 
         optimal_cycle = optimal_metrics.get("avg_cycle_time", 0)
-        optimal_waiting = optimal_metrics.get("avg_waiting_time", 0)
 
         print(f"\n[LLM Search] Starting guided search for {target_resource}")
         print(f"  Model: {self.model_name}")
@@ -222,7 +176,7 @@ class LLMResourceSearch:
             waiting_time = metrics.get("avg_waiting_time", float("inf"))
             throughput = metrics.get("avg_throughput", 0)
 
-            # Check if solution found
+            # Check if KPIs are within tolerance of optimal
             is_solution = self._is_within_tolerance(cycle_time, optimal_cycle)
 
             result = LLMSearchResult(
@@ -249,7 +203,8 @@ class LLMResourceSearch:
             status = "FOUND!" if is_solution else ""
             print(f"cycle_time={cycle_time:.2f}s {status}")
 
-            if is_solution:
+            # Record first hit and stop searching
+            if is_solution and history.solution_found_at is None:
                 history.solution_found_at = iteration
                 print(f"  [OK] Solution found at iteration {iteration} (count={proposed_count})")
                 break
@@ -308,7 +263,8 @@ Focus on the waiting_time and resource_utilization to identify bottlenecks.
 Return ONLY the JSON object."""
 
         try:
-            response = self._call_llm(system_prompt, user_prompt)
+            # Use HypothesisGenerator's _call_llm for provider routing
+            response = self._llm._call_llm(system_prompt, user_prompt)
 
             # Parse JSON from response
             start_idx = response.find('{')

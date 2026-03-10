@@ -77,7 +77,7 @@ poetry run python src/evaluation/quantitative/run_evaluation.py \
 | `--grid-min` | `1` | Minimum resource count for grid search |
 | `--grid-max` | `10` | Maximum resource count for grid search |
 | `--fault-count` | `1` | Resource count to inject as fault |
-| `--tolerance` | `5.0` | Tolerance % for solution matching |
+| `--tolerance` | `2.0` | Tolerance % for KPI solution matching |
 | `--max-llm-iters` | `10` | Maximum LLM search iterations |
 | `--logs` | all | Specific log files to evaluate |
 | `--no-sudo` | auto | Disable sudo for Docker (auto-detected on Windows) |
@@ -153,7 +153,7 @@ src/evaluation/quantitative/
 ├── evaluation_runner.py         # Main orchestrator
 ├── fault_injector.py            # Fault injection logic
 ├── grid_search.py               # Systematic grid search
-├── llm_search.py                # LLM-guided search (resource_allocation only)
+├── llm_search.py                # LLM-guided search (uses HypothesisGenerator)
 └── results_visualizer.py        # Publication-quality charts
 ```
 
@@ -173,17 +173,18 @@ fault_count = 1
 
 ### 2. Grid Search (`grid_search.py`)
 
-Systematically tries all resource counts from 1 to N:
+Systematically tries resource counts from 1 until KPIs match optimal (within tolerance):
 
 ```python
 for count in range(1, max_count + 1):
     metrics = simulate(model, count)
-    if within_tolerance(metrics, optimal):
-        return count  # Found solution
+    if within_tolerance(metrics.cycle_time, optimal.cycle_time):
+        return count  # Found solution, stop searching
 ```
 
 ### 3. LLM Search (`llm_search.py`)
 
+Uses the existing `HypothesisGenerator` from the main pipeline for LLM calls.
 Constrained to only propose `resource_allocation` changes:
 
 ```python
