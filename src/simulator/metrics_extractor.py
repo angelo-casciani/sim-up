@@ -113,7 +113,9 @@ class MetricsExtractor:
                     case_end = df.groupby('case_id')[end_col].max()
 
                     case_cycle = (case_end - case_start).dt.total_seconds().fillna(0)
-                    metrics['avg_cycle_time'] = float(case_cycle.mean()) if len(case_cycle) > 0 else 0.0
+                    # Filter out invalid (negative) cycle times caused by data errors
+                    valid_cycle = case_cycle[case_cycle >= 0]
+                    metrics['avg_cycle_time'] = float(valid_cycle.mean()) if len(valid_cycle) > 0 else 0.0
 
                     wait_samples = []
                     for _, trace in df.sort_values(['case_id', start_col, end_col]).groupby('case_id'):

@@ -28,17 +28,20 @@ class ProsimosRunner:
         work_dir: str,
         total_cases: Optional[int] = None,
         time_horizon_seconds: Optional[float] = None,
-        baseline_metrics: Optional[Dict] = None
+        baseline_metrics: Optional[Dict] = None,
+        seed: Optional[int] = None
     ) -> Dict:
         """
         Run Prosimos simulation with modifications.
-        
+
         Args:
             model: Baseline simulation model
             modifications: Parameter modifications from hypothesis
             work_dir: Working directory
             baseline_metrics: Optional baseline metrics with real resources for enrichment
-            
+            seed: Optional random seed for reproducibility (ensures identical inputs
+                  yield identical outputs for fair benchmarking)
+
         Returns:
             Dictionary of simulated metrics
         """
@@ -59,7 +62,8 @@ class ProsimosRunner:
                 params_file,
                 work_dir,
                 total_cases=total_cases,
-                time_horizon_seconds=time_horizon_seconds
+                time_horizon_seconds=time_horizon_seconds,
+                seed=seed
             )
             
             # If docker failed, ensure we're using real resources in fallback
@@ -421,9 +425,22 @@ class ProsimosRunner:
         params_file: str,
         work_dir: str,
         total_cases: Optional[int] = None,
-        time_horizon_seconds: Optional[float] = None
+        time_horizon_seconds: Optional[float] = None,
+        seed: Optional[int] = None
     ) -> Dict:
-        """Run Prosimos simulation via Docker."""
+        """Run Prosimos simulation via Docker.
+
+        Args:
+            model: Baseline simulation model
+            params_file: Path to modified parameters JSON
+            work_dir: Working directory
+            total_cases: Number of cases to simulate
+            time_horizon_seconds: Optional time horizon filter
+            seed: Random seed for reproducibility
+
+        Returns:
+            Dictionary of simulated metrics
+        """
         
         # Get BPMN file path
         bpmn_path = None
@@ -469,6 +486,10 @@ class ProsimosRunner:
             "--stat_out_path", "/data/simulated_output/statistics.csv",
             "--log_out_path", "/data/simulated_output/simulation_log.csv"
         ])
+
+        # Note: Prosimos does not support --seed CLI option.
+        # Fair benchmarking is ensured by the simulation cache in evaluation_runner,
+        # which guarantees identical inputs yield identical outputs.
         
         if time_horizon_seconds:
             print(f"Running Prosimos simulation (max {sim_cases} cases, will filter to {time_horizon_seconds/86400:.1f} days)...")

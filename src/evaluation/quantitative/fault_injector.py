@@ -4,11 +4,16 @@ Fault Injector for Quantitative Evaluation.
 This module injects known faults into simulation models by reducing resource counts.
 The goal is to create M_fault from M_opt (the optimal/discovered model) and measure
 how quickly different search strategies (LLM vs Grid) can recover the optimal configuration.
+
+Resource Grouping Strategy:
+1. Pattern-based: Extract role from naming pattern (e.g., "Clerk-000001" → "Clerk")
+2. Activity-based: Group resources that perform identical sets of activities
+3. Fallback: Treat all resources as a single pool (__ALL_RESOURCES__)
 """
 
 import copy
 import re
-from typing import Dict, Tuple, List, Optional
+from typing import Dict, Tuple, List, Optional, Set, FrozenSet
 from collections import defaultdict
 
 
@@ -55,27 +60,114 @@ class FaultInjector:
 
         return dict(roles)
 
+    def _get_resource_activities(self, model: Dict) -> Dict[str, Set[str]]:
+        """
+        Get the set of activities each resource can perform.
+
+        Returns dict: resource_id -> set of activity names
+        """
+        resource_activities = defaultdict(set)
+        task_distributions = model.get("prosimos_params", {}).get("task_resource_distribution", [])
+
+        for task in task_distributions:
+            task_id = task.get("task_id", "")
+            resources = task.get("resources", [])
+            for res in resources:
+                res_id = res.get("resource_id", res.get("id", "")).replace("_profile", "")
+                resource_activities[res_id].add(task_id)
+
+        return dict(resource_activities)
+
+    def _group_resources_by_activity(self, model: Dict) -> Dict[str, List[str]]:
+        """
+        Group resources by their activity sets (resources performing identical activities).
+
+        This creates "pseudo-roles" for logs where resources don't follow naming patterns
+        but multiple resources handle the same tasks.
+
+        Returns dict: pseudo_role_name -> list of resource IDs
+        """
+        resource_activities = self._get_resource_activities(model)
+
+        # Group by activity set (use frozenset as dict key)
+        activity_groups: Dict[FrozenSet[str], List[str]] = defaultdict(list)
+        for res_id, activities in resource_activities.items():
+            activity_key = frozenset(activities)
+            activity_groups[activity_key].append(res_id)
+
+        # Create pseudo-role names based on activities
+        pseudo_roles = {}
+        for i, (activity_set, resources) in enumerate(activity_groups.items()):
+            if len(resources) >= 2:  # Only groups with 2+ resources are useful
+                # Create a readable name from activities
+                sorted_activities = sorted(activity_set)
+                if len(sorted_activities) <= 3:
+                    role_name = f"Group_{'+'.join(sorted_activities[:3])}"
+                else:
+                    role_name = f"Group_{len(sorted_activities)}activities_{i}"
+                pseudo_roles[role_name] = resources
+
+        return pseudo_roles
+
+    def _group_resources_by_activity_with_profiles(self, model: Dict) -> Dict[str, List[Dict]]:
+        """
+        Group resource profiles by their activity sets.
+
+        Returns dict: pseudo_role_name -> list of profile dicts
+        """
+        pseudo_roles = self._group_resources_by_activity(model)
+        resource_profiles = model.get("prosimos_params", {}).get("resource_profiles", [])
+
+        # Map resource IDs to profiles
+        id_to_profile = {}
+        for profile in resource_profiles:
+            profile_id = profile.get("id", profile.get("name", "")).replace("_profile", "")
+            id_to_profile[profile_id] = profile
+
+        # Build result with profile objects
+        result = {}
+        for role_name, resource_ids in pseudo_roles.items():
+            profiles = []
+            for res_id in resource_ids:
+                if res_id in id_to_profile:
+                    profiles.append(id_to_profile[res_id])
+                else:
+                    # Try with _profile suffix
+                    profile_id = f"{res_id}_profile"
+                    for profile in resource_profiles:
+                        if profile.get("id", profile.get("name", "")) == profile_id:
+                            profiles.append(profile)
+                            break
+            if profiles:
+                result[role_name] = profiles
+
+        return result
+
     def find_best_resource_for_fault(
         self,
         baseline_metrics: Dict,
         model: Dict,
-        min_count: int = 2
+        min_count: int = 3
     ) -> Tuple[Optional[str], Optional[int], Optional[float]]:
         """
         Find the best ROLE for fault injection.
 
         CRITICAL: For a meaningful experiment, we need a role with multiple resources
-        so that reducing it creates a real bottleneck.
+        so that reducing it creates a real bottleneck. Prefer roles with HIGH resource
+        count to maximize the impact of the fault.
 
         Selection criteria:
         1. Role must have >= min_count resources (profiles)
-        2. Prefer higher aggregate utilization
-        3. Prefer higher resource count (more dramatic fault effect)
+        2. PRIMARY: Prefer higher resource count (more dramatic fault effect)
+        3. SECONDARY: Prefer higher aggregate utilization (tie-breaker)
+
+        FALLBACK: If all roles have only 1-2 resources (individual resources), treat
+        all resources as a single pool and return a special "__ALL_RESOURCES__" role.
 
         Args:
             baseline_metrics: Baseline metrics containing resource_utilization
             model: The simulation model with prosimos_params
-            min_count: Minimum resource count required (default: 2)
+            min_count: Minimum resource count required (default: 3)
 
         Returns:
             Tuple of (role_name, original_count, avg_utilization)
@@ -113,16 +205,62 @@ class FaultInjector:
                 "count": role_count,
                 "utilization": avg_util,
                 "profiles": profiles,
-                # Score: prefer high utilization AND high count
-                "score": avg_util * 0.5 + (role_count / 10) * 0.5
+                # Score: PRIMARY is count, SECONDARY is utilization (tie-breaker)
+                "score": role_count * 100 + avg_util
             })
 
         if not candidates:
-            print(f"  [!] No roles with count >= {min_count}")
-            # List what we have
-            for role_name, profiles in roles.items():
-                print(f"      {role_name}: {len(profiles)} resources")
-            return None, None, None
+            # FALLBACK 1: Try activity-based grouping (pseudo-roles)
+            print(f"  [!] No pattern-based roles found, trying activity-based grouping...")
+            activity_roles = self._group_resources_by_activity_with_profiles(model)
+
+            if activity_roles:
+                # Build candidates from activity-based groups
+                for role_name, profiles in activity_roles.items():
+                    role_count = len(profiles)
+                    if role_count < min_count:
+                        continue
+
+                    # Calculate average utilization for this group
+                    role_utils = []
+                    for profile in profiles:
+                        profile_id = profile.get("id", profile.get("name", ""))
+                        for util_name, util_val in utilization.items():
+                            util_norm = util_name.replace("_profile", "")
+                            profile_norm = profile_id.replace("_profile", "")
+                            if util_norm == profile_norm or profile_norm in util_name:
+                                role_utils.append(float(util_val))
+                                break
+
+                    avg_util = sum(role_utils) / len(role_utils) if role_utils else 0.5
+
+                    candidates.append({
+                        "role_name": role_name,
+                        "count": role_count,
+                        "utilization": avg_util,
+                        "profiles": profiles,
+                        "is_activity_based": True,  # Mark as activity-based
+                        # Score: PRIMARY is count, SECONDARY is utilization (tie-breaker)
+                        "score": role_count * 100 + avg_util
+                    })
+
+                if candidates:
+                    print(f"  [OK] Found {len(candidates)} activity-based pseudo-roles")
+
+            # FALLBACK 2: All resources as a single pool
+            if not candidates:
+                total_resources = sum(len(profiles) for profiles in roles.values())
+                if total_resources >= min_count:
+                    print(f"  [!] No activity-based groups found, treating all {total_resources} resources as a single pool")
+
+                    # Calculate average utilization across all resources
+                    all_utils = list(utilization.values()) if utilization else [0.5]
+                    avg_util = sum(float(u) for u in all_utils) / len(all_utils)
+
+                    return "__ALL_RESOURCES__", total_resources, avg_util
+
+                print(f"  [!] Not enough resources for fault injection (have {total_resources}, need {min_count})")
+                return None, None, None
 
         # Sort by score descending
         candidates.sort(key=lambda x: x["score"], reverse=True)
@@ -141,7 +279,7 @@ class FaultInjector:
         model: Dict
     ) -> Tuple[Optional[str], Optional[int], Optional[float]]:
         """Deprecated: Use find_best_resource_for_fault() instead."""
-        return self.find_best_resource_for_fault(baseline_metrics, model, min_count=2)
+        return self.find_best_resource_for_fault(baseline_metrics, model, min_count=3)
 
     def inject_fault(
         self,
@@ -155,9 +293,13 @@ class FaultInjector:
         For logs with individual resources (Clerk-000001, Clerk-000002, etc.),
         we REMOVE profiles to simulate reducing the role's capacity.
 
+        Special cases:
+        - "__ALL_RESOURCES__": treat all resources as a single pool
+        - "Group_*": activity-based pseudo-role (look up by resource ID)
+
         Args:
             model: The original (optimal) simulation model
-            target_resource: Role name (e.g., "Clerk", "Loan Officer")
+            target_resource: Role name (e.g., "Clerk", "Loan Officer"), "__ALL_RESOURCES__", or "Group_*"
             fault_count: Number of resources to KEEP (default: self.fault_resource_count)
 
         Returns:
@@ -169,7 +311,90 @@ class FaultInjector:
         faulty_model = copy.deepcopy(model)
         resource_profiles = faulty_model.get("prosimos_params", {}).get("resource_profiles", [])
 
-        # Find all profiles belonging to this role
+        # Special case: treat all resources as a single pool
+        if target_resource == "__ALL_RESOURCES__":
+            original_count = len(resource_profiles)
+
+            if original_count == 0:
+                raise ValueError("No resources found in model")
+
+            # Sort by some criterion (e.g., ID) for deterministic selection
+            sorted_profiles = sorted(resource_profiles, key=lambda p: p.get("id", p.get("name", "")))
+
+            # Keep only fault_count profiles, remove the rest
+            kept_profiles = sorted_profiles[:fault_count]
+            removed_profiles = sorted_profiles[fault_count:]
+
+            # Update model with reduced profiles
+            faulty_model["prosimos_params"]["resource_profiles"] = kept_profiles
+
+            # Update task distributions
+            self._update_task_distributions(faulty_model, removed_profiles)
+
+            fault_info = {
+                "target_resource": target_resource,
+                "original_count": original_count,
+                "fault_count": fault_count,
+                "kept_profiles": [p.get("id", p.get("name", "")) for p in kept_profiles],
+                "removed_profiles": [p.get("id", p.get("name", "")) for p in removed_profiles],
+                "expected_fix_count": original_count
+            }
+
+            print(f"    Removed {len(removed_profiles)} of {original_count} resources (all resources as pool)")
+
+            return faulty_model, fault_info
+
+        # Activity-based pseudo-role (Group_*)
+        if target_resource.startswith("Group_"):
+            activity_roles = self._group_resources_by_activity_with_profiles(model)
+
+            if target_resource not in activity_roles:
+                raise ValueError(f"Activity-based group '{target_resource}' not found in model")
+
+            role_profiles = activity_roles[target_resource]
+            original_count = len(role_profiles)
+
+            # Get resource IDs in this group
+            group_resource_ids = {
+                p.get("id", p.get("name", "")).replace("_profile", "")
+                for p in role_profiles
+            }
+
+            # Split profiles into group members and others
+            other_profiles = []
+            actual_role_profiles = []
+            for profile in resource_profiles:
+                profile_id = profile.get("id", profile.get("name", "")).replace("_profile", "")
+                if profile_id in group_resource_ids:
+                    actual_role_profiles.append(profile)
+                else:
+                    other_profiles.append(profile)
+
+            # Keep only fault_count profiles, remove the rest
+            kept_profiles = actual_role_profiles[:fault_count]
+            removed_profiles = actual_role_profiles[fault_count:]
+
+            # Update model with reduced profiles
+            faulty_model["prosimos_params"]["resource_profiles"] = other_profiles + kept_profiles
+
+            # Update task distributions
+            self._update_task_distributions(faulty_model, removed_profiles)
+
+            fault_info = {
+                "target_resource": target_resource,
+                "original_count": original_count,
+                "fault_count": fault_count,
+                "kept_profiles": [p.get("id", p.get("name", "")) for p in kept_profiles],
+                "removed_profiles": [p.get("id", p.get("name", "")) for p in removed_profiles],
+                "expected_fix_count": original_count,
+                "is_activity_based": True
+            }
+
+            print(f"    Removed {len(removed_profiles)} of {original_count} '{target_resource}' resources (activity-based group)")
+
+            return faulty_model, fault_info
+
+        # Normal case: pattern-based role
         role_profiles = []
         other_profiles = []
 

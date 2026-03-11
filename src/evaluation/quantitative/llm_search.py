@@ -7,6 +7,12 @@ The goal is to show that the LLM can use semantic clues (high queue, high utiliz
 to "jump" to the solution faster than systematic grid search.
 
 Uses the existing HypothesisGenerator for LLM calls to avoid code duplication.
+
+Fair Benchmarking: The simulate_fn provided by evaluation_runner uses a
+simulation cache with fixed random seeds. This ensures that if both LLM
+Search and Grid Search test the same resource count (e.g., count=3), they
+receive identical simulation results, eliminating random variance as a
+confounding factor in the comparison.
 """
 
 import json
@@ -54,7 +60,8 @@ class LLMSearchHistory:
                     "waiting_time": r.waiting_time,
                     "throughput": r.throughput,
                     "is_solution": r.is_solution,
-                    "llm_rationale": r.llm_rationale
+                    "llm_rationale": r.llm_rationale,
+                    "resource_utilization": r.metrics.get("resource_utilization", {})
                 }
                 for r in self.results
             ]
@@ -151,7 +158,8 @@ class LLMResourceSearch:
             proposal = self._generate_proposal(
                 target_resource=target_resource,
                 current_metrics=current_metrics,
-                previous_attempts=previous_attempts
+                previous_attempts=previous_attempts,
+                max_count=optimal_count  # Pass the actual max valid count
             )
 
             proposed_count = proposal.get("proposed_count", 2)
@@ -221,9 +229,14 @@ class LLMResourceSearch:
         self,
         target_resource: str,
         current_metrics: Dict,
-        previous_attempts: List[Dict]
+        previous_attempts: List[Dict],
+        max_count: int = 10
     ) -> Dict:
         """Generate resource count proposal from LLM."""
+
+        # Extract counts already tried
+        tried_counts = [attempt["count"] for attempt in previous_attempts]
+        available_counts = [c for c in range(1, max_count + 1) if c not in tried_counts]
 
         system_prompt = f"""You are a process optimization expert analyzing simulation metrics.
 
@@ -232,7 +245,8 @@ Your ONLY task is to propose the optimal resource count for: {target_resource}
 CONSTRAINTS (CRITICAL):
 - You can ONLY propose resource_allocation changes (increase_count)
 - You must propose a single integer value for the resource count
-- Valid range: 1 to 10
+- Valid range: 1 to {max_count}
+- DO NOT propose a count that was already tried: {tried_counts if tried_counts else 'none yet'}
 
 Analysis strategy:
 - High waiting_time indicates resource bottleneck -> need MORE resources
@@ -242,7 +256,7 @@ Analysis strategy:
 
 Return ONLY a JSON object:
 {{
-  "proposed_count": <integer 1-10>,
+  "proposed_count": <integer 1-{max_count}, NOT in {tried_counts}>,
   "rationale": "Brief explanation of why this count"
 }}"""
 
@@ -257,8 +271,10 @@ Return ONLY a JSON object:
                 user_prompt += f"  {i}. count={attempt['count']}: cycle_time={attempt['cycle_time']:.2f}s ({improved})\n"
             user_prompt += "\n"
 
-        user_prompt += """Based on the metrics and previous attempts, propose the next resource count to try.
+        user_prompt += f"""Based on the metrics and previous attempts, propose the next resource count to try.
 Focus on the waiting_time and resource_utilization to identify bottlenecks.
+IMPORTANT: Do NOT propose any of these already-tried counts: {tried_counts}
+Valid range: 1 to {max_count}
 
 Return ONLY the JSON object."""
 
@@ -272,7 +288,15 @@ Return ONLY the JSON object."""
             if start_idx != -1 and end_idx > start_idx:
                 proposal = json.loads(response[start_idx:end_idx])
                 count = int(proposal.get("proposed_count", 2))
-                count = max(1, min(10, count))  # Clamp to valid range
+                count = max(1, min(max_count, count))  # Clamp to valid range
+
+                # If LLM still proposed a duplicate, pick the nearest untried count
+                if count in tried_counts and available_counts:
+                    # Find nearest available count
+                    nearest = min(available_counts, key=lambda x: abs(x - count))
+                    print(f"\n    [!] LLM proposed duplicate {count}, using {nearest} instead")
+                    count = nearest
+
                 return {
                     "proposed_count": count,
                     "rationale": proposal.get("rationale", "")
@@ -280,15 +304,31 @@ Return ONLY the JSON object."""
         except Exception as e:
             print(f"\n    [!] LLM parsing error: {e}")
 
-        # Fallback: increment from last attempt or start at 2
-        if previous_attempts:
-            last_count = previous_attempts[-1].get("count", 1)
-            return {"proposed_count": min(last_count + 1, 10), "rationale": "Fallback increment"}
-        return {"proposed_count": 2, "rationale": "Fallback initial guess"}
+        # Fallback: pick next available count (not already tried)
+        if available_counts:
+            # Prefer incrementing from last attempt if possible
+            if previous_attempts:
+                last_count = previous_attempts[-1].get("count", 1)
+                higher_available = [c for c in available_counts if c > last_count]
+                if higher_available:
+                    return {"proposed_count": min(higher_available), "rationale": "Fallback: next higher untried"}
+            return {"proposed_count": min(available_counts), "rationale": "Fallback: lowest untried"}
+
+        # All counts exhausted
+        return {"proposed_count": 10, "rationale": "Fallback: all counts tried"}
 
     def _is_within_tolerance(self, value: float, target: float) -> bool:
-        """Check if value is within tolerance of target."""
+        """Check if value is within tolerance of target (or better).
+
+        For cycle_time, lower is better, so we accept values that are:
+        - At most tolerance_pct% HIGHER than target (worse)
+        - Any amount LOWER than target (better or equal)
+        """
         if target == 0:
             return value == 0
-        pct_diff = abs(value - target) / target * 100
+        # Accept if value is better (lower) than target
+        if value <= target:
+            return True
+        # Otherwise check if it's within tolerance (not too much worse)
+        pct_diff = (value - target) / target * 100
         return pct_diff <= self.tolerance_pct

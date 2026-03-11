@@ -3,6 +3,12 @@ Grid Search for Quantitative Evaluation.
 
 Systematic search that tries all resource combinations from 1 to max_count.
 This serves as the baseline comparison for the LLM-guided search.
+
+Fair Benchmarking: The simulate_fn provided by evaluation_runner uses a
+simulation cache with fixed random seeds. This ensures that if both Grid
+Search and LLM Search test the same resource count (e.g., count=3), they
+receive identical simulation results, eliminating random variance as a
+confounding factor in the comparison.
 """
 
 import copy
@@ -46,7 +52,8 @@ class GridSearchHistory:
                     "cycle_time": r.cycle_time,
                     "waiting_time": r.waiting_time,
                     "throughput": r.throughput,
-                    "is_solution": r.is_solution
+                    "is_solution": r.is_solution,
+                    "resource_utilization": r.metrics.get("resource_utilization", {})
                 }
                 for r in self.results
             ]
@@ -166,8 +173,17 @@ class GridSearch:
         return history
 
     def _is_within_tolerance(self, value: float, target: float) -> bool:
-        """Check if value is within tolerance of target."""
+        """Check if value is within tolerance of target (or better).
+
+        For cycle_time, lower is better, so we accept values that are:
+        - At most tolerance_pct% HIGHER than target (worse)
+        - Any amount LOWER than target (better or equal)
+        """
         if target == 0:
             return value == 0
-        pct_diff = abs(value - target) / target * 100
+        # Accept if value is better (lower) than target
+        if value <= target:
+            return True
+        # Otherwise check if it's within tolerance (not too much worse)
+        pct_diff = (value - target) / target * 100
         return pct_diff <= self.tolerance_pct

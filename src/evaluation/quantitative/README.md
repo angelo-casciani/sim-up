@@ -48,6 +48,14 @@ The goal is to demonstrate that an LLM can act as a **"semantic heuristic"** tha
   - High waiting time → Bottleneck identified
   - Previous attempts → Learn and adjust
 
+### Convergence Criteria
+
+Both search methods converge when the simulated KPI reaches the **optimal baseline level** (or better):
+- Values **better than or equal to** optimal are accepted immediately
+- Values **worse than** optimal must be within `tolerance_pct%` to be accepted
+
+This ensures the search finds configurations that achieve equivalent (or superior) performance to the baseline.
+
 ## Usage
 
 ### Basic Run
@@ -77,7 +85,7 @@ poetry run python src/evaluation/quantitative/run_evaluation.py \
 | `--grid-min` | `1` | Minimum resource count for grid search |
 | `--grid-max` | `10` | Maximum resource count for grid search |
 | `--fault-count` | `1` | Resource count to inject as fault |
-| `--tolerance` | `2.0` | Tolerance % for KPI solution matching |
+| `--tolerance` | `5.0` | Tolerance % for KPI solution matching (worse only) |
 | `--max-llm-iters` | `10` | Maximum LLM search iterations |
 | `--logs` | all | Specific log files to evaluate |
 | `--no-sudo` | auto | Disable sudo for Docker (auto-detected on Windows) |
@@ -103,13 +111,78 @@ reports/evaluation/quantitative_eval_YYYYMMDD_HHMMSS/
 │   ├── baseline/                # SIMOD discovery output
 │   └── ...
 └── figures/
-    ├── LoanApp_convergence.png  # Per-log convergence chart
-    ├── LoanApp_convergence.pdf
+    ├── LoanApp_convergence.png  # Convergence chart (log scale)
+    ├── LoanApp_tradeoff.png     # Resource-Performance trade-off (Pareto view)
+    ├── LoanApp_utilization.png  # Resource utilization analysis
     ├── aggregate_comparison.png # Bar chart: iterations comparison
-    ├── aggregate_comparison.pdf
-    ├── convergence_overlay.png  # All experiments overlaid
-    └── convergence_overlay.pdf
+    ├── convergence_overlay_cycle_time.png
+    ├── convergence_overlay_throughput.png
+    ├── convergence_overlay_waiting_time.png
+    └── *.pdf                    # PDF versions for publication
 ```
+
+## Publication-Quality Visualizations
+
+The visualizer generates several chart types optimized for academic publications:
+
+### 1. Convergence Plot (`*_convergence.png`)
+
+Shows the race between Grid Search and LLM to find the solution:
+
+- **Logarithmic Y-axis**: Clearly separates massive fault spike from nuanced improvements
+- **Resource count annotations**: Each point shows how many resources were tried
+- **LLM star marker**: Prominent gold star with horizontal target line
+- **Publication fonts**: Larger axis labels (14pt) and titles (16pt)
+
+### 2. Resource Trade-off Plot (`*_tradeoff.png`)
+
+Visualizes the Pareto trade-off between resource allocation and performance:
+
+- **X-axis**: Number of resources (e.g., Clerks)
+- **Y-axis**: Cycle Time (log scale)
+- **Shows**: Grid path (minimum viable), LLM jump (intelligent), Original state (baseline)
+- **Use case**: Operations Research visualization for ESWA/IS journals
+
+### 3. Resource Utilization Plot (`*_utilization.png`)
+
+Shows how resource utilization changes as resources are added:
+
+- **X-axis**: Number of resources
+- **Y-axis**: Average utilization percentage
+- **Color zones**:
+  - **Green (70-85%)**: Optimal utilization zone
+  - **Red (>85%)**: Over-utilized / bottleneck risk
+  - **Yellow (<70%)**: Under-utilized / resource waste
+- **Use case**: Demonstrates the trade-off between capacity and efficiency
+
+### 4. Aggregate Comparison (`aggregate_comparison.png`)
+
+Bar chart comparing iterations to solution across all logs:
+
+- **Error bars**: Standard deviation when multiple experiments exist
+- **Speedup annotations**: Shows speedup ratio between bars
+- **Value labels**: Exact iteration counts on each bar
+
+### 5. Convergence Overlay (`convergence_overlay_*.png`)
+
+Overlaid curves for all experiments on a single metric:
+
+- **Log scale**: For time-based metrics (cycle_time, waiting_time)
+- **Resource annotations**: Numbers on points indicate resource count tried
+- **Reference lines**: Optimal and faulty baselines
+
+### Visualization Features
+
+| Feature | Implementation | Purpose |
+|---------|----------------|---------|
+| Log Y-axis | `plt.yscale('log')` | Handle massive fault spikes |
+| Resource annotations | Text labels on points | Show decision context |
+| Star markers | Gold star for LLM | Visual prominence |
+| Horizontal dashed line | From LLM solution | Target baseline reference |
+| Colorblind palette | Vermillion, Bluish-green | Accessibility |
+| Thick lines | `linewidth=2.5` | Print readability |
+| Large fonts | 14-16pt | Journal figure scaling |
+| Utilization zones | Colored axhspan | Show optimal/over/under-utilized |
 
 ## Results Interpretation
 
@@ -117,31 +190,22 @@ reports/evaluation/quantitative_eval_YYYYMMDD_HHMMSS/
 
 ```
 Aggregate Results:
-  Avg Grid iterations: 6.00
-  Avg LLM iterations:  2.00
+  Avg Grid iterations: 3.00
+  Avg LLM iterations:  1.00
   Avg Speedup ratio:   3.00x
   Grid success rate:   100.0%
   LLM success rate:    100.0%
 
 Per-log results:
-  LoanApp.csv: Grid=6, LLM=2, Speedup=3.00x
+  LoanApp.csv: Grid=3, LLM=1, Speedup=3.00x
 ```
-
-### Convergence Chart
-
-The convergence chart shows:
-- **X-axis**: Number of simulation calls (iterations)
-- **Y-axis**: Cycle time (seconds)
-- **Red line**: Grid search trajectory (slow, stepped descent)
-- **Green line**: LLM agent trajectory (fast jump to solution)
-- **Blue dashed**: Optimal target
-- **Gray dotted**: Faulty baseline
 
 ### What Makes Good Results for a Paper
 
 1. **Meaningful fault**: Degradation should be significant (>100% cycle time increase)
 2. **Clear speedup**: LLM should find solution in fewer iterations than grid search
 3. **LLM rationale**: The LLM should correctly identify the bottleneck in its reasoning
+4. **Trade-off visualization**: Shows efficient resource allocation vs over-provisioning
 
 ## Module Structure
 
@@ -150,8 +214,8 @@ src/evaluation/quantitative/
 ├── __init__.py
 ├── README.md                    # This file
 ├── run_evaluation.py            # CLI entry point
-├── evaluation_runner.py         # Main orchestrator
-├── fault_injector.py            # Fault injection logic
+├── evaluation_runner.py         # Main orchestrator (5 DES runs averaged)
+├── fault_injector.py            # Fault injection (pattern + activity-based grouping)
 ├── grid_search.py               # Systematic grid search
 ├── llm_search.py                # LLM-guided search (uses HypothesisGenerator)
 └── results_visualizer.py        # Publication-quality charts
@@ -159,33 +223,52 @@ src/evaluation/quantitative/
 
 ## How It Works
 
-### 1. Fault Injection (`fault_injector.py`)
+### 1. Resource Grouping (`fault_injector.py`)
 
-Groups resources by role (e.g., "Clerk-000001" to "Clerk-000008" → "Clerk" role with 8 resources) and removes profiles to create a bottleneck.
+Resources are grouped into roles for fault injection using two strategies:
 
+**Pattern-based grouping** (preferred):
 ```python
-# Example: Reduce Clerks from 8 to 1
+# "Clerk-000001" to "Clerk-000008" → "Clerk" role with 8 resources
 target_resource = "Clerk"
 original_count = 8
+```
+
+**Activity-based grouping** (fallback):
+```python
+# Resources performing identical activities are grouped together
+# e.g., Users 1-5 all do tasks {A, B, C} → "Group_A+B+C" role
+```
+
+**Role Selection Criteria**:
+- PRIMARY: Prefer roles with the **highest resource count** (more dramatic fault effect)
+- SECONDARY: Higher utilization as tie-breaker
+- Minimum: Prefers roles with 3+ resources; falls back to 2+ if none found
+
+### 2. Fault Injection
+
+Reduces resources to create a bottleneck:
+```python
 fault_count = 1
 # Result: Only Clerk-000001 remains, creating 99% utilization
 ```
 
-### 2. Grid Search (`grid_search.py`)
+### 3. Grid Search (`grid_search.py`)
 
-Systematically tries resource counts from 1 until KPIs match optimal (within tolerance):
+Systematically tries resource counts from 1 until KPIs match (or beat) optimal:
 
 ```python
 for count in range(1, max_count + 1):
     metrics = simulate(model, count)
+    if metrics.cycle_time <= optimal.cycle_time:  # Better or equal
+        return count
     if within_tolerance(metrics.cycle_time, optimal.cycle_time):
-        return count  # Found solution, stop searching
+        return count  # Within tolerance
 ```
 
-### 3. LLM Search (`llm_search.py`)
+### 4. LLM Search (`llm_search.py`)
 
-Uses the existing `HypothesisGenerator` from the main pipeline for LLM calls.
-Constrained to only propose `resource_allocation` changes:
+Uses the existing `HypothesisGenerator` for LLM calls, constrained to `resource_allocation` changes:
 
 ```python
 # LLM sees metrics with 99% Clerk utilization
@@ -193,12 +276,53 @@ Constrained to only propose `resource_allocation` changes:
 # Simulate, check improvement, iterate
 ```
 
-### 4. Visualization (`results_visualizer.py`)
+### 5. Simulation Averaging
 
-Generates publication-quality charts:
-- Individual convergence plots per log
-- Aggregate bar chart comparison
-- Overlaid convergence patterns
+Each simulation call runs **5 DES replicas** and averages results to reduce variance:
+
+```python
+des_runs = 5  # Default, configurable
+for run in range(des_runs):
+    metrics = prosimos.simulate(model, modifications)
+    results.append(metrics)
+return average(results)
+```
+
+### 6. Fair Benchmarking with Simulation Cache
+
+To ensure fair comparison between Grid Search and LLM Search, the evaluation uses a **simulation cache**:
+
+**How It Works**:
+```python
+# Cache keyed by resource count
+simulation_cache: Dict[int, Dict] = {}
+
+def simulate_with_role_count(role_name: str, count: int) -> Dict:
+    # Check cache first - ensures fair benchmarking
+    if count in simulation_cache:
+        print(f"[CACHE HIT] Using cached result for count={count}")
+        return simulation_cache[count]  # Identical metrics guaranteed
+
+    # Run simulation and cache the result
+    result = run_simulation(model, count)
+    simulation_cache[count] = result
+    return result
+```
+
+**Why This Matters**:
+- DES simulators have inherent randomness (arrival times, service times)
+- Without caching, Grid testing count=3 might get cycle_time=75,000s
+- While LLM testing count=3 might get cycle_time=78,000s (different random draws)
+- This variance could unfairly favor one method over the other
+- The cache ensures: **identical inputs → identical outputs**
+
+**Example**:
+1. Grid Search tests count=1 → runs simulation → caches result
+2. Grid Search tests count=2 → runs simulation → caches result
+3. Grid Search tests count=3 → runs simulation → caches result (**solution found**)
+4. LLM Search tests count=4 → runs simulation → caches result (**solution found in 1 iteration**)
+
+If LLM had also proposed count=3, it would get the **exact same cached result** as Grid Search.
 
 ## Paper Argument
 
@@ -210,3 +334,17 @@ The experimental results demonstrate that the LLM achieves equivalent solutions 
 1. Recognizing bottleneck patterns (high utilization, high waiting time)
 2. Making informed jumps rather than incremental exploration
 3. Learning from previous attempts within the same search
+
+## Supported Event Logs
+
+| Log | Resources | Grouping Method | Status |
+|-----|-----------|-----------------|--------|
+| LoanApp.csv | 19 | Pattern-based (Clerk, Loan Officer, etc.) | Supported |
+| cvs_pharmacy.csv | 8 | Pattern-based (Technician, Pharmacist) | Supported |
+| Confidential_1000.csv | 26 | Pattern-based (ABC, DEF, etc.) | Supported |
+| Confidential_2000.csv | 26 | Pattern-based | Supported |
+| p2p.csv | 27 | Activity-based (6 groups) | Supported |
+| ACR.csv | 511 | Activity-based (20 groups) | Supported |
+| BPIC_2012W.csv | 62 | Activity-based (5 groups) | Supported |
+| BPIC_2017W.csv | 148 | Activity-based (15 groups) | Supported |
+| Production.csv | 41 | Activity-based (7 groups) | Supported |

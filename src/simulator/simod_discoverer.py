@@ -333,9 +333,9 @@ class SIMODDiscoverer:
             avg_cycle = metrics.get('avg_cycle_time', 0)
             avg_through = metrics.get('avg_throughput', 0)
             avg_wait = metrics.get('avg_waiting_time', 0)
-            print(f"  - Cycle time: {avg_cycle:.0f} seconds")
-            print(f"  - Throughput: {avg_through:.0f} cases")
-            print(f"  - Waiting time: {avg_wait:.0f} seconds")
+            print(f"  - Cycle time: {avg_cycle:.0f} seconds ({avg_cycle/3600:.1f} hours)")
+            print(f"  - Throughput: {avg_through:.1f} cases/day")
+            print(f"  - Waiting time: {avg_wait:.0f} seconds ({avg_wait/3600:.1f} hours)")
             
             return metrics
             
@@ -354,18 +354,27 @@ class SIMODDiscoverer:
                         cycle_times = log.groupby('case:concept:name')['time:timestamp'].apply(
                             lambda x: (x.max() - x.min()).total_seconds()
                         )
-                        metrics['avg_cycle_time'] = float(cycle_times.mean())
+                        # Filter out negative cycle times
+                        valid_cycle_times = cycle_times[cycle_times >= 0]
+                        metrics['avg_cycle_time'] = float(valid_cycle_times.mean()) if len(valid_cycle_times) > 0 else 14400
                     except:
                         metrics['avg_cycle_time'] = 14400
-                
-                # Throughput: number of unique cases
-                if 'case:concept:name' in log.columns:
+
+                # Throughput: cases per day (consistent with CSV extraction)
+                if 'case:concept:name' in log.columns and 'time:timestamp' in log.columns:
+                    num_cases = log['case:concept:name'].nunique()
+                    time_span_seconds = (log['time:timestamp'].max() - log['time:timestamp'].min()).total_seconds()
+                    if time_span_seconds > 0:
+                        metrics['avg_throughput'] = float(num_cases / (time_span_seconds / 86400.0))
+                    else:
+                        metrics['avg_throughput'] = float(num_cases)
+                elif 'case:concept:name' in log.columns:
                     metrics['avg_throughput'] = float(log['case:concept:name'].nunique())
-                
+
                 # Waiting time: estimate as 30% of cycle time
                 if 'avg_cycle_time' in metrics:
                     metrics['avg_waiting_time'] = metrics['avg_cycle_time'] * 0.3
-                
+
                 # Resource utilization: from org:resource or Resource column
                 resource_col = next((c for c in ('org:resource', 'Resource') if c in log.columns), None)
                 if resource_col:
@@ -377,7 +386,7 @@ class SIMODDiscoverer:
                     }
                 else:
                     metrics['resource_utilization'] = {}
-                    
+
             else:
                 # Handle event log object format (fallback)
                 try:
@@ -386,12 +395,13 @@ class SIMODDiscoverer:
                         metrics['avg_cycle_time'] = float(sum(cycle_times) / len(cycle_times))
                 except:
                     metrics['avg_cycle_time'] = 14400
-                
+
+                # For event log objects, just use total cases (can't easily get time span)
                 metrics['avg_throughput'] = float(len(log))
-                
+
                 if 'avg_cycle_time' in metrics:
                     metrics['avg_waiting_time'] = metrics['avg_cycle_time'] * 0.3
-                
+
                 # Try to extract resources from event objects
                 resources_list = []
                 try:
@@ -436,12 +446,21 @@ class SIMODDiscoverer:
                 case_start = df.groupby(case_col)[start_col].min()
                 case_end = df.groupby(case_col)[end_col].max()
                 cycle_times = (case_end - case_start).dt.total_seconds()
-                metrics['avg_cycle_time'] = float(cycle_times.mean())
+                # Filter out invalid (negative) cycle times caused by data errors
+                valid_cycle_times = cycle_times[cycle_times >= 0]
+                if len(valid_cycle_times) < len(cycle_times):
+                    n_invalid = len(cycle_times) - len(valid_cycle_times)
+                    print(f"  [!] Filtered {n_invalid} cases with invalid timestamps (end < start)")
+                if len(valid_cycle_times) > 0:
+                    metrics['avg_cycle_time'] = float(valid_cycle_times.mean())
+                else:
+                    metrics['avg_cycle_time'] = 0.0
             elif end_col and end_col in df.columns:
                 # Fallback: use end_timestamp only
                 cycle_times = df.groupby(case_col)[end_col].apply(
                     lambda x: (x.max() - x.min()).total_seconds())
-                metrics['avg_cycle_time'] = float(cycle_times.mean())
+                valid_cycle_times = cycle_times[cycle_times >= 0]
+                metrics['avg_cycle_time'] = float(valid_cycle_times.mean()) if len(valid_cycle_times) > 0 else 0.0
 
             # Calculate throughput as cases/day (matching simulation)
             num_cases = df[case_col].nunique()

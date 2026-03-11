@@ -105,22 +105,23 @@ def main():
 
     # Generate visualizations
     print("\n" + "=" * 60)
-    print("GENERATING VISUALIZATIONS")
+    print("GENERATING PUBLICATION-QUALITY VISUALIZATIONS")
     print("=" * 60)
 
     viz_output = os.path.join(output_dir, f"quantitative_eval_{summary.timestamp}", "figures")
     viz = ResultsVisualizer(output_dir=viz_output)
 
-    # Individual plots
+    # Individual plots (convergence + trade-off)
     for exp in summary.experiments:
         viz.plot_single_experiment(exp.to_dict())
+        viz.plot_resource_tradeoff(exp.to_dict())
 
-    # Aggregate comparison (iterations to solution)
+    # Aggregate comparison (iterations to solution with error bars)
     viz.plot_aggregate_comparison(summary.to_dict())
 
-    # Convergence overlays for all three KPIs
+    # Convergence overlays for all three KPIs (with log scale)
     for metric in ["cycle_time", "throughput", "waiting_time"]:
-        viz.plot_convergence_overlay(summary.to_dict(), metric=metric)
+        viz.plot_convergence_overlay(summary.to_dict(), metric=metric, tolerance_pct=args.tolerance)
 
     print("\n" + "=" * 60)
     print("EVALUATION COMPLETE")
