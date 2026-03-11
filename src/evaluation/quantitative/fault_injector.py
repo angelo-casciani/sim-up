@@ -234,18 +234,28 @@ class FaultInjector:
 
                     avg_util = sum(role_utils) / len(role_utils) if role_utils else 0.5
 
+                    # For activity-based groups, balance count with utilization more evenly
+                    # High utilization (>0.7) indicates resources on critical path
+                    # Score formula: count matters, but high utilization gets bonus
+                    util_bonus = 50 if avg_util > 0.7 else (25 if avg_util > 0.5 else 0)
+                    score = role_count * 10 + avg_util * 100 + util_bonus
+
                     candidates.append({
                         "role_name": role_name,
                         "count": role_count,
                         "utilization": avg_util,
                         "profiles": profiles,
                         "is_activity_based": True,  # Mark as activity-based
-                        # Score: PRIMARY is count, SECONDARY is utilization (tie-breaker)
-                        "score": role_count * 100 + avg_util
+                        # Score: balance count and utilization for activity-based groups
+                        "score": score
                     })
 
                 if candidates:
                     print(f"  [OK] Found {len(candidates)} activity-based pseudo-roles")
+                    # Show top 3 candidates for debugging
+                    sorted_candidates = sorted(candidates, key=lambda x: x["score"], reverse=True)
+                    for i, c in enumerate(sorted_candidates[:3]):
+                        print(f"       #{i+1}: {c['role_name']} (count={c['count']}, util={c['utilization']:.1%}, score={c['score']:.1f})")
 
             # FALLBACK 2: All resources as a single pool
             if not candidates:

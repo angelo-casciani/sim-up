@@ -152,43 +152,34 @@ class HypothesisGenerator:
 Your task is to generate actionable, predictive hypotheses to improve process performance.
 
 Validation oracle by change type (CRITICAL — use this to set realistic expected_impact):
-- resource_allocation (parameter_type=resources): validated by DES (Prosimos) ONLY.
-  ABS has no queue model and cannot detect capacity improvements. Do NOT expect ABS to confirm.
-  Main KPIs to improve: waiting_time (primary), cycle_time, throughput.
-- calendar_adjustment (parameter_type=calendar): validated by DES ONLY.
-  Same reason: calendar controls resource availability windows handled only in DES.
-  Main KPIs to improve: waiting_time (primary), cycle_time, throughput.
 - role_redesign (parameter_type=role_redesign): validated by ABS (AgentSimulator) ONLY.
   ABS explicitly models agent handover and routing behaviour. DES only checks throughput does not hard-fail.
   Main KPIs to improve: cycle_time (primary). ABS waiting_time is always 0 by design.
-- activity_duration_optimization (parameter_type=activity_durations): validated by DES OR ABS (OR rule).
-  Both simulators compress durations. Main KPIs to improve: cycle_time, throughput.
+- resource_allocation (parameter_type=resources): validated by DES (Prosimos) ONLY.
+  ABS has no queue model and cannot detect capacity improvements. Do NOT expect ABS to confirm.
+  Main KPIs to improve: waiting_time (primary), cycle_time, throughput.
 
     Proposal strategy:
     - Propose ONE change only (single specific change entry).
         - Use only this safe intervention palette:
-            * role_redesign (shift_responsibility or create_specialist_role)
-            * activity_duration_optimization (reduce_duration 5-25%)
-            * calendar_adjustment (increase_hours 1-2)
+            * role_redesign (shift_responsibility or create_specialist_role) — PREFERRED when overloaded + underutilized roles coexist
             * resource_allocation (add or increase_count):
               - For utilization >= 95%: add 4-6 resources (critical bottleneck)
               - For utilization >= 90%: add 3-5 resources (severe bottleneck)
               - For utilization >= 80%: add 2-4 resources (high bottleneck)
               - Otherwise: add 1-2 resources
-        - Do NOT propose arrival_rate_adjustment or routing_adjustment.
+        - Do NOT propose arrival_rate_adjustment, routing_adjustment, activity_duration_optimization, or calendar_adjustment.
         - Do NOT propose remove/decrease_count/increase_duration/decrease_hours.
     - Avoid hypotheses that are likely to increase cycle time or decrease throughput.
     - Prefer changes that improve at least two KPIs among: cycle_time, throughput, waiting_time.
 
 Canonical taxonomy mapping (must be respected exactly):
-- improvement_type=resource_allocation  <-> changes.parameter_type=resources
 - improvement_type=role_redesign       <-> changes.parameter_type=role_redesign
-- improvement_type=activity_duration_optimization <-> changes.parameter_type=activity_durations
-- improvement_type=calendar_adjustment <-> changes.parameter_type=calendar
+- improvement_type=resource_allocation  <-> changes.parameter_type=resources
 
 For each hypothesis, provide:
 - Clear description of the improvement
-- Type: resource_allocation, role_redesign, activity_duration_optimization, or calendar_adjustment
+- Type: role_redesign or resource_allocation
 - Specific changes to simulation parameters
 - Expected impact on metrics
 
@@ -203,14 +194,14 @@ Strict output rules:
 Return a JSON object with the following structure:
 {
   "description": "Clear description of the improvement",
-    "improvement_type": "resource_allocation|role_redesign|activity_duration_optimization|calendar_adjustment",
+    "improvement_type": "role_redesign|resource_allocation",
   "rationale": "Why this improvement would help",
   "changes": {
-        "parameter_type": "resources|role_redesign|activity_durations|calendar",
+        "parameter_type": "role_redesign|resources",
     "specific_changes": [
       {
-                "target": "Resource_1|role_name|ActivityName|calendar_name|gateway_id",
-                                "change": "add|increase_count|create_specialist_role|shift_responsibility|reduce_duration|increase_hours",
+                "target": "role_name|Resource_1",
+                                "change": "shift_responsibility|create_specialist_role|add|increase_count",
         "value": numeric_value
       }
     ]
@@ -259,10 +250,8 @@ BASELINE METRICS:
         disallowed_types = strategy_hints.get("disallowed_parameter_types", [])
         high_priority_targets = strategy_hints.get("high_priority_targets", [])
         _oracle_map = {
-            "resources": "DES only",
-            "calendar": "DES only",
-            "activity_durations": "DES or ABS (OR rule)",
             "role_redesign": "ABS primary (DES throughput safety)",
+            "resources": "DES only",
         }
         prompt += "ITERATION STRATEGY CONSTRAINTS (must follow):\n"
         if allowed_types:
@@ -304,15 +293,15 @@ BASELINE METRICS:
         
         prompt += """
 Focus on:
-1. Resource bottlenecks (look for utilization > 0.8)
-2. High waiting times (> 40% of cycle time) — address with resources or calendar changes (DES-validated)
-3. Long cycle times (> 12000 seconds) — address with duration reduction or role_redesign (ABS-validated)
+1. Workload imbalance (overloaded + underutilized roles coexist) — address with role_redesign (ABS-validated) — PREFERRED
+2. Resource bottlenecks (look for utilization > 0.8) — address with resource additions (DES-validated)
+3. High waiting times (> 40% of cycle time) — address with resource additions (DES-validated)
 
     Safety rules:
-    - Use meaningful deltas (5-25% duration reduction, +1 to +2 resources, +1 to +2 hours calendar).
+    - Use meaningful deltas (+1 to +2 resources for additions).
     - Avoid any change likely to worsen cycle time or waiting time.
     - Prefer improvements that help at least two of: cycle_time, throughput, waiting_time.
-    - Prefer role_redesign over pure resource addition when overloaded and underutilized roles coexist.
+    - STRONGLY prefer role_redesign over pure resource addition when overloaded and underutilized roles coexist.
     - If prior attempts fail repeatedly, switch intervention type among allowed types only.
     - Do not use placeholders like "Activity_with_highest_waiting_time"; choose from the known targets.
 
@@ -345,7 +334,7 @@ Return ONLY the JSON object, no additional text."""
         changes = hypothesis.get("changes", {})
         parameter_type = changes.get("parameter_type")
         specific_changes = changes.get("specific_changes", [])
-        if parameter_type not in {"resources", "role_redesign", "activity_durations", "calendar"}:
+        if parameter_type not in {"resources", "role_redesign"}:
             return False
         if not isinstance(specific_changes, list) or len(specific_changes) != 1:
             return False
@@ -416,16 +405,16 @@ Return ONLY the JSON object, no additional text."""
         mappable_overloaded = [r for r in overloaded if r in resource_norms]
         mappable_underutilized = [r for r in underutilized if r in resource_norms]
 
+        # Priority order: role_redesign > resources
+        # role_redesign is preferred when workload can be rebalanced
         allowed = []
         if mappable_overloaded and mappable_underutilized:
             allowed.append("role_redesign")
-        if waiting_ratio >= 0.35:
-            allowed.extend(["activity_durations", "calendar"])
         if overloaded:
             allowed.append("resources")
 
         if not allowed:
-            allowed = ["activity_durations", "resources"]
+            allowed = ["resources"]
 
         # Remove parameter types that failed repeatedly in latest attempts
         failed_recent = []
@@ -655,26 +644,6 @@ Return ONLY the JSON object, no additional text."""
             change = preferred_change if preferred_change in {"shift_responsibility", "create_specialist_role"} else "shift_responsibility"
             value = 1
             return target, change, value, "role_redesign"
-
-        if parameter_type == "activity_durations":
-            target = preferred_target if preferred_target in activities else (activities[0] if activities else "Task_1")
-            change = "reduce_duration"
-            try:
-                value = int(float(preferred_value))
-            except Exception:
-                value = 15
-            value = max(5, min(25, value))
-            return target, change, value, "activity_duration_optimization"
-
-        if parameter_type == "calendar":
-            target = preferred_target if preferred_target in calendars else (calendars[0] if calendars else "Default")
-            change = "increase_hours"
-            try:
-                value = int(float(preferred_value))
-            except Exception:
-                value = 1
-            value = max(1, min(2, value))
-            return target, change, value, "calendar_adjustment"
 
         # Default: resources (safe positive capacity)
         target = preferred_target if preferred_target in resources else None

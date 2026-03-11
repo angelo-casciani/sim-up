@@ -186,7 +186,8 @@ class ResultsVisualizer:
         ax.set_ylabel('Cycle Time (seconds, log scale)', fontsize=self.fontsize['axis_label'])
         ax.set_title(f'Convergence Comparison: {log_name}\nGrid Search vs LLM-Guided Search',
                      fontsize=self.fontsize['title'], fontweight='bold')
-        ax.legend(loc='upper right', fontsize=self.fontsize['legend'])
+        ax.legend(loc='upper right', fontsize=self.fontsize['legend'],
+                  frameon=True, facecolor='white', edgecolor='black')
         ax.set_xlim(0, max_iter)
         ax.tick_params(axis='both', labelsize=self.fontsize['tick'])
 
@@ -322,7 +323,8 @@ class ResultsVisualizer:
         ax.set_title(f'Resource-Performance Trade-off: {log_name}\n'
                      f'Grid: Minimum Viable | LLM: Intelligent Jump | Original: Baseline',
                      fontsize=self.fontsize['title'], fontweight='bold')
-        ax.legend(loc='upper right', fontsize=self.fontsize['legend'])
+        ax.legend(loc='upper right', fontsize=self.fontsize['legend'],
+                  frameon=True, facecolor='white', edgecolor='black')
         ax.tick_params(axis='both', labelsize=self.fontsize['tick'])
 
         # Add grid for readability
@@ -408,7 +410,8 @@ class ResultsVisualizer:
                      fontsize=self.fontsize['title'], fontweight='bold')
         ax.set_xticks(x)
         ax.set_xticklabels(log_names, rotation=45, ha='right', fontsize=self.fontsize['tick'])
-        ax.legend(fontsize=self.fontsize['legend'])
+        ax.legend(loc='upper right', fontsize=self.fontsize['legend'],
+                  frameon=True, facecolor='white', edgecolor='black')
         ax.tick_params(axis='y', labelsize=self.fontsize['tick'])
 
         # Add value labels and speedup on bars
@@ -609,7 +612,8 @@ class ResultsVisualizer:
         ax.set_title(f'Convergence Pattern: {config["label"]}\n'
                      f'Numbers on points indicate resource count',
                      fontsize=self.fontsize['title'], fontweight='bold')
-        ax.legend(loc='upper right', fontsize=self.fontsize['legend'])
+        ax.legend(loc='upper right', fontsize=self.fontsize['legend'],
+                  frameon=True, facecolor='white', edgecolor='black')
         ax.tick_params(axis='both', labelsize=self.fontsize['tick'])
         ax.grid(True, alpha=0.3)
 
@@ -705,8 +709,6 @@ class ResultsVisualizer:
         llm_data = experiment.get("llm_search", {})
         target_resource = experiment.get("target_resource", "Resource")
 
-        fig, ax = plt.subplots(figsize=(12, 7))
-
         # Extract utilization data from Grid Search iterations
         grid_iters = grid_data.get("iterations", [])
         grid_counts = []
@@ -720,6 +722,13 @@ class ResultsVisualizer:
                 avg_util = sum(util_dict.values()) / len(util_dict) if util_dict else 0
                 grid_counts.append(count)
                 grid_utils.append(avg_util * 100)  # Convert to percentage
+
+        # Check if we have enough data to plot
+        if not grid_counts and not llm_data.get("iterations", []):
+            print(f"  [!] Skipping utilization chart for {log_name}: no utilization data available")
+            return ""
+
+        fig, ax = plt.subplots(figsize=(12, 7))
 
         # Plot Grid Search utilization curve
         if grid_counts and grid_utils:
@@ -779,7 +788,8 @@ class ResultsVisualizer:
         ax.set_title(f'Resource Utilization Analysis: {log_name}\n'
                      f'Trade-off between bottleneck (high util) and waste (low util)',
                      fontsize=self.fontsize['title'], fontweight='bold')
-        ax.legend(loc='upper right', fontsize=self.fontsize['legend'])
+        ax.legend(loc='upper right', fontsize=self.fontsize['legend'],
+                  frameon=True, facecolor='white', edgecolor='black')
         ax.tick_params(axis='both', labelsize=self.fontsize['tick'])
         ax.grid(True, alpha=0.3)
 

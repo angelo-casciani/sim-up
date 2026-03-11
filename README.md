@@ -77,16 +77,18 @@ The validation oracle depends on which type of change is being evaluated:
 
 | `parameter_type` | Primary oracle | Secondary role | Rationale |
 |---|---|---|---|
-| `resources` | **DES only** | ABS: informational only | Resource queuing only modelled in DES |
-| `calendar` | **DES only** | ABS: not used | Resource availability windows handled by DES |
-| `activity_durations` | **DES or ABS** (OR rule) | Conflict guardrail active | Both simulators model duration; OR keeps exploration open |
 | `role_redesign` | **ABS primary** | DES: throughput safety check | ABS explicitly models who does what; DES checks throughput does not regress |
+| `resources` | **DES only** | ABS: informational only | Resource queuing only modelled in DES |
 
-For `resources` and `calendar`, ABS results are logged as informational context only and do not affect the accept/reject decision.
+**Note:** `calendar` (calendar adjustment) and `activity_durations` (activity duration optimization) are disabled in the hypothesis generator:
+- **Calendar:** Not yet implemented in ProsimosRunner (`_modify_calendar_hours` missing).
+- **Activity durations:** Not actionable for process owners — identifies WHERE to improve but not HOW.
+
+The pipeline focuses on actionable interventions with clear priority: **role_redesign** (preferred when workload imbalance exists) > **resource_allocation**.
+
+For `resources`, ABS results are logged as informational context only and do not affect the accept/reject decision.
 
 For `role_redesign`, if DES reports a throughput decrease > 10%, the proposal is rejected regardless of ABS outcome.
-
-For `activity_durations`, a cross-simulator conflict guardrail rejects proposals where DES and ABS disagree strongly on direction.
 
 ### DES Time Horizon
 

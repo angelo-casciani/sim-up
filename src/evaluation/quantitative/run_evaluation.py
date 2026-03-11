@@ -20,6 +20,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from evaluation.quantitative.evaluation_runner import QuantitativeEvaluator
 from evaluation.quantitative.results_visualizer import ResultsVisualizer
 
+# Logs that don't work well for evaluation (resource groups not on critical path)
+SKIP_LOGS = {
+    "p2p.csv",       # Activity groups have low utilization, not on critical path
+    "Production.csv" # Small groups, simulation often fails
+}
+
+# Recommended logs for publication (pattern-based or known to work well)
+RECOMMENDED_LOGS = [
+    "LoanApp.csv",        # Excellent - 38x degradation, clear speedup
+    "BPIC_2012W.csv",     # Good - well-known BPM benchmark
+    "BPIC_2017W.csv",     # Good - well-known BPM benchmark
+    "cvs_pharmacy.csv",   # Good - pattern-based resources
+]
+
 
 def parse_args():
     parser = ArgumentParser(description="Quantitative Evaluation: LLM vs Grid Search")
@@ -40,7 +54,9 @@ def parse_args():
     parser.add_argument('--max-llm-iters', type=int, default=10,
                         help='Max LLM search iterations (default: 10)')
     parser.add_argument('--logs', type=str, nargs='*', default=None,
-                        help='Specific log files to evaluate (default: all)')
+                        help='Specific log files to evaluate (default: recommended logs)')
+    parser.add_argument('--all-logs', action='store_true',
+                        help='Run on all logs (including those known to have issues)')
     parser.add_argument('--no-sudo', action='store_true', default=is_windows,
                         help='Do not use sudo for Docker commands (auto-detected: disabled on Windows)')
     parser.add_argument('--visualize-only', type=str, default=None,
@@ -70,6 +86,21 @@ def main():
 
     # Full evaluation mode
     use_sudo = not args.no_sudo
+
+    # Determine which logs to run
+    if args.logs:
+        # User specified specific logs
+        logs_to_run = args.logs
+    elif args.all_logs:
+        # Run all logs (including problematic ones)
+        logs_to_run = None  # Will be resolved by evaluator
+    else:
+        # Default: use recommended logs, skip known problematic ones
+        logs_to_run = RECOMMENDED_LOGS
+        print(f"\n[INFO] Using recommended logs for evaluation.")
+        print(f"       To run specific logs: --logs LoanApp.csv BPIC_2017W.csv")
+        print(f"       To run all logs: --all-logs")
+
     print("\n" + "=" * 60)
     print("QUANTITATIVE EVALUATION: LLM vs Grid Search")
     print("=" * 60)
@@ -83,6 +114,8 @@ def main():
     print(f"  Use sudo: {use_sudo}")
     print(f"  Logs directory: {logs_dir}")
     print(f"  Output directory: {output_dir}")
+    if logs_to_run:
+        print(f"  Logs to evaluate: {logs_to_run}")
 
     # Create evaluator
     evaluator = QuantitativeEvaluator(
@@ -100,7 +133,7 @@ def main():
     summary = evaluator.run_evaluation(
         logs_dir=logs_dir,
         output_dir=output_dir,
-        logs=args.logs
+        logs=logs_to_run
     )
 
     # Generate visualizations

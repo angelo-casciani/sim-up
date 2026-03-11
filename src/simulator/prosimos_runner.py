@@ -207,10 +207,15 @@ class ProsimosRunner:
 
     def _modify_role_redesign(self, params: Dict, target: str, change_type: str, value: int, change_payload: Dict):
         """Create/reshape roles to model specialization without only adding generic capacity."""
+        print(f"  [DEBUG] _modify_role_redesign called: target='{target}', change_type='{change_type}'")
+
         if 'resource_profiles' not in params or not target:
+            print(f"  [!] _modify_role_redesign: missing resource_profiles or target")
             return
 
         source_role, destination_role = parse_role_redesign_target(target)
+        print(f"  [DEBUG] Parsed roles: source='{source_role}', destination='{destination_role}'")
+
         resource_profiles = params.get('resource_profiles', [])
         matched_profile = None
         for resource in resource_profiles:
@@ -220,12 +225,14 @@ class ProsimosRunner:
                 break
 
         if not matched_profile:
+            print(f"  [!] _modify_role_redesign: could not find profile for source '{source_role}'")
             return
 
         if 'shift_responsibility' in str(change_type) and destination_role:
             shift_fraction = resolve_shift_fraction(
                 change_payload.get('value')
             )
+            print(f"  [DEBUG] Attempting shift_responsibility with fraction={shift_fraction}")
             shifted = self._shift_role_responsibilities(
                 params,
                 source_role=source_role,
@@ -233,7 +240,11 @@ class ProsimosRunner:
                 shift_fraction=shift_fraction
             )
             if shifted:
+                print(f"  [OK] shift_responsibility succeeded")
                 return
+            else:
+                print(f"  [!] shift_responsibility returned False, NOT falling back to specialist creation")
+                return  # Don't fall back to specialist if shift was explicitly requested but failed
 
         base_id = str(matched_profile.get('id', matched_profile.get('name', target)))
         specialist_id = f"{base_id}_specialist"
@@ -275,49 +286,148 @@ class ProsimosRunner:
         subset of source references to destination references.
         """
         if not source_role or not destination_role:
+            print(f"  [!] shift_responsibility: missing source ({source_role}) or destination ({destination_role})")
             return False
 
+        # First, find the actual full resource_id for source and destination from resource_profiles
+        resource_profiles = params.get('resource_profiles', [])
+        source_full_id = None
+        destination_full_id = None
+
+        print(f"  [DEBUG] Looking for source='{source_role}', destination='{destination_role}'")
+        profile_ids = [p.get('id', p.get('name', '')) for p in resource_profiles]
+        print(f"  [DEBUG] Available {len(profile_ids)} profiles: {profile_ids[:5]}{'...' if len(profile_ids) > 5 else ''}")
+
+        for profile in resource_profiles:
+            profile_id = str(profile.get('id', profile.get('name', '')))
+            profile_id_norm = profile_id.replace('_profile', '')
+
+            # Match source
+            if source_full_id is None:
+                if (source_role in profile_id or source_role in profile_id_norm or
+                    profile_id == source_role or profile_id_norm == source_role):
+                    source_full_id = profile_id
+                    print(f"  [DEBUG] Matched source: '{source_role}' -> '{source_full_id}'")
+
+            # Match destination
+            if destination_full_id is None:
+                if (destination_role in profile_id or destination_role in profile_id_norm or
+                    profile_id == destination_role or profile_id_norm == destination_role):
+                    destination_full_id = profile_id
+                    print(f"  [DEBUG] Matched destination: '{destination_role}' -> '{destination_full_id}'")
+
+        if not source_full_id:
+            print(f"  [!] shift_responsibility: could not find source resource '{source_role}' in profiles")
+            return False
+        if not destination_full_id:
+            print(f"  [!] shift_responsibility: could not find destination resource '{destination_role}' in profiles")
+            return False
+
+        print(f"  [OK] shift_responsibility: {source_full_id} -> {destination_full_id}")
+
+        # Determine the format used in task_resource_distribution (with or without _profile)
+        # We need to match the existing format to avoid breaking Prosimos
         source_refs = []
         destination_count = 0
+        task_resource_format = None  # Will be detected from actual entries
         role_keys = ('resource_id', 'resource', 'resource_name', 'id', 'name')
 
-        def collect_references(entries: list):
-            nonlocal destination_count
+        def collect_references(entries: list, task_id: str = ""):
+            nonlocal destination_count, task_resource_format
             for entry in entries:
                 for key in role_keys:
                     if key not in entry:
                         continue
                     role_ref = str(entry.get(key, ''))
-                    if source_role in role_ref or role_ref == source_role:
-                        source_refs.append((entry, key))
+
+                    # Detect the format used in task_resource_distribution
+                    if task_resource_format is None and role_ref:
+                        task_resource_format = 'with_profile' if '_profile' in role_ref else 'without_profile'
+
+                    # Match against both formats
+                    source_match = (role_ref == source_full_id or
+                                   role_ref == source_role or
+                                   source_role in role_ref)
+                    dest_match = (role_ref == destination_full_id or
+                                 role_ref == destination_role or
+                                 destination_role in role_ref)
+
+                    if source_match:
+                        source_refs.append((entry, key, task_id, role_ref))
                         break
-                    if destination_role in role_ref or role_ref == destination_role:
+                    if dest_match:
                         destination_count += 1
                         break
 
         task_distributions = params.get('task_resource_distribution', [])
+        print(f"  [DEBUG] Found {len(task_distributions)} tasks in task_resource_distribution")
+
+        # Debug: show structure of first task
+        if task_distributions:
+            first_task = task_distributions[0]
+            print(f"  [DEBUG] First task keys: {list(first_task.keys())}")
+            resources = first_task.get('resources', [])
+            if resources:
+                print(f"  [DEBUG] First task has {len(resources)} resources, first resource keys: {list(resources[0].keys())}")
+                print(f"  [DEBUG] First resource entry: {resources[0]}")
+
         for task in task_distributions:
-            collect_references(task.get('resources', []) or [])
-            collect_references(task.get('distribution', []) or [])
+            task_id = task.get('task_id', task.get('activity', 'unknown'))
+            resources = task.get('resources', []) or []
+            distribution = task.get('distribution', []) or []
+
+            collect_references(resources, task_id)
+            collect_references(distribution, task_id)
 
         source_count = len(source_refs)
+        print(f"  [DEBUG] Found {source_count} source task assignments, {destination_count} destination assignments")
+
         if source_count == 0:
+            print(f"  [!] shift_responsibility: no task assignments found for source '{source_full_id}'")
+            # Debug: show what resource_ids ARE in the tasks
+            all_refs = set()
+            for task in task_distributions:
+                for res in task.get('resources', []) or []:
+                    for key in role_keys:
+                        if key in res:
+                            all_refs.add(res[key])
+                            break
+            print(f"  [DEBUG] All resource refs in tasks ({len(all_refs)} total): {list(all_refs)[:10]}{'...' if len(all_refs) > 10 else ''}")
             return False
 
-        total_related = source_count + destination_count
-        if total_related <= 1:
-            return False
+        # Calculate how many tasks to move from source to destination
+        # shift_fraction means "move X% of source's tasks to destination"
+        # e.g., shift_fraction=0.3 means move 30% of source's tasks
+        move_count = max(1, int(round(source_count * shift_fraction)))
 
-        target_destination = int(round(total_related * shift_fraction))
-        target_destination = max(1, min(total_related - 1, target_destination))
-
+        # Cap at max_movable to ensure source keeps at least 1 assignment
         max_movable = max(0, source_count - 1)
-        move_count = max(0, min(max_movable, target_destination - destination_count))
+        move_count = min(move_count, max_movable)
+
+        print(f"  [DEBUG] shift_fraction={shift_fraction}, source_count={source_count}, move_count={move_count}, max_movable={max_movable}")
+        print(f"  [DEBUG] task_resource_format detected: {task_resource_format}")
+
         if move_count == 0:
+            print(f"  [!] shift_responsibility: nothing to move (source only has {source_count} assignments)")
             return False
 
-        for entry, key in source_refs[:move_count]:
-            entry[key] = destination_role
+        # Determine the correct destination ID format to use
+        # Must match the format used in task_resource_distribution
+        if task_resource_format == 'without_profile':
+            # Tasks use names without _profile suffix
+            destination_replacement = destination_role  # e.g., "Tesca Lobes"
+        else:
+            # Tasks use names with _profile suffix
+            destination_replacement = destination_full_id  # e.g., "Tesca Lobes_profile"
+
+        print(f"  [DEBUG] Using destination replacement: '{destination_replacement}'")
+
+        # Replace source references with destination
+        for entry, key, task_id, old_value in source_refs[:move_count]:
+            entry[key] = destination_replacement
+            print(f"    - Shifted task '{task_id}': {old_value} -> {destination_replacement}")
+
+        print(f"  [OK] Shifted {move_count} task assignments: {source_role} -> {destination_replacement}")
 
         return True
 

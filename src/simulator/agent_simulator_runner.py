@@ -542,25 +542,56 @@ class AgentSimulatorRunner:
             elif 'shift_responsibility' in change_type:
                 destination = destination_target if destination_target else f"{target}_shifted_abs"
 
+                # Count source's total events to ensure symmetric shift
+                source_events = df.index[resource_mask]
+                total_source_events = len(source_events)
+
+                if total_source_events == 0:
+                    continue
+
+                # Calculate how many events to shift (based on event count, not case count)
+                # This ensures the utilization change is proportional
+                events_to_shift = max(1, int(round(total_source_events * shift_fraction)))
+                events_to_shift = min(events_to_shift, total_source_events - 1)  # Keep at least 1 for source
+
                 if case_col in df.columns:
+                    # Group events by case to shift complete cases when possible
+                    # But ensure we shift approximately the right NUMBER of events
                     cases_with_source = df.loc[resource_mask, case_col].unique()
+
                     if len(cases_with_source) == 0:
                         continue
-                    shift_count = max(1, int(round(len(cases_with_source) * shift_fraction)))
-                    shift_count = min(shift_count, len(cases_with_source))
-                    # Take the first shift_count cases deterministically
-                    chosen_cases = cases_with_source[:shift_count]
+
+                    # Calculate events per case for the source resource
+                    events_per_case = {}
+                    for case_id in cases_with_source:
+                        case_events = df[(df[case_col] == case_id) & resource_mask]
+                        events_per_case[case_id] = len(case_events)
+
+                    # Select cases until we reach the target event count
+                    chosen_cases = []
+                    shifted_event_count = 0
+                    for case_id in cases_with_source:
+                        if shifted_event_count >= events_to_shift:
+                            break
+                        chosen_cases.append(case_id)
+                        shifted_event_count += events_per_case[case_id]
+
+                    if not chosen_cases:
+                        # Fallback: at least one case
+                        chosen_cases = [cases_with_source[0]]
+
                     case_mask = df[case_col].isin(chosen_cases)
                     df.loc[case_mask & resource_mask, resource_col] = destination
+
+                    logger.info(f"[ABS shift_responsibility] {target} -> {destination}: "
+                               f"shifted {shifted_event_count}/{total_source_events} events "
+                               f"({len(chosen_cases)} cases)")
                 else:
-                    # Fallback: row-level shift
-                    source_idx = df.index[resource_mask]
-                    source_count = len(source_idx)
-                    if source_count == 0:
-                        continue
-                    row_shift_count = max(1, int(round(source_count * shift_fraction)))
-                    row_shift_count = min(row_shift_count, source_count)
-                    df.loc[source_idx[:row_shift_count], resource_col] = destination
+                    # Fallback: direct event-level shift (most accurate for utilization symmetry)
+                    df.loc[source_events[:events_to_shift], resource_col] = destination
+                    logger.info(f"[ABS shift_responsibility] {target} -> {destination}: "
+                               f"shifted {events_to_shift}/{total_source_events} events")
 
         return df
 

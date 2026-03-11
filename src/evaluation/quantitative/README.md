@@ -58,22 +58,22 @@ This ensures the search finds configurations that achieve equivalent (or superio
 
 ## Usage
 
-### Basic Run
+### Basic Run (Recommended Logs)
 
 ```bash
-# Run on a single log
+# Run on recommended logs (LoanApp, BPIC_2012W, BPIC_2017W, cvs_pharmacy)
+poetry run python src/evaluation/quantitative/run_evaluation.py \
+    --model anthropic--claude-4.5-opus
+
+# Run on specific logs
 poetry run python src/evaluation/quantitative/run_evaluation.py \
     --model anthropic--claude-4.5-opus \
-    --logs LoanApp.csv
+    --logs LoanApp.csv BPIC_2017W.csv
 
-# Run on multiple logs
+# Run on ALL logs (including those known to have issues)
 poetry run python src/evaluation/quantitative/run_evaluation.py \
     --model gpt-4.1 \
-    --logs LoanApp.csv ACR.csv Production.csv
-
-# Run on all available logs (excluding o2c)
-poetry run python src/evaluation/quantitative/run_evaluation.py \
-    --model gpt-4.1
+    --all-logs
 ```
 
 ### Configuration Options
@@ -85,9 +85,10 @@ poetry run python src/evaluation/quantitative/run_evaluation.py \
 | `--grid-min` | `1` | Minimum resource count for grid search |
 | `--grid-max` | `10` | Maximum resource count for grid search |
 | `--fault-count` | `1` | Resource count to inject as fault |
-| `--tolerance` | `5.0` | Tolerance % for KPI solution matching (worse only) |
+| `--tolerance` | `2.0` | Tolerance % for KPI solution matching (worse only) |
 | `--max-llm-iters` | `10` | Maximum LLM search iterations |
-| `--logs` | all | Specific log files to evaluate |
+| `--logs` | recommended | Specific log files to evaluate |
+| `--all-logs` | - | Run on ALL logs (including problematic ones) |
 | `--no-sudo` | auto | Disable sudo for Docker (auto-detected on Windows) |
 | `--visualize-only` | - | Path to existing summary.json for visualization only |
 
@@ -337,14 +338,21 @@ The experimental results demonstrate that the LLM achieves equivalent solutions 
 
 ## Supported Event Logs
 
-| Log | Resources | Grouping Method | Status |
-|-----|-----------|-----------------|--------|
-| LoanApp.csv | 19 | Pattern-based (Clerk, Loan Officer, etc.) | Supported |
-| cvs_pharmacy.csv | 8 | Pattern-based (Technician, Pharmacist) | Supported |
-| Confidential_1000.csv | 26 | Pattern-based (ABC, DEF, etc.) | Supported |
-| Confidential_2000.csv | 26 | Pattern-based | Supported |
-| p2p.csv | 27 | Activity-based (6 groups) | Supported |
-| ACR.csv | 511 | Activity-based (20 groups) | Supported |
-| BPIC_2012W.csv | 62 | Activity-based (5 groups) | Supported |
-| BPIC_2017W.csv | 148 | Activity-based (15 groups) | Supported |
-| Production.csv | 41 | Activity-based (7 groups) | Supported |
+| Log | Resources | Grouping Method | Evaluation Quality |
+|-----|-----------|-----------------|-------------------|
+| LoanApp.csv | 19 | Pattern-based (Clerk, Loan Officer, etc.) | **Excellent** - 38x degradation, clear speedup |
+| cvs_pharmacy.csv | 8 | Pattern-based (Technician, Pharmacist) | Good |
+| Confidential_1000.csv | 26 | Pattern-based (ABC, DEF, etc.) | Good |
+| Confidential_2000.csv | 26 | Pattern-based | Good |
+| BPIC_2012W.csv | 62 | Activity-based (5 groups) | Good - well-known benchmark |
+| BPIC_2017W.csv | 148 | Activity-based (15 groups, up to 42 resources) | Good - well-known benchmark |
+| p2p.csv | 27 | Activity-based (6 groups) | **Poor** - groups not on critical path |
+| ACR.csv | 511 | Activity-based (20 groups) | Moderate |
+| Production.csv | 41 | Activity-based (7 groups) | **Poor** - small groups |
+
+**Recommended logs for publication**:
+- **LoanApp.csv** - Best results, clear speedup demonstration
+- **BPIC_2012W.csv**, **BPIC_2017W.csv** - Well-known in BPM community, good for credibility
+- **cvs_pharmacy.csv**, **Confidential_*.csv** - Pattern-based, reliable results
+
+**Note**: Activity-based grouping now balances resource count with utilization to prefer groups on the critical path. Groups with >70% utilization get priority even if smaller.

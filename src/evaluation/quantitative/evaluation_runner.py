@@ -402,9 +402,13 @@ class QuantitativeEvaluator:
         if optimal_cycle > 0:
             degradation_pct = (faulty_cycle - optimal_cycle) / optimal_cycle * 100
             print(f"    [OK] Fault degradation: {degradation_pct:+.1f}% cycle time increase")
-            if degradation_pct < 5:
-                print(f"    [!] WARNING: Fault only caused {degradation_pct:.1f}% degradation")
-                print(f"    [!] Results may not show meaningful difference between search methods")
+            if degradation_pct < 20:
+                print(f"    [!] WARNING: Fault only caused {degradation_pct:.1f}% degradation (< 20%)")
+                print(f"    [!] This log may not show meaningful difference between search methods")
+                print(f"    [!] Consider using a log with larger resource groups (e.g., LoanApp.csv)")
+            if degradation_pct < 0:
+                print(f"    [!] CRITICAL: Faulty model is FASTER than optimal - this group is not on critical path!")
+                print(f"    [!] Skipping this log - results would be meaningless")
 
         # Create simulation function that restores N profiles for the target role
         # This is key: we use the ORIGINAL model and set the resource count directly
