@@ -158,65 +158,60 @@ class MetricsExtractor:
                     util = min(0.99, max(0.01, count / total_activities * 10))
                     resource_utilization[res_str] = util
             else:
-                resource_utilization = {'Resource_1': 0.9, 'Resource_2': 0.9}
+                raise ValueError(f"No resource column found in {csv_path}. Available columns: {df.columns.tolist()}")
 
             metrics['resource_utilization'] = resource_utilization
             return metrics
 
         except Exception as e:
             print(f"Error extracting metrics from CSV: {e}")
-            return {}
+            raise  # Re-raise instead of returning empty dict
 
     def _basic_extraction(self, df: pd.DataFrame) -> Dict:
         """Basic metric extraction from generic dataframe."""
         metrics = {
-            'avg_cycle_time': 10500.0,
-            'avg_throughput': 345.6,
-            'avg_waiting_time': 3150.0,
+            'avg_cycle_time': 0.0,
+            'avg_throughput': 0.0,
+            'avg_waiting_time': 0.0,
             'resource_utilization': {},
         }
 
-        try:
-            num_cases = 0
-            if 'case_id' in df.columns:
-                num_cases = df['case_id'].nunique()
+        num_cases = 0
+        if 'case_id' in df.columns:
+            num_cases = df['case_id'].nunique()
 
-            # Try to compute throughput as cases per day
-            time_col = None
-            for col in ['end_timestamp', 'start_timestamp', 'timestamp']:
-                if col in df.columns:
-                    time_col = col
-                    break
+        # Try to compute throughput as cases per day
+        time_col = None
+        for col in ['end_timestamp', 'start_timestamp', 'timestamp']:
+            if col in df.columns:
+                time_col = col
+                break
 
-            if time_col and num_cases > 0:
-                timestamps = self._parse_timestamps(df, time_col)
-                if timestamps is not None and timestamps.notna().any():
-                    time_span_seconds = (timestamps.max() - timestamps.min()).total_seconds()
-                    if time_span_seconds > 0:
-                        metrics['avg_throughput'] = float(num_cases / (time_span_seconds / 86400.0))
-                    else:
-                        metrics['avg_throughput'] = float(num_cases)
+        if time_col and num_cases > 0:
+            timestamps = self._parse_timestamps(df, time_col)
+            if timestamps is not None and timestamps.notna().any():
+                time_span_seconds = (timestamps.max() - timestamps.min()).total_seconds()
+                if time_span_seconds > 0:
+                    metrics['avg_throughput'] = float(num_cases / (time_span_seconds / 86400.0))
                 else:
                     metrics['avg_throughput'] = float(num_cases)
-            elif num_cases > 0:
+            else:
                 metrics['avg_throughput'] = float(num_cases)
+        elif num_cases > 0:
+            metrics['avg_throughput'] = float(num_cases)
 
-            # Try to extract real resources from resource column
-            if 'resource' in df.columns:
-                resource_counts = df['resource'].value_counts()
-                total = len(df)
-                for res, count in resource_counts.items():
-                    res_str = str(res).strip()
-                    if res_str.endswith('.0'):
-                        res_str = res_str[:-2]
-                    util = min(0.99, max(0.01, count / total * 10))
-                    metrics['resource_utilization'][res_str] = util
+        # Try to extract real resources from resource column
+        if 'resource' in df.columns:
+            resource_counts = df['resource'].value_counts()
+            total = len(df)
+            for res, count in resource_counts.items():
+                res_str = str(res).strip()
+                if res_str.endswith('.0'):
+                    res_str = res_str[:-2]
+                util = min(0.99, max(0.01, count / total * 10))
+                metrics['resource_utilization'][res_str] = util
 
-                if metrics['resource_utilization']:
-                    return metrics
-        except Exception as e:
-            pass
+        if not metrics['resource_utilization']:
+            raise ValueError(f"Could not extract resource utilization from dataframe. Columns: {df.columns.tolist()}")
 
-        # Fallback to defaults if nothing worked
-        metrics['resource_utilization'] = {'Resource_1': 0.9, 'Resource_2': 0.9}
         return metrics

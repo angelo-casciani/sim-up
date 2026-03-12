@@ -158,20 +158,37 @@ Validation oracle by change type (CRITICAL — use this to set realistic expecte
 - resource_allocation (parameter_type=resources): validated by DES (Prosimos) ONLY.
   ABS has no queue model and cannot detect capacity improvements. Do NOT expect ABS to confirm.
   Main KPIs to improve: waiting_time (primary), cycle_time, throughput.
-- calendar_adjustment (parameter_type=calendar): validated by BOTH DES and ABS.
+- calendar_adjustment (parameter_type=calendar): validated by DES.
   Extends working hours for resources, reducing waiting times and improving throughput.
   Main KPIs to improve: waiting_time (primary), cycle_time, throughput.
 
+    ROLE SEMANTICS (CRITICAL for role_redesign):
+    - Each role/resource profile can ONLY perform specific activities based on their domain expertise.
+    - When proposing role_redesign (shift_responsibility), you MUST consider role compatibility:
+      * Appraisers: Can ONLY do appraisal-related tasks (property valuation, assessment). Cannot be replaced by Applicants.
+      * Loan Officers: Handle loan decisions, approvals, customer interactions related to loans.
+      * Clerks: Handle administrative tasks, document processing, data entry.
+      * AML Investigators: Handle anti-money laundering checks, compliance verification.
+      * Senior Officers: Handle escalations, final approvals, complex decisions.
+      * Applicants: External actors who submit applications, provide documents. They are NOT staff and CANNOT perform internal tasks.
+    - NEVER propose shifting tasks FROM a specialist company role (appraiser, officer) to a customer/applicant.
+    - ONLY shift responsibilities between roles that perform SIMILAR or COMPATIBLE activities within the organization.
+    - If role_task_mapping is provided, use it to verify compatibility before proposing shifts.
+
     Proposal strategy:
     - Propose ONE change only (single specific change entry).
-        - Use only this safe intervention palette:
-            * role_redesign (shift_responsibility or create_specialist_role) — PREFERRED when overloaded + underutilized roles coexist
-            * resource_allocation (add or increase_count):
+        - Use only this safe intervention palette (STRICT PRIORITY ORDER):
+            1. role_redesign (shift_responsibility or create_specialist_role) — **MANDATORY FIRST CHOICE** when overloaded + underutilized roles coexist
+              This is the LOWEST COST option: redistributes existing workforce without hiring.
+              IMPORTANT: Only shift between roles with overlapping or compatible task assignments.
+              Example valid shifts: clerk -> clerk, loan officer -> Senior Officer (similar domain)
+              Example INVALID shifts: appraiser -> applicant (incompatible - Applicant cannot appraise)
+            2. resource_allocation (add or increase_count) — SECOND CHOICE: add capacity to bottleneck roles
               - For utilization >= 95%: add 4-6 resources (critical bottleneck)
               - For utilization >= 90%: add 3-5 resources (severe bottleneck)
               - For utilization >= 80%: add 2-4 resources (high bottleneck)
               - Otherwise: add 1-2 resources
-            * calendar_adjustment (increase_hours): extend working hours for overloaded resources
+            3. calendar_adjustment (increase_hours) — LAST RESORT: extend working hours for overloaded resources
               - value = hours to add (1-4 hours typical)
               - target = resource name or "all" for global change
         - Do NOT propose arrival_rate_adjustment, routing_adjustment, or activity_duration_optimization.
@@ -251,6 +268,16 @@ BASELINE METRICS:
                 prompt += f"- Gateways: {gateways}\n"
             if role_redesign_hints:
                 prompt += f"- Role redesign guidance: {role_redesign_hints}\n"
+            # Include role-task mapping if available
+            role_task_mapping = target_hints.get("role_task_mapping", {})
+            if role_task_mapping:
+                prompt += "- Role-Task Mapping (each role can ONLY perform these tasks):\n"
+                for role, tasks in role_task_mapping.items():
+                    tasks_str = ", ".join(tasks[:5])  # Limit to first 5 tasks for brevity
+                    if len(tasks) > 5:
+                        tasks_str += f", ... (+{len(tasks)-5} more)"
+                    prompt += f"    * {role}: {tasks_str}\n"
+                prompt += "  IMPORTANT: Only shift responsibilities between roles with overlapping tasks!\n"
             prompt += "\n"
 
         allowed_types = strategy_hints.get("allowed_parameter_types", [])
@@ -263,6 +290,13 @@ BASELINE METRICS:
         prompt += "ITERATION STRATEGY CONSTRAINTS (must follow):\n"
         if allowed_types:
             prompt += f"- Allowed parameter_type values this iteration: {', '.join(allowed_types)}\n"
+            # Enforce role_redesign priority when it's first in the list
+            if allowed_types[0] == "role_redesign":
+                prompt += (
+                    "- **MANDATORY**: You MUST use role_redesign as your parameter_type. "
+                    "Role redesign is the LOWEST COST option for the organization (no hiring needed). "
+                    "Only use resource_allocation or calendar_adjustment if role_redesign has already been tried and failed.\n"
+                )
             oracle_notes = [f"{t} -> {_oracle_map.get(t, 'OR')}" for t in allowed_types]
             prompt += f"- Validation oracle for each allowed type: {'; '.join(oracle_notes)}\n"
         if disallowed_types:
@@ -299,17 +333,21 @@ BASELINE METRICS:
             prompt += "This is the first improvement attempt.\n"
         
         prompt += """
-Focus on:
-1. Workload imbalance (overloaded + underutilized roles coexist) — address with role_redesign (ABS-validated) — PREFERRED
-2. Resource bottlenecks (look for utilization > 0.8) — address with calendar_adjustment (extend hours) or resource additions
-3. High waiting times (> 40% of cycle time) — address with calendar_adjustment or resource additions (DES-validated)
+Focus on (PRIORITY ORDER - follow strictly):
+1. **FIRST PRIORITY - role_redesign**: When overloaded + underutilized roles coexist, you MUST use role_redesign.
+   This is the LOWEST COST intervention (redistributes existing workforce, no new hires needed).
+   CRITICAL: Only shift between roles with COMPATIBLE task assignments. Check the role-task mapping!
+   - Valid: shift between Clerks, between Loan Officers, or between roles sharing activities
+   - INVALID: Appraiser -> Applicant (Applicant cannot do appraisals), AML Investigator -> Clerk (different expertise)
+2. **SECOND PRIORITY - resource_allocation**: If role_redesign is not viable or already tried, add resources to bottlenecks.
+3. **LAST RESORT - calendar_adjustment**: Only extend working hours if role_redesign AND resource_allocation are not viable.
 
     Safety rules:
     - Use meaningful deltas (+1 to +2 resources for additions, +1 to +4 hours for calendar).
     - Avoid any change likely to worsen cycle time or waiting time.
     - Prefer improvements that help at least two of: cycle_time, throughput, waiting_time.
-    - STRONGLY prefer role_redesign over pure resource addition when overloaded and underutilized roles coexist.
-    - Consider calendar_adjustment as a lower-cost alternative to adding resources.
+    - **MANDATORY**: If role_redesign is in the allowed types, you MUST propose role_redesign (lowest organizational cost).
+    - For role_redesign: VERIFY role compatibility before proposing. External actors (Applicant) cannot perform internal staff tasks.
     - If prior attempts fail repeatedly, switch intervention type among allowed types only.
     - Do not use placeholders like "Activity_with_highest_waiting_time"; choose from the known targets.
 
@@ -395,13 +433,17 @@ Return ONLY the JSON object, no additional text."""
 
         util = baseline_metrics.get("resource_utilization", {}) or {}
         sorted_utils = sorted(((str(k), float(v)) for k, v in util.items()), key=lambda x: x[1], reverse=True)
-        overloaded = [r for r, u in sorted_utils if u >= 0.80][:3]
+        # Use adaptive threshold: if no resources >= 80%, use >= 60% as "high utilization"
+        # This ensures we always target the most loaded resources
+        overloaded_strict = [r for r, u in sorted_utils if u >= 0.80][:3]
+        overloaded_moderate = [r for r, u in sorted_utils if u >= 0.60][:5]
+        overloaded = overloaded_strict if overloaded_strict else overloaded_moderate
         underutilized = [r for r, u in sorted_utils if u <= 0.25][:5]
         # Track utilization values for overloaded resources (for scaling increments)
         # Store both with and without _profile suffix for robust lookups
         overloaded_utilizations = {}
         for r, u in sorted_utils:
-            if u >= 0.80:
+            if u >= 0.60:  # Track all moderately-loaded resources
                 overloaded_utilizations[r] = u
                 # Also store normalized version
                 r_norm = r.replace("_profile", "")
@@ -413,15 +455,16 @@ Return ONLY the JSON object, no additional text."""
         mappable_overloaded = [r for r in overloaded if r in resource_norms]
         mappable_underutilized = [r for r in underutilized if r in resource_norms]
 
-        # Priority order: role_redesign > calendar > resources
+        # Priority order: role_redesign > resources > calendar
         # role_redesign is preferred when workload can be rebalanced
-        # calendar is useful when resources are overloaded but no underutilized targets exist
+        # resources is next choice for adding capacity to bottlenecks
+        # calendar is last resort for extending working hours
         allowed = []
         if mappable_overloaded and mappable_underutilized:
             allowed.append("role_redesign")
         if overloaded:
-            allowed.append("calendar")  # Calendar adjustment can help overloaded resources
-            allowed.append("resources")
+            allowed.append("resources")  # Resource allocation is second priority
+            allowed.append("calendar")   # Calendar adjustment is last resort
 
         if not allowed:
             allowed = ["resources"]
@@ -444,9 +487,15 @@ Return ONLY the JSON object, no additional text."""
             if failed_recent.count(repeated) >= 2 and repeated in allowed and len(allowed) > 1:
                 allowed = [t for t in allowed if t != repeated] + [repeated]
 
+        # High priority targets: overloaded first (for resource additions), then underutilized (for role redesign destination)
+        # For resource additions, we should ONLY target overloaded resources
         high_priority_targets = mappable_overloaded + mappable_underutilized
         if not high_priority_targets:
             high_priority_targets = overloaded + underutilized
+        # Ensure overloaded targets are at the front for resource allocation scenarios
+        overloaded_priority_targets = [t for t in high_priority_targets if t in overloaded or t in mappable_overloaded]
+        if not overloaded_priority_targets:
+            overloaded_priority_targets = overloaded if overloaded else []
 
         # Track recently tried (parameter_type, target) tuples so the LLM doesn't repeat them.
         # Include BOTH failed AND validated+applied attempts:
@@ -467,6 +516,7 @@ Return ONLY the JSON object, no additional text."""
             "allowed_parameter_types": list(dict.fromkeys(allowed)),
             "disallowed_parameter_types": ["arrival_rate", "gateway_probabilities"],
             "high_priority_targets": high_priority_targets,
+            "overloaded_priority_targets": overloaded_priority_targets,  # For resource additions
             "overloaded_targets": overloaded,
             "underutilized_targets": underutilized,
             "mappable_overloaded_targets": mappable_overloaded,
@@ -611,9 +661,51 @@ Return ONLY the JSON object, no additional text."""
 
         if parameter_type == "role_redesign":
             recently_tried = strategy_hints.get("recently_tried", [])
+            role_task_mapping = target_hints.get("role_task_mapping", {})
 
             def _rd_entry(src, dst):
                 return f"role_redesign:{src} → {dst}"
+
+            def _is_external_actor(role_name: str) -> bool:
+                """Check if a role represents an external actor who cannot perform internal tasks."""
+                role_lower = str(role_name).lower()
+                # External actors that cannot be assigned internal work
+                external_patterns = ['applicant', 'customer', 'client', 'external', 'user']
+                return any(p in role_lower for p in external_patterns)
+
+            def _roles_are_compatible(src_role: str, dst_role: str) -> bool:
+                """Check if shifting tasks from src to dst makes semantic sense."""
+                # Never shift TO external actors (they can't do internal work)
+                if _is_external_actor(dst_role):
+                    return False
+                # Never shift FROM external actors to internal (their tasks are theirs)
+                if _is_external_actor(src_role):
+                    return False
+                # If we have task mapping, check for overlapping capabilities
+                if role_task_mapping:
+                    src_tasks = set(role_task_mapping.get(src_role, []))
+                    dst_tasks = set(role_task_mapping.get(dst_role, []))
+                    # Also try without _profile suffix
+                    if not src_tasks:
+                        src_norm = src_role.replace("_profile", "")
+                        src_tasks = set(role_task_mapping.get(src_norm, []))
+                    if not dst_tasks:
+                        dst_norm = dst_role.replace("_profile", "")
+                        dst_tasks = set(role_task_mapping.get(dst_norm, []))
+                    # Roles should have at least some overlapping tasks to be compatible
+                    # OR destination should be a generalist (can handle more tasks)
+                    if src_tasks and dst_tasks:
+                        overlap = src_tasks & dst_tasks
+                        if overlap:
+                            return True  # They share tasks, compatible
+                        # Check if roles are in the same domain (by name similarity)
+                        src_base = src_role.replace("_profile", "").split("-")[0].lower()
+                        dst_base = dst_role.replace("_profile", "").split("-")[0].lower()
+                        if src_base == dst_base:
+                            return True  # Same role type, just different instances
+                        return False  # Different tasks, different role types
+                # Fallback: allow shift if we can't determine (trust LLM)
+                return True
 
             # Build the candidate from/to lists from overloaded and underutilized mappable resources.
             # Fall back to full resource list if mappable lists are empty.
@@ -621,33 +713,42 @@ Return ONLY the JSON object, no additional text."""
             from_candidates = [r for r in from_candidates if r]
             to_candidates = [resolve_resource_name(r) for r in underutilized_targets]
             to_candidates = [r for r in to_candidates if r]
+            # Filter out external actors from destination candidates
+            to_candidates = [r for r in to_candidates if not _is_external_actor(r)]
 
-            # Prefer the LLM's proposed target if it parses correctly and hasn't been tried.
+            # Prefer the LLM's proposed target if it parses correctly, hasn't been tried, and is compatible.
             from_role = to_role = None
             if preferred_target and "→" in str(preferred_target):
                 pref_src, pref_dst = [p.strip() for p in str(preferred_target).split("→", 1)]
                 pref_src_r = resolve_resource_name(pref_src)
                 pref_dst_r = resolve_resource_name(pref_dst)
                 if (pref_src_r and pref_dst_r and pref_src_r != pref_dst_r
-                        and _rd_entry(pref_src_r, pref_dst_r) not in recently_tried):
+                        and _rd_entry(pref_src_r, pref_dst_r) not in recently_tried
+                        and _roles_are_compatible(pref_src_r, pref_dst_r)):
                     from_role, to_role = pref_src_r, pref_dst_r
+                elif pref_src_r and pref_dst_r and not _roles_are_compatible(pref_src_r, pref_dst_r):
+                    print(f"  [!] Rejected incompatible role shift: {pref_src_r} → {pref_dst_r}")
 
-            # Otherwise find the first overloaded→underutilized pair not in recently_tried.
+            # Otherwise find the first overloaded→underutilized pair that is compatible and not in recently_tried.
             if not (from_role and to_role):
                 for src in from_candidates:
                     for dst in to_candidates:
-                        if src != dst and _rd_entry(src, dst) not in recently_tried:
+                        if (src != dst and _rd_entry(src, dst) not in recently_tried
+                                and _roles_are_compatible(src, dst)):
                             from_role, to_role = src, dst
                             break
                     if from_role and to_role:
                         break
 
-            # Hard fallbacks: just pick first valid pair regardless of recently_tried.
+            # Hard fallbacks: just pick first valid compatible pair regardless of recently_tried.
             if not from_role:
                 from_role = from_candidates[0] if from_candidates else (resources[0] if resources else "NOT_SET")
             if not to_role:
                 non_artificial = [r for r in (to_candidates or resources)
-                                  if not str(r).startswith("artificial_") and r != from_role]
+                                  if (not str(r).startswith("artificial_")
+                                      and r != from_role
+                                      and not _is_external_actor(r)
+                                      and _roles_are_compatible(from_role, r))]
                 to_role = non_artificial[0] if non_artificial else (resources[-1] if resources else from_role)
 
             target = f"{from_role} → {to_role}"
@@ -691,12 +792,40 @@ Return ONLY the JSON object, no additional text."""
             return target, change, value, "calendar_adjustment"
 
         # Default: resources (safe positive capacity)
+        # For resource additions, ONLY target overloaded resources (not underutilized!)
+        overloaded_priority = strategy_hints.get("overloaded_priority_targets", [])
+
         target = preferred_target if preferred_target in resources else None
+
+        # First try overloaded priority targets (resources with high utilization)
         if not target:
+            for role in overloaded_priority:
+                resolved = resolve_resource_name(role)
+                if resolved:
+                    target = resolved
+                    break
+
+        # Fallback to top_targets only if they're overloaded
+        if not target:
+            overloaded_set = set(strategy_hints.get("overloaded_targets", []))
             for role in top_targets:
-                if role in resources:
+                if role in resources and role in overloaded_set:
                     target = role
                     break
+
+        # Final fallback: highest utilization resource from overloaded_utilizations
+        if not target:
+            overloaded_utils = strategy_hints.get("overloaded_utilizations", {})
+            if overloaded_utils:
+                # Sort by utilization descending and pick first that's in resources
+                sorted_by_util = sorted(overloaded_utils.items(), key=lambda x: x[1], reverse=True)
+                for res, util in sorted_by_util:
+                    resolved = resolve_resource_name(res)
+                    if resolved:
+                        target = resolved
+                        break
+
+        # Ultimate fallback
         if not target:
             target = resources[0] if resources else "Resource_1"
 

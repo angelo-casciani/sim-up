@@ -174,3 +174,110 @@ class ImprovementValidator:
             summary = "No significant improvement"
 
         return is_improvement, summary
+
+    def validate_with_formula(
+        self,
+        baseline_metrics: Dict,
+        new_metrics: Dict,
+        threshold: float = 0.01,
+        max_utilization: float = 0.90
+    ) -> Dict:
+        """
+        Validate using formula: delta_throughput - delta_cycle_time > threshold.
+
+        Also applies utilization veto if cumulative utilization > max_utilization.
+
+        Args:
+            baseline_metrics: Baseline process metrics
+            new_metrics: Metrics after applying hypothesis
+            threshold: Score threshold for validation (default 0.01 = 1%)
+            max_utilization: Utilization veto threshold (default 0.90 = 90%)
+
+        Returns:
+            Dict with is_improvement, score, and detailed breakdown
+        """
+        # Calculate deltas as fractions
+        delta_tp = self._calculate_change(
+            baseline_metrics.get('avg_throughput', 0),
+            new_metrics.get('avg_throughput', 0)
+        ) / 100.0
+
+        delta_ct = self._calculate_change(
+            baseline_metrics.get('avg_cycle_time', 0),
+            new_metrics.get('avg_cycle_time', 0)
+        ) / 100.0
+
+        # Formula: delta_throughput - delta_cycle_time > threshold
+        # delta_tp: positive = improvement (throughput increased)
+        # delta_ct: negative = improvement (cycle time decreased)
+        # When ct decreases (negative), subtracting negative adds to score
+        # Example: +5% tp, -10% ct => 0.05 - (-0.10) = 0.05 + 0.10 = 0.15 > 0.02
+        score = delta_tp - delta_ct
+        is_improvement = score > threshold
+
+        # Utilization veto check
+        utilization_veto = False
+        cumulative_utilization = 0.0
+        resource_util = new_metrics.get('resource_utilization', {})
+        if resource_util:
+            cumulative_utilization = sum(resource_util.values()) / len(resource_util)
+            if cumulative_utilization > max_utilization:
+                utilization_veto = True
+                is_improvement = False
+
+        # Build improvements dict for compatibility
+        improvements = {}
+        if 'avg_cycle_time' in baseline_metrics and 'avg_cycle_time' in new_metrics:
+            improvements['cycle_time'] = {
+                'baseline': baseline_metrics['avg_cycle_time'],
+                'new': new_metrics['avg_cycle_time'],
+                'change_pct': delta_ct * 100.0
+            }
+        if 'avg_throughput' in baseline_metrics and 'avg_throughput' in new_metrics:
+            improvements['throughput'] = {
+                'baseline': baseline_metrics['avg_throughput'],
+                'new': new_metrics['avg_throughput'],
+                'change_pct': delta_tp * 100.0
+            }
+
+        return {
+            "is_improvement": is_improvement,
+            "score": score,
+            "threshold": threshold,
+            "delta_throughput": delta_tp,
+            "delta_cycle_time": delta_ct,
+            "utilization_veto": utilization_veto,
+            "cumulative_utilization": cumulative_utilization,
+            "improvements": improvements,
+            "summary": self._build_formula_summary(
+                score, threshold, utilization_veto, cumulative_utilization, delta_tp, delta_ct
+            )
+        }
+
+    def _build_formula_summary(
+        self,
+        score: float,
+        threshold: float,
+        utilization_veto: bool,
+        cumulative_utilization: float,
+        delta_tp: float,
+        delta_ct: float
+    ) -> str:
+        """Build human-readable summary for formula-based validation."""
+        parts = []
+
+        if utilization_veto:
+            parts.append(
+                f"VETO: cumulative utilization {cumulative_utilization:.1%} > {0.90:.0%} threshold"
+            )
+
+        if score > threshold:
+            parts.append(f"Score {score:.4f} > {threshold} threshold")
+            if delta_tp > 0:
+                parts.append(f"throughput +{delta_tp:.1%}")
+            if delta_ct < 0:
+                parts.append(f"cycle time {delta_ct:.1%}")
+        else:
+            parts.append(f"Score {score:.4f} <= {threshold} threshold (no improvement)")
+
+        return "; ".join(parts) if parts else "No significant improvement"

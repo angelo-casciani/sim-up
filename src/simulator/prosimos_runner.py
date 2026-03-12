@@ -46,56 +46,32 @@ class ProsimosRunner:
             Dictionary of simulated metrics
         """
         self.work_dir = work_dir
-        
-        try:
-            # Apply modifications to Prosimos parameters
-            modified_params = self._apply_modifications(model, modifications)
 
-            # Save modified parameters
-            params_file = os.path.join(work_dir, "modified_params.json")
-            with open(params_file, 'w') as f:
-                json.dump(modified_params, f, indent=2)
-            
-            # Run simulation - Try Docker first, fallback to estimation preserving real resources
-            result = self._run_simulation(
-                model,
-                params_file,
-                work_dir,
-                total_cases=total_cases,
-                time_horizon_seconds=time_horizon_seconds,
-                seed=seed
-            )
-            
-            # If docker failed, ensure we're using real resources in fallback
-            if not result or len(result.get('resource_utilization', {})) == 0:
-                print("Simulation unavailable, using estimation mode with baseline resources")
-                # Fall back to estimation based on real baseline resources
-                if baseline_metrics and 'resource_utilization' in baseline_metrics:
-                    real_resources = {
-                        str(k): v for k, v in baseline_metrics['resource_utilization'].items()
-                    }
-                    result['resource_utilization'] = real_resources
-                    print(f"  Using {len(real_resources)} real baseline resources in estimation")
-                elif 'prosimos_params' in model and 'resource_profiles' in model['prosimos_params']:
-                    real_profiles = model['prosimos_params']['resource_profiles']
-                    real_resources = {
-                        str(p.get('id', p.get('name', f'Resource_{i}'))): 0.85 
-                        for i, p in enumerate(real_profiles)
-                    }
-                    result['resource_utilization'] = real_resources
-                    print(f"  Using {len(real_resources)} SIMOD-discovered resources in estimation")
-                else:
-                    # Minimal fallback with default values
-                    result['resource_utilization'] = {'resource_pool': 0.5}
-            
-            return result
-            
-        except subprocess.TimeoutExpired:
-            print("Simulation timed out")
-            return {}
-        except Exception as e:
-            print(f"Error during simulation: {e}")
-            return {}
+        # Apply modifications to Prosimos parameters
+        modified_params = self._apply_modifications(model, modifications)
+
+        # Save modified parameters
+        params_file = os.path.join(work_dir, "modified_params.json")
+        with open(params_file, 'w') as f:
+            json.dump(modified_params, f, indent=2)
+
+        # Run simulation - NO FALLBACK, fail clearly if something goes wrong
+        result = self._run_simulation(
+            model,
+            params_file,
+            work_dir,
+            total_cases=total_cases,
+            time_horizon_seconds=time_horizon_seconds,
+            seed=seed
+        )
+
+        if not result:
+            raise RuntimeError("DES simulation returned empty result - check Prosimos/Docker setup")
+
+        if not result.get('resource_utilization'):
+            raise RuntimeError("DES simulation returned no resource utilization data")
+
+        return result
     
     def _apply_modifications(self, model: Dict, modifications: Dict) -> Dict:
         """Apply hypothesis modifications to Prosimos parameters."""
@@ -251,11 +227,8 @@ class ProsimosRunner:
                         new_profile['resource_list'][0]['id'] = new_resource_id
                         new_profile['resource_list'][0]['name'] = new_resource_id
                         new_profile['resource_list'][0]['amount'] = 1
-                        # Update calendar reference
-                        if 'calendar' in new_profile['resource_list'][0]:
-                            old_calendar = new_profile['resource_list'][0]['calendar']
-                            new_calendar = old_calendar.replace(template_id.replace('_profile', ''), new_resource_id)
-                            new_profile['resource_list'][0]['calendar'] = new_calendar
+                        # Keep the original calendar reference - do NOT rename it
+                        # Prosimos needs the calendar to exist in resource_calendars
 
                     new_profile['amount'] = 1
                     resource_profiles.append(new_profile)
@@ -738,35 +711,31 @@ class ProsimosRunner:
 
         Returns:
             Dictionary of simulated metrics
+
+        Raises:
+            RuntimeError: If BPMN file not found, Docker fails, or metrics extraction fails
         """
-        
-        # Get BPMN file path
-        bpmn_path = None
+
+        # Get BPMN file path - NO FALLBACK
         bpmn_work_file = os.path.join(work_dir, "model.bpmn")
-        
+
         if 'bpmn_path' in model:
-            # Use path from SIMOD output
             bpmn_path = model['bpmn_path']
             if os.path.exists(bpmn_path):
                 print(f"[OK] Found BPMN file: {bpmn_path}")
                 shutil.copy2(bpmn_path, bpmn_work_file)
             else:
-                print(f"[X] BPMN file not found: {bpmn_path}")
-                print(f"  WARNING: Using estimation fallback with real resources from params")
-                return self._estimate_metrics_from_model(model, params_file)
+                raise RuntimeError(f"BPMN file not found: {bpmn_path}")
         elif 'bpmn_model' in model:
-            # Legacy: use model content
             with open(bpmn_work_file, 'w') as f:
                 f.write(model['bpmn_model'])
         else:
-            print("Warning: No BPMN model for simulation")
-            print(f"  Using estimation fallback with real resources from params")
-            return self._estimate_metrics_from_model(model, params_file)
-        
+            raise RuntimeError("No BPMN model available for simulation (need 'bpmn_path' or 'bpmn_model')")
+
         # Prepare simulation command
         output_dir = os.path.join(work_dir, "simulated_output")
         os.makedirs(output_dir, exist_ok=True)
-        
+
         cmd = []
         if self.use_sudo:
             cmd.append("sudo")
@@ -785,110 +754,44 @@ class ProsimosRunner:
             "--log_out_path", "/data/simulated_output/simulation_log.csv"
         ])
 
-        # Note: Prosimos does not support --seed CLI option.
-        # Fair benchmarking is ensured by the simulation cache in evaluation_runner,
-        # which guarantees identical inputs yield identical outputs.
-        
         if time_horizon_seconds:
             print(f"Running Prosimos simulation (max {sim_cases} cases, will filter to {time_horizon_seconds/86400:.1f} days)...")
         else:
             print(f"Running Prosimos simulation ({sim_cases} cases)...")
+        print(f"  Command: {' '.join(cmd)}")
         print(f"  Parameters file: {params_file}")
+
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=300  # 5 minute timeout
         )
-        
+
         if result.returncode != 0:
-            print(f"[!]  Prosimos simulation failed (exit code {result.returncode})")
+            error_msg = f"Prosimos simulation failed (exit code {result.returncode})"
             if result.stderr:
-                print(f"  Error: {result.stderr[:300]}")
-            print(f"  Using estimation fallback with real resources from params")
-            return self._estimate_metrics_from_model(model, params_file)
-        
+                error_msg += f"\n  stderr: {result.stderr[:500]}"
+            if result.stdout:
+                error_msg += f"\n  stdout: {result.stdout[:500]}"
+            raise RuntimeError(error_msg)
+
         print(f"[OK] Prosimos simulation completed")
-        
-        # Extract metrics from output
+
+        # Extract metrics from output - NO FALLBACK
         simulated_log = os.path.join(output_dir, "simulation_log.csv")
-        if os.path.exists(simulated_log):
-            # Use simulator's metrics extractor for detailed analysis
-            try:
-                extractor = MetricsExtractor()
-                metrics = extractor.extract_from_csv(
-                    simulated_log,
-                    time_horizon_seconds=time_horizon_seconds
-                )
-                print(f"  [OK] Extracted metrics: {list(metrics.keys())}")
-                return metrics
-            except Exception as e:
-                print(f"Warning: Failed to extract metrics: {e}")
-                print(f"  Using estimation fallback with real resources from params")
-                return self._estimate_metrics_from_model(model, params_file)
-        else:
-            print(f"Warning: No simulation log found at {simulated_log}")
-            print(f"  Available files in output_dir: {os.listdir(output_dir) if os.path.exists(output_dir) else 'none'}")
-            print(f"  Using estimation fallback with real resources from params")
-            return self._estimate_metrics_from_model(model, params_file)
-    
-    def _estimate_metrics_from_model(self, model: Dict, params_file: str) -> Dict:
-        """Estimate metrics from modified parameters using REAL resource profiles from Prosimos params."""
-        try:
-            with open(params_file, 'r') as f:
-                params = json.load(f)
-            
-            # Extract REAL resource profiles that SIMOD discovered
-            real_resources = {}
-            if 'resource_profiles' in params and isinstance(params['resource_profiles'], list):
-                print(f"Using {len(params['resource_profiles'])} SIMOD-discovered resource profiles:")
-                for i, profile in enumerate(params['resource_profiles']):
-                    res_id = profile.get('id') or profile.get('name') or f'Resource_{i}'
-                    amount = profile.get('amount', 1)
-                    # Use realistic utilization based on profile amount
-                    util = min(0.95, max(0.2, 0.85 - (amount - 1) * 0.15))
-                    real_resources[str(res_id)] = util
-                    if i < 3:  # Print first 3
-                        print(f"  - {res_id}: amount={amount}, utilization={util:.2f}")
-                if len(params['resource_profiles']) > 3:
-                    print(f"  ... and {len(params['resource_profiles']) - 3} more")
-            else:
-                print("Warning: No resource_profiles found in Prosimos parameters")
-            
-            # If we couldn't extract resources, return empty dict to indicate failure
-            if not real_resources:
-                print("Error: No resources extracted from parameters")
-                return {}
-            
-            # Estimate metrics based on resource capacity
-            total_capacity = sum(
-                p.get('amount', 1) for p in params.get('resource_profiles', [])
-            ) if 'resource_profiles' in params else 1
-            
-            # Baseline assumption: more resources = better throughput/lower cycle time
-            baseline_resources = 2
-            if total_capacity > baseline_resources:
-                improvement_factor = baseline_resources / total_capacity
-            else:
-                improvement_factor = 1.0
-            
-            baseline_cycle = 36432.72  
-            baseline_throughput = 110.0
-            baseline_waiting = 10929.82
-            
-            est_metrics = {
-                'avg_cycle_time': baseline_cycle * improvement_factor,
-                'avg_throughput': baseline_throughput,
-                'avg_waiting_time': baseline_waiting * improvement_factor,
-                'resource_utilization': real_resources,
-                'estimation_mode': True,  # Mark as estimation not actual simulation
-                'num_resources': len(real_resources),
-                'total_resource_capacity': total_capacity
-            }
-            
-            print(f"[OK] Estimated metrics for {len(real_resources)} resources (capacity={total_capacity})")
-            return est_metrics
-            
-        except Exception as e:
-            print(f"Error estimating metrics: {e}")
-            return {}
+        if not os.path.exists(simulated_log):
+            available = os.listdir(output_dir) if os.path.exists(output_dir) else []
+            raise RuntimeError(f"Simulation log not found at {simulated_log}. Available files: {available}")
+
+        extractor = MetricsExtractor()
+        metrics = extractor.extract_from_csv(
+            simulated_log,
+            time_horizon_seconds=time_horizon_seconds
+        )
+
+        if not metrics:
+            raise RuntimeError(f"Failed to extract metrics from {simulated_log}")
+
+        print(f"  [OK] Extracted metrics: {list(metrics.keys())}")
+        return metrics

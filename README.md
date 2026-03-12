@@ -19,7 +19,10 @@ Agentic pipeline for process-improvement discovery and validation using:
 - Simulator-relative baseline validation is active (DES and ABS each compared against own baseline).
 - Dataset-specific calibrated model selection is active.
 - Report generation is robust to `impact`/`improvement` payload variants.
-- Change-type-aware validation: different simulators act as oracle depending on hypothesis type.
+- **Dual simulator execution:** Both DES and ABS simulators always run in parallel.
+- **Averaged validation:** Results from both simulators are averaged for the final decision.
+- **Validation formula:** `(DES_score + ABS_score) / 2 > 0.01` where score = `delta_tp - delta_ct`.
+- **Utilization veto:** Improvements rejected if cumulative resource utilization > 90%.
 - DES time horizon always constrained to the test-split window for comparable metrics.
 
 ## Quick Start
@@ -73,22 +76,44 @@ poetry run python src/main.py --log P2P/train_preprocessed.csv --max_iterations 
 
 ### Change-Type-Aware Validation Oracle
 
-The validation oracle depends on which type of change is being evaluated:
+Both simulators (DES and ABS) always run in parallel. The validation decision is based on the **averaged score** from both simulators:
 
-| `parameter_type` | Primary oracle | Secondary role | Rationale |
-|---|---|---|---|
-| `role_redesign` | **ABS primary** | DES: throughput safety check | ABS explicitly models who does what; DES checks throughput does not regress |
-| `resources` | **DES only** | ABS: informational only | Resource queuing only modelled in DES |
+```
+averaged_score = (DES_score + ABS_score) / 2
+```
 
-**Note:** `calendar` (calendar adjustment) and `activity_durations` (activity duration optimization) are disabled in the hypothesis generator:
-- **Calendar:** Not yet implemented in ProsimosRunner (`_modify_calendar_hours` missing).
-- **Activity durations:** Not actionable for process owners — identifies WHERE to improve but not HOW.
+Where each simulator's score is: `delta_throughput - delta_cycle_time`
 
-The pipeline focuses on actionable interventions with clear priority: **role_redesign** (preferred when workload imbalance exists) > **resource_allocation**.
+| Simulator | Models | Reliable KPIs |
+|---|---|---|
+| **DES (Prosimos)** | BPMN + resource pools + calendars + queuing | `cycle_time`, `waiting_time`, `throughput` |
+| **ABS (AgentSimulator)** | Agent behaviors + handover sequences | `cycle_time`, resource utilization |
 
-For `resources`, ABS results are logged as informational context only and do not affect the accept/reject decision.
+**Note:** `activity_durations` (activity duration optimization) is disabled in the hypothesis generator as it identifies WHERE to improve but not HOW.
 
-For `role_redesign`, if DES reports a throughput decrease > 10%, the proposal is rejected regardless of ABS outcome.
+The pipeline focuses on actionable interventions with clear priority: **role_redesign** (preferred when workload imbalance exists) > **resource_allocation** > **calendar_adjustment**.
+
+### Validation Formula
+
+Both simulators compute a score using:
+```
+score = delta_throughput - delta_cycle_time
+```
+
+The final decision uses the **averaged score**:
+```
+averaged_score = (DES_score + ABS_score) / 2 > 0.01
+```
+
+Where:
+- `delta_throughput`: positive = improvement (throughput increased)
+- `delta_cycle_time`: negative = improvement (cycle time decreased)
+
+**Example:** DES: +3% tp, -2% ct = 0.05 score; ABS: +1% tp, -4% ct = 0.05 score => averaged = 0.05 > 0.01 ✓
+
+### Utilization Veto
+
+An improvement is **automatically rejected** if the cumulative (average) resource utilization exceeds 90%, regardless of the formula score. This prevents improvements that overload resources.
 
 ### DES Time Horizon
 
@@ -141,8 +166,9 @@ Event Log (XES/CSV)
   -> calibrated model selection
   -> iteration loop:
        LLM hypothesis
-       improved simulation (DES + ABS in parallel)
-       change-type-aware validation (_decide_improvement)
+       both simulators in parallel (DES + ABS)
+       formula-based validation (averaged score > 0.01)
+       utilization veto check (reject if avg util > 90%)
        cumulative scenario update (if validated)
        reporting
   -> final report artifacts
@@ -161,7 +187,7 @@ Event Log (XES/CSV)
 - `src/simulator/agent_simulator_runner.py`
   - runs ABS simulations; applies case-level log modifications
 - `src/validation/improvement_validator.py`
-  - compares simulator baseline vs simulator improvement per-simulator
+  - `validate_with_formula()`: validates using `delta_tp - delta_ct > 0.01` with utilization veto
 - `src/calibration/simod_calibrator.py`
   - applies calibration factors, including wrapped `prosimos_params` structures
 - `src/reporting/report_generator.py`
@@ -181,17 +207,19 @@ This ensures dataset-specific calibration is preferred when present.
 
 ## Validation Strategy
 
-The pipeline uses **change-type-aware, simulator-relative validation**:
+The pipeline uses **dual simulator execution with averaged validation**:
 
 - build one fixed DES baseline and one fixed ABS baseline at the start
-- simulate each new hypothesis against the current working scenario
-- compare each simulator output against its own fixed baseline
-- apply hard guardrails (throughput non-decrease, bounded regressions, cycle-time cap)
-- accept or reject using the oracle appropriate for the hypothesis `parameter_type`
+- for each hypothesis, run **both simulators** in parallel
+- compute score for each: `delta_throughput - delta_cycle_time`
+- average the scores: `(DES_score + ABS_score) / 2`
+- validate: averaged score > 0.01 (1% threshold)
+- apply utilization veto: reject if either simulator's avg utilization > 90%
 
-This avoids:
-- rejecting `role_redesign` hypotheses because DES cannot observe routing improvements
-- accepting `resources`/`calendar` hypotheses based on ABS output (which ignores queuing)
+This approach:
+- provides more robust validation by combining both simulator perspectives
+- reduces noise from individual simulator quirks
+- ensures both queue-based (DES) and behavioral (ABS) aspects are considered
 
 # Validation Logic
 
@@ -206,6 +234,26 @@ The comparison is intentionally **relative to simulator baseline** to avoid over
 In practice, the validator answers one question per iteration:
 "Under the same simulator assumptions, did this proposal produce an acceptable directional improvement?"
 
+## Validation Formula
+
+The core validation uses a unified formula:
+
+```
+score = delta_throughput - (delta_cycle_time / 2) > 0.02
+```
+
+This formula:
+- Rewards throughput increases (positive delta_tp adds to score)
+- Rewards cycle time decreases (negative delta_ct, when subtracted, adds to score)
+- Requires a combined improvement of at least 2% to pass
+
+### Utilization Veto
+
+Even if the formula passes, improvements are **rejected** if:
+- Cumulative (average) resource utilization > 90%
+
+This prevents accepting improvements that would overload resources.
+
 ## Execution Flow
 
 1. Extract baseline process metrics from event log (PM4Py).
@@ -213,9 +261,10 @@ In practice, the validator answers one question per iteration:
 3. Select calibrated simulation model with dataset-aware priority.
 4. Simulate baseline once for both simulators.
 5. Generate one hypothesis per iteration.
-6. Simulate improved scenario with hypothesis changes (DES + ABS in parallel).
-7. Validate DES and ABS independently against their fixed baselines.
-8. Select oracle for combined decision based on `parameter_type`.
+6. **Simulate with both simulators** in parallel (DES + ABS).
+7. Compute score for each: `delta_tp - delta_ct`.
+8. Average scores: `(DES_score + ABS_score) / 2 > 0.01`.
+8. Apply utilization veto if avg utilization > 90%.
 9. If accepted, apply that change to the working scenario for subsequent iterations.
 10. Repeat until `max_iterations` is reached.
 
@@ -228,40 +277,39 @@ Important distinction:
 The validator compares improved metrics against simulator baseline metrics using:
 - cycle time
 - throughput
-- waiting time
-- resource utilization (informational)
+- resource utilization (for veto check)
 
 Note: `waiting_time` reported by ABS is **always 0.0** because AgentSimulator has no queue model. ABS waiting_time is not used for validation decisions.
 
-Guardrails enforce conservative acceptance:
-- throughput must not decrease,
-- cycle-time increase is capped at 10%,
-- excessive regressions fail validation.
+### Validation Thresholds
+
+| Threshold | Value | Description |
+|-----------|-------|-------------|
+| Formula threshold | 0.01 (1%) | Averaged score must exceed this |
+| Utilization veto | 0.90 (90%) | Reject if avg resource utilization exceeds this |
 
 ### Metric Direction
 
 - **Lower is better:** cycle time, waiting time
 - **Higher is better:** throughput
 
-Resource utilization is interpreted contextually (e.g., avoiding overload concentration), not as a single universal min/max target.
+Resource utilization is used for the veto check — if average utilization exceeds 90%, the improvement is rejected regardless of other metrics.
 
 ### Per-Simulator Validation (what is scored)
 
-For each simulator independently (DES and ABS):
-1. Compare improved metrics vs that simulator's fixed baseline metrics.
-2. Compute percentage deltas for key metrics.
-3. Enforce guardrails (hard-fail checks).
-4. Determine pass/fail for that simulator.
+Both simulators run for every hypothesis:
+1. Each simulator computes: `score = delta_tp - delta_ct`
+2. Scores are averaged: `(DES_score + ABS_score) / 2`
+3. Averaged score must exceed 0.01 (1%)
+4. Check utilization veto: reject if either simulator's avg utilization > 90%
+5. Determine pass/fail based on averaged result
 
-Then combine using the change-type oracle (see table above).
+### Why Dual Simulator with Averaging
 
-### Why Change-Type-Aware Oracles
-
-A flat OR rule (old behaviour) would:
-- allow ABS to "validate" resource additions it cannot model (ABS has no queue, so adding a resource cannot lower ABS waiting time)
-- force ABS outcomes to veto role redesigns where DES is blind to routing improvements
-
-The oracle table resolves this by matching the hypothesis to the simulator best equipped to evaluate it.
+Running both simulators and averaging:
+- **More robust:** Reduces noise from individual simulator quirks
+- **Balanced view:** Combines queue-based (DES) and behavioral (ABS) perspectives
+- **Fair validation:** Neither simulator dominates the decision
 
 ## Why Relative Baseline
 
@@ -293,11 +341,9 @@ If one is missing, the other is used as fallback to avoid report-generation fail
 ## Reading Validation Output
 
 When reviewing logs or reports:
-- Check `parameter_type` of the hypothesis to know which oracle was active.
-- Check **DES impact vs DES baseline** and **ABS impact vs ABS baseline** separately.
-- Check the `Decision oracle` line in the interaction log to see which rule applied.
-- For `resources`/`calendar` hypotheses, ABS is shown as `[informational only]`.
-- For `role_redesign` hypotheses, DES is shown as `[throughput safety check]`.
+- Check the **averaged score** value (must be > 0.01 to pass).
+- Check individual **DES score** and **ABS score** to understand each simulator's view.
+- Check for **utilization veto** — if triggered, improvement is rejected regardless of score.
 - For multi-iteration runs, accepted changes are cumulative in scenario state but still evaluated against the original fixed simulator baselines.
 
 ## License

@@ -407,7 +407,15 @@ class ImprovementValidationAgent:
                 )
                 
                 sim_start = time.time()
-                
+
+                # Always run both simulators in parallel
+                des_metrics = None
+                abs_metrics = None
+                abs_thread_error = None
+
+                print(f"  |- Running both simulators in parallel...")
+                self._log_interaction("Running both simulators (DES + ABS)")
+
                 # Run Prosimos (DES) in main thread
                 print(f"  |- Prosimos (Structural/DES)...")
                 des_metrics = self._run_des_simulations(
@@ -415,10 +423,8 @@ class ImprovementValidationAgent:
                     hypothesis['changes'],
                     baseline_metrics
                 )
-                
+
                 # Run AgentSimulator (ABS) in parallel thread
-                abs_metrics = None
-                abs_thread_error = None
                 def run_agent_simulator():
                     nonlocal abs_metrics, abs_thread_error
                     try:
@@ -437,41 +443,44 @@ class ImprovementValidationAgent:
                 agent_thread = threading.Thread(target=run_agent_simulator, daemon=False)
                 agent_thread.start()
                 agent_thread.join(timeout=300)
-                
+
                 if agent_thread and agent_thread.is_alive():
                     raise RuntimeError("AgentSimulator timed out (>5 min)")
 
                 if abs_thread_error:
                     raise RuntimeError(f"AgentSimulator failed: {abs_thread_error}")
-                
+
                 sim_time = time.time() - sim_start
-                
-                if not des_metrics:
-                    print("Warning: DES simulation failed, skipping hypothesis")
-                    print(f"[TIME]  Simulation took {sim_time:.1f} seconds (DES failed)")
-                    self._log_interaction("\nDES Simulation FAILED - no metrics returned")
+
+                # Check simulation results - both simulators required
+                if not des_metrics or not abs_metrics:
+                    failed = []
+                    if not des_metrics:
+                        failed.append("DES")
+                    if not abs_metrics:
+                        failed.append("ABS")
+                    print(f"Warning: {' and '.join(failed)} simulation failed, skipping hypothesis")
+                    print(f"[TIME]  Simulation took {sim_time:.1f} seconds ({', '.join(failed)} failed)")
+                    self._log_interaction(f"\n{', '.join(failed)} Simulation FAILED - no metrics returned")
                     self._log_interaction(f"\n[TIME]  Simulation time: {sim_time:.1f} seconds")
                     iteration_time = time.time() - iteration_start
                     iterations_times.append({'iteration': iteration + 1, 'total_time': iteration_time, 'status': 'failed'})
                     continue
-                
+
                 print(f"  |- DES Metrics: {json.dumps(des_metrics, indent=2)[:100]}...")
-                if abs_metrics:
-                    print(f"  |- ABS Metrics: {json.dumps(abs_metrics, indent=2)[:100]}...")
-                else:
-                    raise RuntimeError("ABS metrics unavailable; cannot proceed.")
-                
-                print(f"[TIME]  Parallel simulations took {sim_time:.1f} seconds")
-                
+                print(f"  |- ABS Metrics: {json.dumps(abs_metrics, indent=2)[:100]}...")
+
+                print(f"[TIME]  Simulation took {sim_time:.1f} seconds")
+
                 self._log_interaction("\nDES (Prosimos) Results:")
                 self._log_interaction(json.dumps(des_metrics, indent=2))
                 self._log_interaction("\nABS (AgentSimulator) Results:")
                 self._log_interaction(json.dumps(abs_metrics, indent=2))
-                self._log_interaction(f"\n[TIME]  Parallel simulation time: {sim_time:.1f} seconds")
-                
-                # STEP 3.5: Keep simulator outputs independent (no reconciliation/arbitration)
-                print(f"\n[STEP 3.5.{iteration+1}] Independent simulator assessment (no reconciliation)...")
-                self._log_interaction(f"\n[STEP 3.5.{iteration+1}] INDEPENDENT SIMULATOR ASSESSMENT")
+                self._log_interaction(f"\n[TIME]  Simulation time: {sim_time:.1f} seconds")
+
+                # STEP 3.5: Compute per-simulator impact
+                print(f"\n[STEP 3.5.{iteration+1}] Per-simulator impact assessment...")
+                self._log_interaction(f"\n[STEP 3.5.{iteration+1}] PER-SIMULATOR IMPACT ASSESSMENT")
                 self._log_interaction("-"*40)
 
                 # Explicit per-simulator impact vs each simulator's own baseline
@@ -491,71 +500,57 @@ class ImprovementValidationAgent:
                     self._log_interaction("  DES:")
                     for metric_name, change in des_impact.items():
                         self._log_interaction(f"    - {metric_name}: {change:+.2f}%")
-                else:
-                    self._log_interaction("  DES: unavailable")
                 if abs_impact:
                     self._log_interaction("  ABS:")
                     for metric_name, change in abs_impact.items():
                         self._log_interaction(f"    - {metric_name}: {change:+.2f}%")
-                else:
-                    self._log_interaction("  ABS: unavailable")
-                
-                # Validate improvement
-                print(f"\n[STEP 4.{iteration+1}] Validating improvement...")
-                self._log_interaction(f"\n[STEP 4.{iteration+1}] VALIDATION & COMPARISON")
+
+                # Validate improvement using formula-based validation with averaged results
+                print(f"\n[STEP 4.{iteration+1}] Validating improvement (formula: delta_tp - delta_ct > 0.01, averaged across simulators)...")
+                self._log_interaction(f"\n[STEP 4.{iteration+1}] VALIDATION & COMPARISON (AVERAGED)")
                 self._log_interaction("-"*40)
-                
+
                 val_start = time.time()
-                des_validation = self.validator.validate(
+
+                # Validate each simulator individually
+                des_validation = self.validator.validate_with_formula(
                     baseline_des_metrics or baseline_metrics,
                     des_metrics,
-                    hypothesis,
-                    threshold=1.0,
-                    min_improvements=1,
-                    max_regression_pct=8.0,
-                    max_cycle_time_increase_pct=10.0,
-                    max_regressions=1,
-                    require_throughput_non_decrease=True
+                    threshold=0.01,
+                    max_utilization=0.90
                 )
 
-                abs_validation = self.validator.validate(
+                abs_validation = self.validator.validate_with_formula(
                     baseline_abs_metrics or baseline_metrics,
                     abs_metrics,
-                    hypothesis,
-                    threshold=1.0,
-                    min_improvements=1,
-                    max_regression_pct=8.0,
-                    max_cycle_time_increase_pct=10.0,
-                    max_regressions=1,
-                    require_throughput_non_decrease=True
+                    threshold=0.01,
+                    max_utilization=0.90
                 )
 
+                # Average the scores from both simulators
                 param_type = (hypothesis.get('changes') or {}).get('parameter_type', '')
                 merged_improvements = self._merge_simulator_improvements(des_validation, abs_validation)
-                improvement_result = self._decide_improvement(
-                    param_type, des_validation, abs_validation, des_impact, abs_impact, merged_improvements
+                improvement_result = self._decide_improvement_averaged(
+                    des_validation, abs_validation, des_impact, abs_impact, merged_improvements
                 )
-                conflict_detected = improvement_result['cross_simulator_conflict']['detected']
-                conflict_reason = improvement_result['cross_simulator_conflict']['reason']
                 val_time = time.time() - val_start
-                
+
                 print(f"[TIME]  Validation took {val_time:.1f} seconds")
-                
+
                 self._log_interaction("\nMetric Comparison:")
                 for metric_name, metric_data in improvement_result.get('improvements', {}).items():
                     self._log_interaction(f"\n{metric_name}:")
                     self._log_interaction(f"  Baseline: {metric_data.get('baseline', 'N/A')}")
                     self._log_interaction(f"  New:      {metric_data.get('new', 'N/A')}")
                     self._log_interaction(f"  Change:   {metric_data.get('change_pct', 0):.1f}%")
-                
+
                 self._log_interaction(f"\nValidation Result: {'[OK] IMPROVEMENT' if improvement_result['is_improvement'] else '[X] NO IMPROVEMENT'}")
                 self._log_interaction(f"Summary: {improvement_result['summary']}")
                 self._log_interaction(f"Decision rule: {improvement_result['decision_rule']}")
-                if conflict_detected:
-                    self._log_interaction(f"Cross-simulator conflict guardrail: {conflict_reason}")
-                self._log_interaction(f"DES validation [{improvement_result.get('des_role', 'active')}]: {'[OK]' if des_validation.get('is_improvement') else '[X]'} {des_validation.get('summary', '')}")
-                self._log_interaction(f"ABS validation [{improvement_result.get('abs_role', 'active')}]: {'[OK]' if abs_validation.get('is_improvement') else '[X]'} {abs_validation.get('summary', '')}")
-                
+                self._log_interaction(f"DES score: {des_validation.get('score', 0):.4f}")
+                self._log_interaction(f"ABS score: {abs_validation.get('score', 0):.4f}")
+                self._log_interaction(f"Averaged score: {improvement_result.get('averaged_score', 0):.4f}")
+
                 self._log_interaction(f"\n[TIME]  Validation time: {val_time:.1f} seconds")
                 
                 iteration_time = time.time() - iteration_start
@@ -593,8 +588,8 @@ class ImprovementValidationAgent:
                     "abs_validation": abs_validation,
                     "improvement": improvement_result,
                     "decision_rule": improvement_result.get('decision_rule', 'OR'),
-                    "des_validated": bool(des_validation.get('is_improvement')),
-                    "abs_validated": bool(abs_validation.get('is_improvement')),
+                    "des_validated": bool(des_validation.get('is_improvement')) if des_validation else False,
+                    "abs_validated": bool(abs_validation.get('is_improvement')) if abs_validation else False,
                 })
                 if len(attempt_history) > 5:
                     attempt_history.pop(0)
@@ -738,6 +733,7 @@ class ImprovementValidationAgent:
         activities = set()
         calendars = set()
         gateways = set()
+        role_task_mapping = {}  # Maps role/resource profile to list of tasks they can perform
 
         prosimos_params = baseline_model.get("prosimos_params", {}) if baseline_model else {}
 
@@ -750,6 +746,16 @@ class ImprovementValidationAgent:
             task_id = task.get("task_id") or task.get("activity")
             if task_id:
                 activities.add(str(task_id))
+            # Build role-task mapping: which roles can perform this task
+            task_resources = task.get("resources", []) or []
+            for res_entry in task_resources:
+                res_id = res_entry.get("resource_id") or res_entry.get("resource")
+                if res_id and task_id:
+                    res_id_str = str(res_id)
+                    if res_id_str not in role_task_mapping:
+                        role_task_mapping[res_id_str] = []
+                    if task_id not in role_task_mapping[res_id_str]:
+                        role_task_mapping[res_id_str].append(str(task_id))
 
         calendars_data = prosimos_params.get("calendars")
         if isinstance(calendars_data, dict):
@@ -779,6 +785,7 @@ class ImprovementValidationAgent:
             "activities": sorted(activities),
             "calendars": sorted(calendars),
             "gateways": sorted(gateways),
+            "role_task_mapping": role_task_mapping,
             "role_redesign_hints": self._build_role_redesign_hints(baseline_metrics, baseline_abs_metrics)
         }
 
@@ -922,11 +929,13 @@ class ImprovementValidationAgent:
     ) -> Dict:
         """Return improvement_result dict using change-type-aware oracle logic.
 
-        Decision rules:
-        - resources / calendar  → DES only (ABS has no queue model)
-        - role_redesign         → ABS primary; DES throughput safety check
-        - activity_durations    → OR (DES or ABS) + cross-simulator conflict guardrail
-        - anything else         → OR + conflict guardrail (fallback)
+        With selective simulator launch:
+        - resources / calendar  → DES only (ABS is None)
+        - role_redesign         → ABS only (DES is None)
+        - anything else         → Both simulators (fallback)
+
+        Validation uses formula: delta_throughput - delta_cycle_time/2 > 0.02
+        with utilization veto if cumulative utilization > 90%.
         """
         des_validation = des_validation or {}
         abs_validation = abs_validation or {}
@@ -935,70 +944,89 @@ class ImprovementValidationAgent:
 
         conflict_detected = False
         conflict_reason = ""
+        utilization_veto = False
+
+        # Check for utilization veto from either simulator
+        if des_validation.get('utilization_veto'):
+            utilization_veto = True
+        if abs_validation.get('utilization_veto'):
+            utilization_veto = True
 
         if param_type in {'resources', 'calendar'}:
-            overall = bool(des_validation.get('is_improvement'))
-            rule = "DES only (capacity/calendar change)"
+            # DES only - ABS was skipped
+            overall = bool(des_validation.get('is_improvement')) and not utilization_veto
+            rule = "DES only (capacity/calendar change); formula: delta_tp - delta_ct/2 > 0.02"
             des_role = "primary oracle"
-            abs_role = "informational only"
+            abs_role = "skipped"
             summary_parts = []
+            if utilization_veto:
+                util = des_validation.get('cumulative_utilization', 0)
+                summary_parts.append(f"VETO: utilization {util:.1%} > 90%")
             if des_validation.get('is_improvement'):
-                summary_parts.append(f"DES improved ({des_validation.get('summary', 'n/a')})")
+                score = des_validation.get('score', 0)
+                summary_parts.append(f"DES improved (score={score:.4f})")
             else:
-                summary_parts.append(f"DES did not improve ({des_validation.get('summary', 'n/a')})")
-            summary_parts.append(f"ABS: informational only ({abs_validation.get('summary', 'n/a')})")
+                score = des_validation.get('score', 0)
+                summary_parts.append(f"DES did not improve (score={score:.4f} <= 0.02)")
 
         elif param_type == 'role_redesign':
-            overall = bool(abs_validation.get('is_improvement'))
-            # Safety: DES throughput hard-fail override
-            des_tp_change = des_impact.get('throughput', 0.0) or 0.0
-            if des_tp_change < -10.0:
-                overall = False
-            # Plausibility ceiling: >95% cycle-time reduction from a single reassignment
-            # is a simulation artifact (e.g. AgentSimulator collapses on tiny test splits).
+            # ABS only - DES was skipped
+            overall = bool(abs_validation.get('is_improvement')) and not utilization_veto
+            # Plausibility ceiling: >95% cycle-time reduction is likely artifact
             abs_ct_change = abs_impact.get('cycle_time', 0.0) or 0.0
             if abs_ct_change < -95.0:
                 overall = False
-            rule = "ABS primary (role/routing change); DES throughput safety"
-            des_role = "throughput safety check"
+            rule = "ABS only (role/routing change); formula: delta_tp - delta_ct/2 > 0.02"
+            des_role = "skipped"
             abs_role = "primary oracle"
             summary_parts = []
+            if utilization_veto:
+                util = abs_validation.get('cumulative_utilization', 0)
+                summary_parts.append(f"VETO: utilization {util:.1%} > 90%")
             if abs_ct_change < -95.0:
                 summary_parts.append(
                     f"Rejected: ABS cycle time reduction ({abs_ct_change:.1f}%) exceeds "
                     f"plausibility threshold (-95%) — likely simulation artifact"
                 )
             elif abs_validation.get('is_improvement'):
-                summary_parts.append(f"ABS improved ({abs_validation.get('summary', 'n/a')})")
+                score = abs_validation.get('score', 0)
+                summary_parts.append(f"ABS improved (score={score:.4f})")
             else:
-                summary_parts.append(f"ABS did not improve ({abs_validation.get('summary', 'n/a')})")
-            if des_tp_change < -10.0:
-                summary_parts.append(f"Rejected by DES throughput safety check (Δ={des_tp_change:.1f}%)")
+                score = abs_validation.get('score', 0)
+                summary_parts.append(f"ABS did not improve (score={score:.4f} <= 0.02)")
 
         else:
-            # OR rule + conflict guardrail (activity_durations and fallback)
+            # Both simulators ran (fallback) - OR rule + conflict guardrail
             conflict_detected, conflict_reason = ImprovementValidationAgent._has_strong_cross_simulator_conflict(
                 des_impact, abs_impact
             )
             overall = bool(
                 (des_validation.get('is_improvement') or abs_validation.get('is_improvement'))
                 and not conflict_detected
+                and not utilization_veto
             )
             if param_type == 'activity_durations':
-                rule = "OR (DES or ABS) + conflict guardrail"
+                rule = "OR (DES or ABS) + conflict guardrail; formula: delta_tp - delta_ct/2 > 0.02"
             else:
-                rule = "OR (DES or ABS) + conflict guardrail (fallback)"
+                rule = "OR (DES or ABS) + conflict guardrail (fallback); formula: delta_tp - delta_ct/2 > 0.02"
             des_role = "active"
             abs_role = "active"
             summary_parts = []
+            if utilization_veto:
+                des_util = des_validation.get('cumulative_utilization', 0)
+                abs_util = abs_validation.get('cumulative_utilization', 0)
+                summary_parts.append(f"VETO: utilization > 90% (DES={des_util:.1%}, ABS={abs_util:.1%})")
             if des_validation.get('is_improvement'):
-                summary_parts.append(f"DES improved ({des_validation.get('summary', 'n/a')})")
+                score = des_validation.get('score', 0)
+                summary_parts.append(f"DES improved (score={score:.4f})")
             if abs_validation.get('is_improvement'):
-                summary_parts.append(f"ABS improved ({abs_validation.get('summary', 'n/a')})")
-            if not summary_parts:
+                score = abs_validation.get('score', 0)
+                summary_parts.append(f"ABS improved (score={score:.4f})")
+            if not any([des_validation.get('is_improvement'), abs_validation.get('is_improvement')]):
+                des_score = des_validation.get('score', 0)
+                abs_score = abs_validation.get('score', 0)
                 summary_parts.append(
-                    f"Neither simulator improved "
-                    f"(DES: {des_validation.get('summary', 'n/a')} | ABS: {abs_validation.get('summary', 'n/a')})"
+                    f"Neither simulator improved (DES score={des_score:.4f}, ABS score={abs_score:.4f})"
                 )
             if conflict_detected:
                 summary_parts.append(f"Rejected by cross-simulator conflict guardrail ({conflict_reason})")
@@ -1012,10 +1040,74 @@ class ImprovementValidationAgent:
             "des_role": des_role,
             "abs_role": abs_role,
             "decision_rule": rule,
+            "utilization_veto": utilization_veto,
             "cross_simulator_conflict": {
                 "detected": conflict_detected,
                 "reason": conflict_reason,
             },
+        }
+
+    @staticmethod
+    def _decide_improvement_averaged(
+        des_validation: Dict,
+        abs_validation: Dict,
+        des_impact: Dict,
+        abs_impact: Dict,
+        merged_improvements: Dict,
+    ) -> Dict:
+        """Return improvement_result by averaging scores from both simulators.
+
+        Both simulators always run. The final decision is based on the average
+        of their scores: (des_score + abs_score) / 2 > threshold (0.01).
+        Utilization veto applies if either simulator exceeds 90%.
+        """
+        des_validation = des_validation or {}
+        abs_validation = abs_validation or {}
+
+        threshold = 0.01
+
+        # Get individual scores
+        des_score = des_validation.get('score', 0.0) or 0.0
+        abs_score = abs_validation.get('score', 0.0) or 0.0
+
+        # Average the scores
+        averaged_score = (des_score + abs_score) / 2.0
+
+        # Check for utilization veto from either simulator
+        utilization_veto = False
+        if des_validation.get('utilization_veto') or abs_validation.get('utilization_veto'):
+            utilization_veto = True
+
+        # Decision based on averaged score
+        overall = averaged_score > threshold and not utilization_veto
+
+        # Build summary
+        summary_parts = []
+        if utilization_veto:
+            des_util = des_validation.get('cumulative_utilization', 0)
+            abs_util = abs_validation.get('cumulative_utilization', 0)
+            summary_parts.append(f"VETO: utilization > 90% (DES={des_util:.1%}, ABS={abs_util:.1%})")
+
+        if averaged_score > threshold:
+            summary_parts.append(f"Averaged score {averaged_score:.4f} > {threshold} threshold")
+            summary_parts.append(f"DES score={des_score:.4f}, ABS score={abs_score:.4f}")
+        else:
+            summary_parts.append(f"Averaged score {averaged_score:.4f} <= {threshold} threshold (no improvement)")
+            summary_parts.append(f"DES score={des_score:.4f}, ABS score={abs_score:.4f}")
+
+        return {
+            "is_improvement": overall,
+            "summary": "; ".join(summary_parts),
+            "improvements": merged_improvements,
+            "des_validation": des_validation,
+            "abs_validation": abs_validation,
+            "des_role": "averaged",
+            "abs_role": "averaged",
+            "decision_rule": f"Averaged (DES + ABS) / 2 > {threshold}",
+            "utilization_veto": utilization_veto,
+            "averaged_score": averaged_score,
+            "des_score": des_score,
+            "abs_score": abs_score,
         }
 
     @staticmethod
