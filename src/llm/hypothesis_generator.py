@@ -158,6 +158,9 @@ Validation oracle by change type (CRITICAL — use this to set realistic expecte
 - resource_allocation (parameter_type=resources): validated by DES (Prosimos) ONLY.
   ABS has no queue model and cannot detect capacity improvements. Do NOT expect ABS to confirm.
   Main KPIs to improve: waiting_time (primary), cycle_time, throughput.
+- calendar_adjustment (parameter_type=calendar): validated by BOTH DES and ABS.
+  Extends working hours for resources, reducing waiting times and improving throughput.
+  Main KPIs to improve: waiting_time (primary), cycle_time, throughput.
 
     Proposal strategy:
     - Propose ONE change only (single specific change entry).
@@ -168,7 +171,10 @@ Validation oracle by change type (CRITICAL — use this to set realistic expecte
               - For utilization >= 90%: add 3-5 resources (severe bottleneck)
               - For utilization >= 80%: add 2-4 resources (high bottleneck)
               - Otherwise: add 1-2 resources
-        - Do NOT propose arrival_rate_adjustment, routing_adjustment, activity_duration_optimization, or calendar_adjustment.
+            * calendar_adjustment (increase_hours): extend working hours for overloaded resources
+              - value = hours to add (1-4 hours typical)
+              - target = resource name or "all" for global change
+        - Do NOT propose arrival_rate_adjustment, routing_adjustment, or activity_duration_optimization.
         - Do NOT propose remove/decrease_count/increase_duration/decrease_hours.
     - Avoid hypotheses that are likely to increase cycle time or decrease throughput.
     - Prefer changes that improve at least two KPIs among: cycle_time, throughput, waiting_time.
@@ -176,10 +182,11 @@ Validation oracle by change type (CRITICAL — use this to set realistic expecte
 Canonical taxonomy mapping (must be respected exactly):
 - improvement_type=role_redesign       <-> changes.parameter_type=role_redesign
 - improvement_type=resource_allocation  <-> changes.parameter_type=resources
+- improvement_type=calendar_adjustment  <-> changes.parameter_type=calendar
 
 For each hypothesis, provide:
 - Clear description of the improvement
-- Type: role_redesign or resource_allocation
+- Type: role_redesign, resource_allocation, or calendar_adjustment
 - Specific changes to simulation parameters
 - Expected impact on metrics
 
@@ -194,14 +201,14 @@ Strict output rules:
 Return a JSON object with the following structure:
 {
   "description": "Clear description of the improvement",
-    "improvement_type": "role_redesign|resource_allocation",
+    "improvement_type": "role_redesign|resource_allocation|calendar_adjustment",
   "rationale": "Why this improvement would help",
   "changes": {
-        "parameter_type": "role_redesign|resources",
+        "parameter_type": "role_redesign|resources|calendar",
     "specific_changes": [
       {
-                "target": "role_name|Resource_1",
-                                "change": "shift_responsibility|create_specialist_role|add|increase_count",
+                "target": "role_name|Resource_1|all",
+                                "change": "shift_responsibility|create_specialist_role|add|increase_count|increase_hours",
         "value": numeric_value
       }
     ]
@@ -294,14 +301,15 @@ BASELINE METRICS:
         prompt += """
 Focus on:
 1. Workload imbalance (overloaded + underutilized roles coexist) — address with role_redesign (ABS-validated) — PREFERRED
-2. Resource bottlenecks (look for utilization > 0.8) — address with resource additions (DES-validated)
-3. High waiting times (> 40% of cycle time) — address with resource additions (DES-validated)
+2. Resource bottlenecks (look for utilization > 0.8) — address with calendar_adjustment (extend hours) or resource additions
+3. High waiting times (> 40% of cycle time) — address with calendar_adjustment or resource additions (DES-validated)
 
     Safety rules:
-    - Use meaningful deltas (+1 to +2 resources for additions).
+    - Use meaningful deltas (+1 to +2 resources for additions, +1 to +4 hours for calendar).
     - Avoid any change likely to worsen cycle time or waiting time.
     - Prefer improvements that help at least two of: cycle_time, throughput, waiting_time.
     - STRONGLY prefer role_redesign over pure resource addition when overloaded and underutilized roles coexist.
+    - Consider calendar_adjustment as a lower-cost alternative to adding resources.
     - If prior attempts fail repeatedly, switch intervention type among allowed types only.
     - Do not use placeholders like "Activity_with_highest_waiting_time"; choose from the known targets.
 
@@ -334,7 +342,7 @@ Return ONLY the JSON object, no additional text."""
         changes = hypothesis.get("changes", {})
         parameter_type = changes.get("parameter_type")
         specific_changes = changes.get("specific_changes", [])
-        if parameter_type not in {"resources", "role_redesign"}:
+        if parameter_type not in {"resources", "role_redesign", "calendar"}:
             return False
         if not isinstance(specific_changes, list) or len(specific_changes) != 1:
             return False
@@ -405,12 +413,14 @@ Return ONLY the JSON object, no additional text."""
         mappable_overloaded = [r for r in overloaded if r in resource_norms]
         mappable_underutilized = [r for r in underutilized if r in resource_norms]
 
-        # Priority order: role_redesign > resources
+        # Priority order: role_redesign > calendar > resources
         # role_redesign is preferred when workload can be rebalanced
+        # calendar is useful when resources are overloaded but no underutilized targets exist
         allowed = []
         if mappable_overloaded and mappable_underutilized:
             allowed.append("role_redesign")
         if overloaded:
+            allowed.append("calendar")  # Calendar adjustment can help overloaded resources
             allowed.append("resources")
 
         if not allowed:
@@ -644,6 +654,41 @@ Return ONLY the JSON object, no additional text."""
             change = preferred_change if preferred_change in {"shift_responsibility", "create_specialist_role"} else "shift_responsibility"
             value = 1
             return target, change, value, "role_redesign"
+
+        if parameter_type == "calendar":
+            # Calendar adjustment: extend working hours for overloaded resources
+            recently_tried = strategy_hints.get("recently_tried", [])
+
+            # Prefer targeting specific overloaded resources, or 'all' for global change
+            target = None
+            if preferred_target:
+                resolved = resolve_resource_name(preferred_target)
+                if resolved and f"calendar:{resolved}" not in recently_tried:
+                    target = resolved
+                elif preferred_target.lower() in ('all', '*', 'global') and "calendar:all" not in recently_tried:
+                    target = "all"
+
+            # Fallback: target most overloaded resource not yet tried
+            if not target:
+                for r in overloaded_targets:
+                    resolved = resolve_resource_name(r)
+                    if resolved and f"calendar:{resolved}" not in recently_tried:
+                        target = resolved
+                        break
+
+            # Final fallback: all calendars
+            if not target:
+                target = "all"
+
+            change = "increase_hours"
+            # Default to 2 extra hours; allow LLM to specify 1-4
+            try:
+                value = int(float(preferred_value or 2))
+                value = max(1, min(4, value))  # Clamp to 1-4 hours
+            except (TypeError, ValueError):
+                value = 2
+
+            return target, change, value, "calendar_adjustment"
 
         # Default: resources (safe positive capacity)
         target = preferred_target if preferred_target in resources else None

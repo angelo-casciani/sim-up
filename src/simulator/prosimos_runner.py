@@ -130,6 +130,10 @@ class ProsimosRunner:
 
         This ensures that "increase Loan Officer to 4" correctly handles cases where
         the log has "Loan Officer-000001", "Loan Officer-000002", etc.
+
+        Note: Prosimos resource_profiles structure has:
+        - profile['resource_list'][0]['amount'] for the actual resource count
+        - profile['amount'] may also exist at profile level (legacy format)
         """
         if 'resource_profiles' not in params:
             return
@@ -145,65 +149,143 @@ class ProsimosRunner:
             print(f"  [!] No resources found matching role '{target}'")
             return
 
+        def get_profile_amount(profile: Dict) -> int:
+            """Get amount from profile, checking both nested and flat structures."""
+            # Check nested structure first (resource_list[0]['amount'])
+            resource_list = profile.get('resource_list', [])
+            if resource_list and isinstance(resource_list, list) and len(resource_list) > 0:
+                return resource_list[0].get('amount', 1)
+            # Fallback to flat structure
+            return profile.get('amount', 1)
+
+        def set_profile_amount(profile: Dict, new_amount: int):
+            """Set amount in profile, handling both nested and flat structures."""
+            # Set in nested structure if it exists
+            resource_list = profile.get('resource_list', [])
+            if resource_list and isinstance(resource_list, list) and len(resource_list) > 0:
+                resource_list[0]['amount'] = new_amount
+            # Also set at profile level for compatibility
+            profile['amount'] = new_amount
+
         # Calculate current total for this role
-        current_total = sum(p.get('amount', 1) for p in matching_profiles)
+        current_total = sum(get_profile_amount(p) for p in matching_profiles)
         n_profiles = len(matching_profiles)
 
-        # Use calculate_target_distribution to determine the target total
-        # Pass the raw value - the function handles change_type interpretation
-        distribution = calculate_target_distribution(
-            matching_profiles, int(value), change_type
-        )
-
-        # Calculate the target total from distribution result
-        target_total = sum(amt for _, amt in distribution)
+        # Determine target total based on change type
+        if 'add' in change_type.lower() or 'increase' in change_type.lower():
+            target_total = current_total + int(value)
+        elif 'remove' in change_type.lower() or 'decrease' in change_type.lower():
+            target_total = max(n_profiles, current_total - int(value))
+        elif 'set' in change_type.lower():
+            target_total = int(value)
+        else:
+            target_total = current_total + int(value)  # Default to add
 
         print(f"  [OK] Role '{matched_role}': {n_profiles} profiles, "
               f"current total={current_total}, target total={target_total}")
 
-        for profile, new_amount in distribution:
-            old_amount = profile.get('amount', 1)
-            profile['amount'] = new_amount
+        # Distribute evenly across existing profiles
+        base_amount = target_total // n_profiles
+        remainder = target_total % n_profiles
+
+        for i, profile in enumerate(matching_profiles):
+            old_amount = get_profile_amount(profile)
+            new_amount = base_amount + (1 if i < remainder else 0)
+            set_profile_amount(profile, new_amount)
             res_id = profile.get('id', profile.get('name', ''))
             if old_amount != new_amount:
                 print(f"    - {res_id}: {old_amount} -> {new_amount}")
 
-        # If we need more resources than can be distributed across existing profiles,
-        # create new profiles based on the first matching profile as template
-        distributed_total = sum(amt for _, amt in distribution)
-        if distributed_total < target_total:
-            shortfall = target_total - distributed_total
+        # If target_total > n_profiles * max_per_profile, we need to create new profiles
+        # For now, assume max_per_profile is unbounded (Prosimos handles it)
+        # But if we need more profiles (e.g., for better parallelism), create them
+        if target_total > n_profiles and n_profiles == 1:
+            # Single profile case: create additional profiles to distribute load
             template = matching_profiles[0]
             template_id = template.get('id', template.get('name', ''))
             role_base = extract_resource_role(template_id)
 
-            # Find the highest existing suffix number for this role
-            max_suffix = 0
-            for p in resource_profiles:
-                p_id = p.get('id', p.get('name', ''))
-                if extract_resource_role(p_id) == role_base:
-                    # Try to extract numeric suffix
-                    import re
-                    match = re.search(r'-(\d+)$', p_id)
-                    if match:
-                        max_suffix = max(max_suffix, int(match.group(1)))
+            # Calculate how many new profiles to create
+            # Use 1 resource per profile for better load distribution
+            profiles_needed = target_total
+            profiles_to_create = profiles_needed - n_profiles
 
-            # Create new profiles
-            for i in range(shortfall):
-                new_profile = copy.deepcopy(template)
-                new_suffix = max_suffix + i + 1
-                new_id = f"{role_base}-{new_suffix:06d}"
+            if profiles_to_create > 0:
+                # Find the highest existing suffix number for this role
+                max_suffix = 0
+                for p in resource_profiles:
+                    p_id = p.get('id', p.get('name', ''))
+                    if extract_resource_role(p_id) == role_base:
+                        import re
+                        match = re.search(r'-(\d+)$', p_id)
+                        if match:
+                            max_suffix = max(max_suffix, int(match.group(1)))
 
-                if 'id' in new_profile:
-                    new_profile['id'] = new_id
-                elif 'name' in new_profile:
-                    new_profile['name'] = new_id
-                else:
-                    new_profile['id'] = new_id
+                # Update the original profile to have 1 resource
+                set_profile_amount(matching_profiles[0], 1)
+                print(f"    - {template_id}: adjusted to 1 (redistributing to new profiles)")
 
-                new_profile['amount'] = 1
-                resource_profiles.append(new_profile)
-                print(f"    + Created new profile: {new_id} (amount=1)")
+                # Get the original resource_id for task_resource_distribution lookup
+                original_resource_id = None
+                if 'resource_list' in template and template['resource_list']:
+                    original_resource_id = template['resource_list'][0].get('id', template['resource_list'][0].get('name'))
+                if not original_resource_id:
+                    original_resource_id = template_id.replace('_profile', '')
+
+                # Create new profiles with 1 resource each
+                created_resource_ids = []
+                for i in range(profiles_to_create):
+                    new_profile = copy.deepcopy(template)
+                    new_suffix = max_suffix + i + 1
+                    new_id = f"{role_base}_extra_{new_suffix}"
+                    new_resource_id = new_id.replace('_profile', '')
+
+                    # Update profile ID
+                    if 'id' in new_profile:
+                        new_profile['id'] = new_id
+                    if 'name' in new_profile:
+                        new_profile['name'] = new_id
+
+                    # Update resource_list if it exists
+                    if 'resource_list' in new_profile and new_profile['resource_list']:
+                        new_profile['resource_list'][0]['id'] = new_resource_id
+                        new_profile['resource_list'][0]['name'] = new_resource_id
+                        new_profile['resource_list'][0]['amount'] = 1
+                        # Update calendar reference
+                        if 'calendar' in new_profile['resource_list'][0]:
+                            old_calendar = new_profile['resource_list'][0]['calendar']
+                            new_calendar = old_calendar.replace(template_id.replace('_profile', ''), new_resource_id)
+                            new_profile['resource_list'][0]['calendar'] = new_calendar
+
+                    new_profile['amount'] = 1
+                    resource_profiles.append(new_profile)
+                    created_resource_ids.append(new_resource_id)
+                    print(f"    + Created new profile: {new_id} (amount=1)")
+
+                # Add new resources to task_resource_distribution
+                # Clone entries from original resource to new resources
+                task_distributions = params.get('task_resource_distribution', [])
+                tasks_updated = 0
+                for task in task_distributions:
+                    resources = task.get('resources', [])
+                    # Find entries for the original resource
+                    original_entries = [r for r in resources
+                                       if r.get('resource_id') == original_resource_id or
+                                          r.get('resource') == original_resource_id]
+
+                    if original_entries:
+                        # Clone the original entry for each new resource
+                        for new_res_id in created_resource_ids:
+                            new_entry = copy.deepcopy(original_entries[0])
+                            if 'resource_id' in new_entry:
+                                new_entry['resource_id'] = new_res_id
+                            if 'resource' in new_entry:
+                                new_entry['resource'] = new_res_id
+                            resources.append(new_entry)
+                        tasks_updated += 1
+
+                if tasks_updated > 0:
+                    print(f"    + Added {len(created_resource_ids)} new resources to {tasks_updated} task distributions")
 
     def _modify_role_redesign(self, params: Dict, target: str, change_type: str, value: int, change_payload: Dict):
         """Create/reshape roles to model specialization without only adding generic capacity."""
@@ -528,7 +610,113 @@ class ProsimosRunner:
         if modified_count > 0:
             pct = abs(reduction_pct)
             print(f"  [OK] Modified {modified_count} duration parameters ({pct:.0f}% reduction) for {target}")
-    
+
+    def _modify_calendar_hours(self, params: Dict, target: str, change_type: str, value: float):
+        """Modify resource calendars to extend working hours.
+
+        For increase_hours: extends each time period by the specified hours,
+        effectively simulating longer working days. This increases resource
+        availability and can reduce waiting times.
+
+        The extension is applied by:
+        1. For targeted calendars (matching target name): extend end times
+        2. If target is 'all' or empty: extend all resource calendars
+
+        Args:
+            params: Prosimos parameters dictionary
+            target: Calendar/resource name to target, or 'all' for all calendars
+            change_type: Must contain 'increase_hours'
+            value: Number of hours to extend (e.g., 2 means add 2 hours)
+        """
+        if 'increase_hours' not in str(change_type):
+            return
+
+        try:
+            extra_hours = float(value or 0)
+        except (TypeError, ValueError):
+            print(f"  [!] Invalid calendar hours value: {value}")
+            return
+
+        if extra_hours <= 0:
+            print(f"  [!] Calendar hours must be positive, got: {extra_hours}")
+            return
+
+        resource_calendars = params.get('resource_calendars', [])
+        if not resource_calendars:
+            print("  [!] No resource_calendars found in Prosimos parameters")
+            return
+
+        # Determine which calendars to modify
+        target_all = not target or target.lower() in ('all', '*', 'global')
+        target_norm = target.lower().replace('_profile', '').replace('_calendar', '') if target else ''
+
+        modified_calendars = 0
+        modified_periods = 0
+
+        for calendar in resource_calendars:
+            cal_id = str(calendar.get('id', calendar.get('name', '')))
+            cal_norm = cal_id.lower().replace('_profile', '').replace('_calendar', '')
+
+            # Check if this calendar should be modified
+            if not target_all and target_norm not in cal_norm and cal_norm not in target_norm:
+                continue
+
+            time_periods = calendar.get('time_periods', [])
+            if not time_periods:
+                continue
+
+            for period in time_periods:
+                end_time_str = period.get('endTime', '')
+                if not end_time_str:
+                    continue
+
+                try:
+                    # Parse end time (format: HH:MM:SS or HH:MM:SS.ffffff)
+                    end_parts = end_time_str.split(':')
+                    end_hour = int(end_parts[0])
+                    end_min = int(end_parts[1])
+                    end_sec_parts = end_parts[2].split('.') if len(end_parts) > 2 else ['0']
+                    end_sec = int(end_sec_parts[0])
+
+                    # Add extra hours
+                    new_end_hour = end_hour + int(extra_hours)
+                    new_end_min = end_min + int((extra_hours % 1) * 60)
+
+                    # Handle minute overflow
+                    if new_end_min >= 60:
+                        new_end_hour += 1
+                        new_end_min -= 60
+
+                    # Cap at 23:59:59 (don't overflow to next day)
+                    if new_end_hour >= 24:
+                        new_end_hour = 23
+                        new_end_min = 59
+                        end_sec = 59
+
+                    # Format new end time
+                    new_end_time = f"{new_end_hour:02d}:{new_end_min:02d}:{end_sec:02d}"
+                    if '.' in end_time_str:
+                        # Preserve microseconds if present
+                        new_end_time += '.' + end_time_str.split('.')[-1]
+
+                    if new_end_time != end_time_str:
+                        period['endTime'] = new_end_time
+                        modified_periods += 1
+
+                except (ValueError, IndexError) as e:
+                    print(f"  [!] Could not parse time '{end_time_str}': {e}")
+                    continue
+
+            if modified_periods > 0:
+                modified_calendars += 1
+
+        if modified_calendars > 0:
+            target_desc = 'all calendars' if target_all else f"'{target}'"
+            print(f"  [OK] Extended {modified_periods} time periods across {modified_calendars} calendars "
+                  f"(+{extra_hours:.1f}h) for {target_desc}")
+        else:
+            print(f"  [!] No calendars matched target '{target}'")
+
     def _run_simulation(
         self,
         model: Dict,

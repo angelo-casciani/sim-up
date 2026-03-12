@@ -498,14 +498,15 @@ class AgentSimulatorRunner:
         activity_col: str,
         resource_col: str
     ) -> pd.DataFrame:
-        """Apply role redesign by shifting workload between resources at case level.
+        """Apply role redesign by shifting workload between resources at activity level.
 
-        For shift_responsibility: all events in a selected subset of cases where the
-        source resource appears are reassigned to the destination resource.  Operating at
-        case granularity preserves within-case routing sequences so AgentSimulator can
-        learn coherent agent behaviours from the modified log.
+        For shift_responsibility: events are reassigned at the ACTIVITY level, not case level.
+        This is critical for ABS because it learns patterns per activity-resource combination.
+        For each activity performed by the source resource, we shift a fraction of those
+        events to the destination resource, preserving the activity-based learning model.
 
-        For create_specialist: selected cases are handled by a synthetic specialist agent.
+        For create_specialist: selected events for specific activities are handled by a
+        synthetic specialist agent.
         """
         if resource_col not in df.columns:
             return df
@@ -525,70 +526,85 @@ class AgentSimulatorRunner:
             )
 
             if 'create_specialist' in change_type:
-                if case_col in df.columns:
-                    cases_with_source = df.loc[resource_mask, case_col].unique()
-                    shift_count = max(1, int(round(len(cases_with_source) * shift_fraction)))
-                    chosen_cases = cases_with_source[::max(1, len(cases_with_source) // shift_count)][:shift_count]
-                    specialist_id = f"{target}_specialist_abs"
-                    case_mask = df[case_col].isin(chosen_cases)
-                    df.loc[case_mask & resource_mask, resource_col] = specialist_id
+                specialist_id = f"{target}_specialist_abs"
+
+                if activity_col in df.columns:
+                    # Activity-based specialist assignment: for each activity the source
+                    # performs, assign a fraction of those events to the specialist
+                    activities_by_source = df.loc[resource_mask, activity_col].unique()
+                    total_shifted = 0
+
+                    for activity in activities_by_source:
+                        activity_mask = (df[activity_col] == activity) & resource_mask
+                        activity_events = df.index[activity_mask]
+
+                        if len(activity_events) == 0:
+                            continue
+
+                        # Shift a fraction of events for this activity
+                        events_to_shift = max(1, int(round(len(activity_events) * shift_fraction)))
+                        events_to_shift = min(events_to_shift, len(activity_events) - 1)  # Keep at least 1
+
+                        if events_to_shift > 0:
+                            # Distribute shifted events evenly across the activity's occurrences
+                            step = max(1, len(activity_events) // events_to_shift)
+                            selected_indices = activity_events[::step][:events_to_shift]
+                            df.loc[selected_indices, resource_col] = specialist_id
+                            total_shifted += len(selected_indices)
+
+                    logger.info(f"[ABS create_specialist] {target} -> {specialist_id}: "
+                               f"shifted {total_shifted} events across {len(activities_by_source)} activities")
                 else:
-                    # Fallback: row-level every-other-event
+                    # Fallback: row-level shift
                     idx = df.index[resource_mask]
                     if len(idx) > 0:
-                        specialist_id = f"{target}_specialist_abs"
-                        df.loc[idx[::2], resource_col] = specialist_id
+                        events_to_shift = max(1, int(round(len(idx) * shift_fraction)))
+                        step = max(1, len(idx) // events_to_shift)
+                        df.loc[idx[::step][:events_to_shift], resource_col] = specialist_id
 
             elif 'shift_responsibility' in change_type:
                 destination = destination_target if destination_target else f"{target}_shifted_abs"
 
-                # Count source's total events to ensure symmetric shift
+                # Count source's total events
                 source_events = df.index[resource_mask]
                 total_source_events = len(source_events)
 
                 if total_source_events == 0:
                     continue
 
-                # Calculate how many events to shift (based on event count, not case count)
-                # This ensures the utilization change is proportional
-                events_to_shift = max(1, int(round(total_source_events * shift_fraction)))
-                events_to_shift = min(events_to_shift, total_source_events - 1)  # Keep at least 1 for source
+                if activity_col in df.columns:
+                    # Activity-based shift: for each activity the source performs, shift a
+                    # fraction of those events to the destination. This ensures ABS learns
+                    # the correct activity-resource patterns after the role redesign.
+                    activities_by_source = df.loc[resource_mask, activity_col].unique()
+                    total_shifted = 0
 
-                if case_col in df.columns:
-                    # Group events by case to shift complete cases when possible
-                    # But ensure we shift approximately the right NUMBER of events
-                    cases_with_source = df.loc[resource_mask, case_col].unique()
+                    for activity in activities_by_source:
+                        activity_mask = (df[activity_col] == activity) & resource_mask
+                        activity_events = df.index[activity_mask]
 
-                    if len(cases_with_source) == 0:
-                        continue
+                        if len(activity_events) == 0:
+                            continue
 
-                    # Calculate events per case for the source resource
-                    events_per_case = {}
-                    for case_id in cases_with_source:
-                        case_events = df[(df[case_col] == case_id) & resource_mask]
-                        events_per_case[case_id] = len(case_events)
+                        # Calculate events to shift for this activity
+                        events_to_shift = max(1, int(round(len(activity_events) * shift_fraction)))
+                        events_to_shift = min(events_to_shift, len(activity_events) - 1)  # Keep at least 1
 
-                    # Select cases until we reach the target event count
-                    chosen_cases = []
-                    shifted_event_count = 0
-                    for case_id in cases_with_source:
-                        if shifted_event_count >= events_to_shift:
-                            break
-                        chosen_cases.append(case_id)
-                        shifted_event_count += events_per_case[case_id]
-
-                    if not chosen_cases:
-                        # Fallback: at least one case
-                        chosen_cases = [cases_with_source[0]]
-
-                    case_mask = df[case_col].isin(chosen_cases)
-                    df.loc[case_mask & resource_mask, resource_col] = destination
+                        if events_to_shift > 0:
+                            # Distribute shifted events evenly across the activity's occurrences
+                            # This avoids clustering shifts in one time period
+                            step = max(1, len(activity_events) // events_to_shift)
+                            selected_indices = activity_events[::step][:events_to_shift]
+                            df.loc[selected_indices, resource_col] = destination
+                            total_shifted += len(selected_indices)
 
                     logger.info(f"[ABS shift_responsibility] {target} -> {destination}: "
-                               f"shifted {shifted_event_count}/{total_source_events} events "
-                               f"({len(chosen_cases)} cases)")
+                               f"shifted {total_shifted}/{total_source_events} events "
+                               f"across {len(activities_by_source)} activities (activity-based)")
                 else:
-                    # Fallback: direct event-level shift (most accurate for utilization symmetry)
+                    # Fallback: direct event-level shift (when no activity column)
+                    events_to_shift = max(1, int(round(total_source_events * shift_fraction)))
+                    events_to_shift = min(events_to_shift, total_source_events - 1)
                     df.loc[source_events[:events_to_shift], resource_col] = destination
                     logger.info(f"[ABS shift_responsibility] {target} -> {destination}: "
                                f"shifted {events_to_shift}/{total_source_events} events")
@@ -682,8 +698,9 @@ class AgentSimulatorRunner:
             all_cycle_times = []
             all_throughputs = []
             all_waiting_times = []
+            all_case_counts = []
             resource_counts = {}
-            
+
             for log_file in simulated_logs[:10]:  # Process all available (max 10)
                 try:
                     metrics = extractor.extract_from_csv(str(log_file), time_horizon_seconds=time_horizon_seconds)
@@ -693,9 +710,22 @@ class AgentSimulatorRunner:
                     all_throughputs.append(float(metrics.get('avg_throughput', 0.0)))
                     all_waiting_times.append(float(metrics.get('avg_waiting_time', 0.0)))
 
+                    # Count actual cases in the simulated log
+                    try:
+                        sim_df = pd.read_csv(str(log_file))
+                        case_col = None
+                        for col in ['case_id', 'case', 'case:concept:name']:
+                            if col in sim_df.columns:
+                                case_col = col
+                                break
+                        if case_col:
+                            all_case_counts.append(sim_df[case_col].nunique())
+                    except Exception:
+                        pass
+
                     for res, util in metrics.get('resource_utilization', {}).items():
                         resource_counts.setdefault(str(res), []).append(float(util))
-                    
+
                 except Exception as e:
                     logger.warning(f"Error extracting metrics from {log_file}: {e}")
                     continue
@@ -714,12 +744,15 @@ class AgentSimulatorRunner:
             for res, util_values in resource_counts.items():
                 if util_values:
                     resource_utilization[res] = round(sum(util_values) / len(util_values), 4)
-            
+
+            # Calculate average case count across simulations
+            avg_case_count = int(round(sum(all_case_counts) / len(all_case_counts))) if all_case_counts else 0
+
             metrics = {
                 "avg_cycle_time": round(avg_cycle_time, 2),
                 "avg_throughput": round(avg_throughput, 2),
                 "avg_waiting_time": round(avg_waiting_time, 2),
-                "simulated_case_count": int(round(avg_throughput)),
+                "simulated_case_count": avg_case_count,
                 "resource_utilization": resource_utilization,
                 "num_agents": len(resource_utilization),
                 "simulation_source": "AgentSimulator (ABS)"

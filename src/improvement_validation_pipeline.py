@@ -1228,8 +1228,13 @@ class ImprovementValidationAgent:
         if parameter_type == "calendar":
             if change_name != "increase_hours":
                 return False, "calendar changes must be increase_hours"
-            if calendars and target not in calendars:
-                return False, f"calendar target '{target}' is not in known targets"
+            # Allow 'all' as a special target for global calendar changes
+            if target.lower() not in ('all', '*', 'global'):
+                if calendars and target not in calendars:
+                    # Also check if target matches any resource (calendars may be named after resources)
+                    resources = (target_hints or {}).get("resources", [])
+                    if target not in resources:
+                        return False, f"calendar target '{target}' is not in known targets"
 
         if parameter_type == "role_redesign":
             if change_name not in {"shift_responsibility", "create_specialist_role"}:
