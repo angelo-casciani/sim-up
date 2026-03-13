@@ -1,358 +1,747 @@
-# Quantitative Evaluation: LLM vs Grid Search
+# Comprehensive Evaluation Framework for LLM-Guided Process Improvement
 
-This module provides a controlled experimental framework to compare **LLM-guided optimization** against **systematic grid search** for process improvement.
+**Document Version:** 1.1
+**Date:** March 12, 2026
+**Purpose:** Evaluation design proposal for journal paper submission
+**Revision Notes:** Added dual-simulator validation, intervention cost metric, increased repetitions to 5
 
-## Motivation
+---
 
-The goal is to demonstrate that an LLM can act as a **"semantic heuristic"** that uses contextual clues (queue times, resource utilization) to find optimal configurations faster than exhaustive search.
+## 1. Executive Summary
 
-## Experimental Setup
+This document outlines a comprehensive evaluation framework to assess the effectiveness of an LLM-guided process improvement pipeline. The evaluation compares LLM-based search against systematic baselines across **three improvement types**:
 
-### The Race
+1. **Resource Allocation** - Adding resources to bottleneck roles
+2. **Calendar Adjustment** - Extending working hours for constrained resources
+3. **Role Redesign** - Redistributing workload between roles
+
+A fourth scenario—**Mixed/Cross-type**—where the LLM freely chooses among all three improvement types is deferred to future work due to the difficulty of establishing a fair grid search baseline.
+
+The primary research question is: **Can an LLM identify optimal process improvements with fewer simulation calls than systematic search methods?**
+
+---
+
+## 2. Background: The LLM Pipeline
+
+### 2.1 Pipeline Overview
+
+The existing pipeline operates as follows:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     EXPERIMENTAL DESIGN                         │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  Step 1: Discover M_opt (optimal model) with SIMOD              │
-│          └── Simulate to get baseline KPIs                      │
-│                                                                 │
-│  Step 2: Inject Fault → M_fault                                 │
-│          └── Reduce resource role from N to 1                   │
-│          └── Creates severe bottleneck (e.g., 99% utilization)  │
-│                                                                 │
-│  Step 3: The Race                                               │
-│          ┌─────────────────┐    ┌─────────────────┐             │
-│          │  Grid Search    │    │   LLM Agent     │             │
-│          │  (Contender A)  │    │  (Contender B)  │             │
-│          ├─────────────────┤    ├─────────────────┤             │
-│          │ Try count=1     │    │ See 99% util    │             │
-│          │ Try count=2     │    │ → Propose +3    │             │
-│          │ Try count=3     │    │ See improvement │             │
-│          │ ...             │    │ → Propose +2    │             │
-│          │ Try count=N     │    │ SOLUTION!       │             │
-│          │ SOLUTION!       │    │                 │             │
-│          └─────────────────┘    └─────────────────┘             │
-│                                                                 │
-│  Metric: Number of simulation calls to find the fix             │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│   Event Log     │────▶│  SIMOD Discovery │────▶│ Baseline Model  │
+│   (CSV/XES)     │     │  (via Docker)    │     │  (BPMN + JSON)  │
+└─────────────────┘     └──────────────────┘     └────────┬────────┘
+                                                          │
+                        ┌─────────────────────────────────┘
+                        ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    IMPROVEMENT LOOP                                  │
+│                                                                      │
+│  ┌─────────────┐    ┌─────────────────────────────────────────────┐ │
+│  │   LLM       │    │         DUAL-SIMULATOR VALIDATION           │ │
+│  │  Hypothesis │───▶│  ┌───────────┐         ┌────────────────┐  │ │
+│  │  Generator  │    │  │ Prosimos  │         │ AgentSimulator │  │ │
+│  └─────────────┘    │  │  (DES)    │         │     (ABS)      │  │ │
+│         ▲           │  └─────┬─────┘         └───────┬────────┘  │ │
+│         │           │        │    Structural         │ Behavioral│ │
+│         │           │        │    (queues,           │ (handoffs,│ │
+│         │           │        │     capacity)         │  routing) │ │
+│         │           │        └──────────┬────────────┘           │ │
+│         │           │                   ▼                        │ │
+│         │           │        ┌──────────────────────┐            │ │
+│         │           │        │  Combined Validation │            │ │
+│         │           │        │  S_final = f(S_DES,  │            │ │
+│         │           │        │            S_ABS)    │            │ │
+│         │           │        └──────────┬───────────┘            │ │
+│         │           └───────────────────┼────────────────────────┘ │
+│         │                               │                          │
+│         └───────────────────────────────┘                          │
+│                    (feedback loop)                                  │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Key Insight
+**Stereoscopic Validation:** The pipeline uses two complementary simulators:
+- **Prosimos (DES):** Captures structural aspects—resource queues, capacity constraints, waiting times
+- **AgentSimulator (ABS):** Captures behavioral aspects—agent handoffs, routing decisions, role interactions
 
-- **Grid Search**: Must traverse the entire search space (1 to N)
-- **LLM Agent**: Uses semantic signals to "jump" toward the solution
-  - High utilization (99%) → Need more resources
-  - High waiting time → Bottleneck identified
-  - Previous attempts → Learn and adjust
+This dual-simulator approach provides robustness: an improvement must show positive effects in both structural AND behavioral dimensions to be accepted.
 
-### Convergence Criteria
+### 2.2 Improvement Types and Validation Oracle
 
-Both search methods converge when the simulated KPI reaches the **optimal baseline level** (or better):
-- Values **better than or equal to** optimal are accepted immediately
-- Values **worse than** optimal must be within `tolerance_pct%` to be accepted
+| Type | Parameter | Primary Validator | Secondary Validator | Rationale |
+|------|-----------|-------------------|---------------------|-----------|
+| **Resource Allocation** | `resources` | DES (Prosimos) | ABS (throughput check) | DES captures queue dynamics; ABS confirms no routing degradation |
+| **Calendar Adjustment** | `calendar` | DES (Prosimos) | N/A (DES-only) | DES captures availability effects; ABS doesn't support calendar changes |
+| **Role Redesign** | `role_redesign` | ABS (AgentSimulator) | DES (throughput check) | ABS captures handoff behavior; DES confirms no capacity degradation |
 
-This ensures the search finds configurations that achieve equivalent (or superior) performance to the baseline.
+**Combined Validation Score:**
 
-## Usage
+For Resource and Calendar improvements:
+```
+S_final = (S_DES + S_ABS) / 2
+Accepted if: S_final > threshold AND S_DES > 0 AND S_ABS > 0
+```
 
-### Basic Run (Recommended Logs)
+For Role Redesign improvements:
+```
+S_final = S_ABS (primary) with S_DES >= 0 (safety check)
+Accepted if: S_ABS > threshold AND S_DES >= -0.05 (no significant throughput loss)
+```
+
+This ensures improvements are validated by both simulators, preventing acceptance of changes that improve one dimension while degrading another.
+
+### 2.3 Current Implementation Status
+
+| Component | Status | Location |
+|-----------|--------|----------|
+| SIMOD Discovery | ✅ Implemented | `src/simulator/simod_discoverer.py` |
+| Prosimos Simulation (DES) | ✅ Implemented | `src/simulator/prosimos_runner.py` |
+| Agent Simulation (ABS) | ✅ Implemented | `src/simulator/agent_simulator_runner.py` |
+| LLM Hypothesis Generator | ✅ Implemented | `src/llm/hypothesis_generator.py` |
+| **Resource Allocation** | | |
+| Resource Fault Injection | ✅ Implemented | `src/evaluation/quantitative/fault_injector.py` |
+| Resource Grid Search | ✅ Implemented | `src/evaluation/quantitative/grid_search.py` |
+| Resource LLM Search | ✅ Implemented | `src/evaluation/quantitative/llm_search.py` |
+| **Calendar Adjustment** | | |
+| Calendar Fault Injection | ✅ Implemented | `src/evaluation/quantitative/calendar_fault_injector.py` |
+| Calendar Grid Search | ✅ Implemented | `src/evaluation/quantitative/calendar_grid_search.py` |
+| Calendar LLM Search | ✅ Implemented | `src/evaluation/quantitative/calendar_llm_search.py` |
+| **Role Redesign** | | |
+| Role Redesign Fault Injection | ✅ Implemented | `src/evaluation/quantitative/role_redesign_fault_injector.py` |
+| Role Redesign Heuristic Baseline | ✅ Implemented | `src/evaluation/quantitative/role_redesign_heuristic_search.py` |
+| Role Redesign LLM Search | ✅ Implemented | `src/evaluation/quantitative/role_redesign_llm_search.py` |
+| **Comprehensive Evaluation** | | |
+| Comprehensive Evaluation Runner | ✅ Implemented | `src/evaluation/quantitative/comprehensive_evaluation_runner.py` |
+| Comprehensive Results Reporter | ✅ Implemented | `src/evaluation/quantitative/comprehensive_results_reporter.py` |
+| Results Visualizer | ✅ Implemented | `src/evaluation/quantitative/results_visualizer.py` |
+| CLI Entry Point | ✅ Implemented | `src/evaluation/quantitative/run_comprehensive_evaluation.py` |
+| Mixed/Cross-type Evaluation | ❌ Future work | - |
+
+---
+
+## 3. Evaluation Design
+
+### 3.1 Research Questions
+
+**RQ1:** How many simulation calls does the LLM need to find an optimal improvement compared to grid search?
+
+**RQ2:** Does the LLM correctly identify bottleneck resources/roles?
+
+**RQ3:** How does LLM performance vary across different improvement types?
+
+### 3.2 Experimental Methodology
+
+The evaluation uses a **fault injection approach**:
+
+1. **Discover** optimal model M_opt from event log using SIMOD
+2. **Inject fault** to create degraded model M_fault
+3. **Run LLM search** to recover from fault
+4. **Run baseline search** (grid search) on same fault
+5. **Compare** iterations needed to converge to baseline KPIs
+
+```
+     M_opt (ground truth)
+         │
+         │ inject fault
+         ▼
+     M_fault (degraded)
+         │
+    ┌────┴────┐
+    │         │
+    ▼         ▼
+ LLM Search   Grid Search
+    │         │
+    └────┬────┘
+         │
+         ▼
+    Compare iterations
+    to reach M_opt KPIs
+```
+
+### 3.3 Convergence Criterion
+
+An improvement is considered **converged** when:
+
+```
+primary_kpi_improvement >= tolerance_threshold
+AND
+throughput >= 0.95 × baseline_throughput
+```
+
+| Improvement Type | Primary KPI | Rationale |
+|------------------|-------------|-----------|
+| Resource Allocation | waiting_time | Adding resources directly reduces queue time |
+| Calendar Adjustment | waiting_time | Extended hours reduce overnight queuing |
+| Role Redesign | cycle_time | Rebalancing reduces handoff delays |
+
+**Default tolerance threshold:** 5% improvement over faulty model
+
+---
+
+## 4. Evaluation Type 1: Resource Allocation
+
+### 4.1 Fault Injection Strategy
+
+**Method:** Reduce resource count for a bottleneck role from N to 1
+
+**Example (LoanApp):**
+- Original: 8 Clerks, 4 Loan Officers, 2 AML Investigators
+- Fault: Reduce AML Investigators from 2 → 1
+- Ground truth: LLM should propose increasing AML Investigators back to 2
+
+### 4.2 Search Space
+
+| Method | Search Space | Complexity |
+|--------|--------------|------------|
+| Grid Search | count ∈ [1, N] for target role | O(N) |
+| LLM Search | Guided by utilization analysis | O(k) where k << N expected |
+
+### 4.3 Baseline: Grid Search
+
+Sequential search from count=1 to count=N, stopping when KPIs converge:
+
+```python
+for count in range(1, original_count + 1):
+    metrics = simulate(model, target_role, count)
+    if converged(metrics, baseline_metrics):
+        return count, iteration_number
+```
+
+### 4.4 Metrics
+
+| Metric | Definition |
+|--------|------------|
+| **Iterations to solution** | Number of simulations to reach convergence |
+| **Speedup ratio** | Grid iterations / LLM iterations |
+| **Accuracy** | Did LLM find the exact optimal count? |
+| **Convergence quality** | Final KPI improvement percentage |
+| **Intervention cost level** | Ordinal cost of the proposed solution (see Section 4.6) |
+
+### 4.5 Candidate Logs
+
+| Log | Target Role | Original Count | Fault (reduce to) |
+|-----|-------------|----------------|-------------------|
+| LoanApp.csv | AML Investigator | 2 | 1 |
+| LoanApp.csv | Clerk | 8 | 2 |
+| cvs_pharmacy.csv | Technician | 3 | 1 |
+
+### 4.6 Intervention Cost Metric
+
+To evaluate solution quality beyond KPI convergence, we track the **cost level** of proposed interventions:
+
+| Cost Level | Intervention Type | Description | Example |
+|------------|-------------------|-------------|---------|
+| **1 (Low)** | Role Redesign | Redistribute existing workforce | Shift tasks from Clerk to Loan Officer |
+| **2 (Medium)** | Calendar Extension | Increase working hours (overtime) | Extend AML Investigator hours by 2h |
+| **3 (High)** | Resource Addition | Hire new staff | Add 2 AML Investigators |
+
+**Why this matters:** An LLM that achieves high KPI improvement with a Cost Level 1 intervention demonstrates better business reasoning than one that simply proposes hiring more staff (Cost Level 3).
+
+**Reporting:** For each experiment, we report:
+- Whether LLM chose the minimum-cost solution type
+- Cost level of LLM solution vs. Grid search solution
+
+---
+
+## 5. Evaluation Type 2: Calendar Adjustment
+
+### 5.1 Verification: Calendar Data Availability
+
+**VERIFIED:** SIMOD extracts per-resource calendars. Example from LoanApp:
+
+```json
+{
+  "id": "AML Investigator-000001_profile_calendar",
+  "time_periods": [
+    {"from": "MONDAY", "to": "MONDAY", "beginTime": "07:00:00", "endTime": "15:00:00"},
+    {"from": "TUESDAY", "to": "TUESDAY", "beginTime": "07:00:00", "endTime": "15:00:00"},
+    ...
+  ]
+}
+```
+
+Each of the 19 resources in LoanApp has its own calendar with working hours defined per weekday.
+
+### 5.2 Fault Injection Strategy
+
+**Method:** Reduce working hours for a target resource
+
+**Example:**
+- Original: AML Investigator-000001 works 07:00-15:00 (8 hours)
+- Fault: Restrict to 07:00-11:00 (4 hours)
+- Ground truth: LLM should propose increasing hours by 4
+
+### 5.3 Search Space
+
+| Method | Search Space | Complexity |
+|--------|--------------|------------|
+| Grid Search | hours_to_add ∈ [1, H] for target resource | O(H) where H ≈ 8 |
+| LLM Search | Guided by utilization + calendar analysis | O(k) |
+
+**Key simplification:** We inject fault on a KNOWN target resource, so grid search only varies hours (not resource identity). This makes the comparison fair—both methods search the same space.
+
+### 5.4 Baseline: Grid Search over Hours
+
+```python
+for hours_to_add in range(1, max_hours + 1):
+    metrics = simulate(model, target_resource, hours_to_add)
+    if converged(metrics, baseline_metrics):
+        return hours_to_add, iteration_number
+```
+
+### 5.5 Metrics
+
+Same as Resource Allocation:
+- Iterations to solution
+- Speedup ratio
+- Accuracy (exact hours found?)
+- Convergence quality
+
+### 5.6 Candidate Logs
+
+| Log | Target Resource | Original Hours | Fault (reduce to) |
+|-----|-----------------|----------------|-------------------|
+| LoanApp.csv | AML Investigator-000001 | 8h/day | 2h/day |
+| LoanApp.csv | Clerk-000001 | ~8h/day | 2h/day |
+| cvs_pharmacy.csv | Technician-000001 | 8h/day | 2h/day |
+
+---
+
+## 6. Evaluation Type 3: Role Redesign
+
+### 6.1 Complexity
+
+Role redesign has a **combinatorial search space**:
+- N source roles × (N-1) target roles × M shift percentages
+- For LoanApp with 6 roles and 5 shift levels: 6 × 5 × 5 = 150 combinations
+
+### 6.2 Fault Injection Strategy
+
+**Method:** Create artificial workload imbalance by modifying task assignment probabilities
+
+**Example (LoanApp):**
+- Original: Clerks handle 50% of administrative tasks, Loan Officers handle 50%
+- Fault: Shift 80% of tasks to Clerks (creating overload)
+- Ground truth: LLM should propose shifting responsibility back to Loan Officers
+
+**Implementation approach:**
+1. Identify two roles with overlapping activities (can perform same tasks)
+2. Modify `task_resource_distribution` to concentrate work on one role
+3. This creates utilization imbalance without changing resource counts
+
+### 6.3 Search Space
+
+| Method | Search Space | Complexity |
+|--------|--------------|------------|
+| Exhaustive Search | All (source, target, shift%) combinations | O(N² × M) |
+| Heuristic Search | Highest-util → Lowest-util, vary shift% | O(M) per role pair |
+| LLM Search | Guided by utilization analysis | O(k) |
+
+### 6.4 Baseline: Heuristic Search
+
+Since exhaustive grid search is infeasible (150+ combinations), we use a **domain-informed heuristic**:
+
+```python
+# Rank roles by utilization
+roles_by_util = sorted(roles, key=lambda r: r.utilization, reverse=True)
+source = roles_by_util[0]  # Most overloaded
+target = roles_by_util[-1]  # Most underutilized
+
+# Grid search over shift percentages only
+for shift_pct in [10, 20, 30, 40, 50]:
+    metrics = simulate(model, source, target, shift_pct)
+    if converged(metrics, baseline_metrics):
+        return (source, target, shift_pct), iteration_number
+```
+
+This baseline uses the **same domain knowledge** available to the LLM (utilization data), making the comparison fair.
+
+### 6.5 Metrics
+
+Same as other evaluation types, plus:
+
+| Metric | Definition |
+|--------|------------|
+| **Role pair accuracy** | Did LLM identify the correct (source, target) pair? |
+| **Shift percentage accuracy** | Did LLM propose an effective shift amount? |
+
+### 6.6 Candidate Logs
+
+| Log | Overloaded Role | Underloaded Role | Overlap Activities |
+|-----|-----------------|------------------|-------------------|
+| LoanApp.csv | Clerk | Loan Officer | Document review (if applicable) |
+| p2p.csv | Karel de Groot (95%) | Fjodor Kowalski (20%) | TBD after discovery |
+| env_permit.csv | TBD | TBD | Uses `org:group` for role identification |
+
+**Note:** Role redesign requires roles with **overlapping activities** (both can perform the same tasks). Not all logs support this—verification needed during implementation.
+
+---
+
+## 7. Future Work: Mixed/Cross-type Evaluation
+
+### 7.1 Scenario Description
+
+In a **mixed** scenario, the LLM is not told which improvement type to use. Given a degraded model, it must:
+1. Diagnose the problem (bottleneck identification)
+2. Choose the best intervention type (Resource, Calendar, or Role Redesign)
+3. Propose specific parameters
+
+### 7.2 Why Deferred
+
+**Challenge:** No fair grid search baseline exists for mixed scenarios.
+
+- Grid search over Resources: O(N)
+- Grid search over Calendar hours: O(H)
+- Grid search over Role pairs: O(N² × M)
+- **Combined:** O(N × H × N² × M) = intractable
+
+**Alternative baselines considered:**
+- Random type selection + grid within type
+- Multi-armed bandit approach
+- Requires additional research to define fair comparison
+
+### 7.3 Future Implementation
+
+When implemented, mixed evaluation would test:
+- LLM's ability to select the **cost-optimal** intervention type
+- Whether LLM explores multiple types before converging
+- Comparison against random type selection baseline
+
+---
+
+## 8. Experimental Setup
+
+### 8.1 Configuration
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| **Logs per improvement type** | 3 | Sufficient for initial validation |
+| **Repetitions per experiment** | 5 | Account for LLM non-determinism (report mean ± std) |
+| **LLM temperature** | 0.0 | Reduce variance while acknowledging non-determinism |
+| **DES simulation runs** | 5-10 | Average to reduce simulation variance |
+| **ABS simulation runs** | 5-10 | Parallel to DES for consistent validation |
+| **Convergence tolerance** | 5% | Standard threshold |
+
+**Note on LLM Non-Determinism:** Even with temperature=0.0, LLMs exhibit non-deterministic behavior due to factors like floating-point precision and batching. Running 5 independent repetitions allows us to report results as **Mean ± Standard Deviation**, providing statistical validity.
+
+### 8.2 Experimental Matrix
+
+| ID | Log | Improvement Type | Fault | Ground Truth |
+|----|-----|------------------|-------|--------------|
+| E1.1 | LoanApp | Resource | AML Inv: 2→1 | count=2 |
+| E1.2 | LoanApp | Resource | Clerk: 8→2 | count=8 |
+| E1.3 | cvs_pharmacy | Resource | Technician: 3→1 | count=3 |
+| E2.1 | LoanApp | Calendar | AML Inv: 8h→2h | +6 hours |
+| E2.2 | LoanApp | Calendar | Clerk: 8h→2h | +6 hours |
+| E2.3 | cvs_pharmacy | Calendar | Technician: 8h→2h | +6 hours |
+| E3.1 | LoanApp | Role Redesign | Overload Clerks | Shift to Loan Officers |
+| E3.2 | p2p | Role Redesign | Overload Karel | Shift to underutilized |
+
+**Total experiments:** 8 configurations × 5 repetitions = **40 experiment runs**
+
+### 8.3 Results Reporting
+
+For each experiment, we report:
+
+| Metric | Format | Example |
+|--------|--------|---------|
+| Iterations to solution | Mean ± Std | 3.2 ± 0.84 |
+| Speedup ratio | Mean ± Std | 2.5× ± 0.3 |
+| Accuracy | Percentage | 80% (4/5 runs found optimal) |
+| Convergence quality | Mean ± Std | 97.2% ± 1.5% |
+| Intervention cost level | Mode | Level 2 (Calendar) |
+| DES validation score | Mean ± Std | 0.042 ± 0.008 |
+| ABS validation score | Mean ± Std | 0.031 ± 0.005 |
+
+### 8.4 Hardware/Software Requirements
+
+- Docker (for SIMOD and Prosimos)
+- Python 3.11
+- LLM API access (GPT-4.1 or Claude)
+- ~2-4 hours total runtime (estimated)
+
+---
+
+## 9. Expected Outcomes
+
+### 9.1 Hypotheses
+
+**H1:** LLM search requires fewer iterations than grid search for resource allocation (speedup > 1.5×)
+
+**H2:** LLM search requires fewer iterations than grid search for calendar adjustment (speedup > 1.5×)
+
+**H3:** LLM correctly identifies the bottleneck resource in >80% of cases
+
+**H4:** LLM proposes lower-cost interventions when multiple solution types are viable
+
+### 9.2 Success Criteria
+
+| Criterion | Threshold |
+|-----------|-----------|
+| Average speedup ratio | > 1.5× |
+| LLM success rate (finds valid improvement) | > 80% |
+| Convergence quality vs grid | Within 95% |
+| Dual-simulator agreement | Both S_DES > 0 and S_ABS > 0 |
+| Cost-optimal solution rate | > 60% (when lower-cost alternative exists) |
+
+### 9.3 Potential Findings
+
+**Positive outcomes:**
+- LLM demonstrates sample efficiency (fewer simulations needed)
+- LLM correctly prioritizes high-utilization resources
+- Generalizes across different process types
+
+**Negative outcomes (also valuable):**
+- LLM struggles with certain process characteristics
+- Grid search competitive for small search spaces
+- Temperature sensitivity affects reproducibility
+
+---
+
+## 10. Implementation Plan
+
+### Phase 1: Resource Allocation ✅ Complete
+- [x] Fault injector for resource count
+- [x] Grid search baseline
+- [x] LLM search
+- [x] Basic evaluation runner
+
+### Phase 2: Calendar Adjustment ✅ Complete
+- [x] Calendar fault injector (reduce hours)
+- [x] Calendar grid search (iterate over hours)
+- [x] Calendar LLM search
+- [x] Integration with comprehensive evaluation runner
+
+### Phase 3: Role Redesign ✅ Complete
+- [x] Role redesign fault injector (create workload imbalance)
+- [x] Heuristic baseline (highest-util → lowest-util)
+- [x] Role redesign LLM search
+- [x] Role pair accuracy metrics
+
+### Phase 4: Comprehensive Evaluation ✅ Complete
+- [x] Comprehensive evaluation runner with all 3 improvement types
+- [x] Results reporter with statistical aggregation
+- [x] Dual-simulator validation (DES + ABS)
+- [x] CLI entry point with full configuration options
+
+### Phase 5: Run Full Experiments (Pending)
+- [ ] Run all experiments (8 configs × 5 reps = 40 runs)
+- [ ] Generate comparison tables
+- [ ] Statistical analysis (mean ± std)
+- [ ] Visualization of results
+
+---
+
+## 11. Threats to Validity
+
+### 11.1 Internal Validity
+
+| Threat | Mitigation |
+|--------|------------|
+| LLM stochasticity | Use temperature=0.0, run **5 repetitions**, report mean ± std |
+| Simulation variance | Average 5-10 DES/ABS runs per evaluation |
+| Unfair comparison | Use simulation cache (same inputs → same outputs) |
+| Single-simulator bias | Validate with **both DES and ABS** for all improvement types |
+
+### 11.2 External Validity
+
+| Threat | Mitigation |
+|--------|------------|
+| Limited log diversity | Use 3 different process types |
+| Artificial fault injection | Inject realistic faults (bottleneck scenarios) |
+| Single LLM model | Focus on one model first, extend later |
+
+### 11.3 Construct Validity
+
+| Threat | Mitigation |
+|--------|------------|
+| KPI selection | Use established process mining metrics |
+| Convergence definition | Multi-KPI criterion (primary + throughput guard) |
+
+---
+
+## 12. Usage
+
+### Running the Comprehensive Evaluation
 
 ```bash
-# Run on recommended logs (LoanApp, BPIC_2012W, BPIC_2017W, cvs_pharmacy)
-poetry run python src/evaluation/quantitative/run_evaluation.py \
-    --model anthropic--claude-4.5-opus
+# Run full evaluation with defaults
+poetry run python src/evaluation/quantitative/run_comprehensive_evaluation.py \
+    --logs-dir data/logs --output-dir output
 
-# Run on specific logs
-poetry run python src/evaluation/quantitative/run_evaluation.py \
-    --model anthropic--claude-4.5-opus \
-    --logs LoanApp.csv BPIC_2017W.csv
+# Run with specific model and more repetitions
+poetry run python src/evaluation/quantitative/run_comprehensive_evaluation.py \
+    --logs-dir data/logs --model anthropic--claude-4.5-opus --repetitions 10
 
-# Run on ALL logs (including those known to have issues)
-poetry run python src/evaluation/quantitative/run_evaluation.py \
-    --model gpt-4.1 \
-    --all-logs
+# Run only resource allocation experiments
+poetry run python src/evaluation/quantitative/run_comprehensive_evaluation.py \
+    --logs-dir data/logs --type resource_allocation
+
+# Run only calendar adjustment experiments
+poetry run python src/evaluation/quantitative/run_comprehensive_evaluation.py \
+    --logs-dir data/logs --type calendar_adjustment
+
+# Run only role redesign experiments
+poetry run python src/evaluation/quantitative/run_comprehensive_evaluation.py \
+    --logs-dir data/logs --type role_redesign
+
+# Dry run to validate configuration
+poetry run python src/evaluation/quantitative/run_comprehensive_evaluation.py \
+    --logs-dir data/logs --dry-run
 ```
 
 ### Configuration Options
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--model` | `gpt-4.1` | LLM model for guided search |
-| `--temperature` | `0.0` | LLM sampling temperature |
-| `--grid-min` | `1` | Minimum resource count for grid search |
-| `--grid-max` | `10` | Maximum resource count for grid search |
-| `--fault-count` | `1` | Resource count to inject as fault |
-| `--tolerance` | `2.0` | Tolerance % for KPI solution matching (worse only) |
-| `--max-llm-iters` | `10` | Maximum LLM search iterations |
-| `--logs` | recommended | Specific log files to evaluate |
-| `--all-logs` | - | Run on ALL logs (including problematic ones) |
-| `--no-sudo` | auto | Disable sudo for Docker (auto-detected on Windows) |
-| `--visualize-only` | - | Path to existing summary.json for visualization only |
+| `--logs-dir`, `-l` | `logs` | Directory containing event logs |
+| `--output-dir`, `-o` | `output` | Output directory for results |
+| `--model`, `-m` | `anthropic--claude-4.5-opus` | LLM model for guided search |
+| `--repetitions`, `-r` | `5` | Number of repetitions per experiment |
+| `--tolerance` | `5.0` | Tolerance % for KPI solution matching |
+| `--des-runs` | `5` | Number of DES (Prosimos) runs to average |
+| `--abs-runs` | `5` | Number of ABS (AgentSimulator) runs |
+| `--no-dual-validation` | - | Disable dual-simulator validation |
+| `--type`, `-t` | `all` | Improvement type to evaluate |
+| `--no-sudo` | - | Don't use sudo for Docker commands |
+| `--skip-visualization` | - | Skip generating visualization plots |
+| `--dry-run` | - | Print configuration without running |
 
-### Visualization Only
-
-```bash
-# Re-generate plots from existing results
-poetry run python src/evaluation/quantitative/run_evaluation.py \
-    --visualize-only reports/evaluation/quantitative_eval_20260310_094749/evaluation_summary.json
-```
-
-## Output Structure
+### Output Structure
 
 ```
-reports/evaluation/quantitative_eval_YYYYMMDD_HHMMSS/
-├── evaluation_summary.json      # Full results for all logs
-├── result_LoanApp.json          # Individual log result
-├── result_ACR.json
-├── ...
-├── LoanApp/                     # Working directory per log
-│   ├── baseline/                # SIMOD discovery output
+output/comprehensive_eval_YYYYMMDD_HHMMSS/
+├── evaluation_report.json          # Full results for all experiments
+├── E1.1/                           # Per-experiment directory
+│   ├── result.json                 # Aggregated result for this experiment
+│   ├── run_1/                      # Working directory for repetition 1
+│   ├── run_2/
 │   └── ...
-└── figures/
-    ├── LoanApp_convergence.png  # Convergence chart (log scale)
-    ├── LoanApp_tradeoff.png     # Resource-Performance trade-off (Pareto view)
-    ├── LoanApp_utilization.png  # Resource utilization analysis
-    ├── aggregate_comparison.png # Bar chart: iterations comparison
-    ├── convergence_overlay_cycle_time.png
-    ├── convergence_overlay_throughput.png
-    ├── convergence_overlay_waiting_time.png
-    └── *.pdf                    # PDF versions for publication
+├── E1.2/
+├── E2.1/
+├── ...
+└── figures/                        # Visualization plots
+    ├── aggregate_comparison.png
+    ├── convergence_overlay_*.png
+    └── *.pdf
 ```
 
-## Publication-Quality Visualizations
+---
 
-The visualizer generates several chart types optimized for academic publications:
-
-### 1. Convergence Plot (`*_convergence.png`)
-
-Shows the race between Grid Search and LLM to find the solution:
-
-- **Logarithmic Y-axis**: Clearly separates massive fault spike from nuanced improvements
-- **Resource count annotations**: Each point shows how many resources were tried
-- **LLM star marker**: Prominent gold star with horizontal target line
-- **Publication fonts**: Larger axis labels (14pt) and titles (16pt)
-
-### 2. Resource Trade-off Plot (`*_tradeoff.png`)
-
-Visualizes the Pareto trade-off between resource allocation and performance:
-
-- **X-axis**: Number of resources (e.g., Clerks)
-- **Y-axis**: Cycle Time (log scale)
-- **Shows**: Grid path (minimum viable), LLM jump (intelligent), Original state (baseline)
-- **Use case**: Operations Research visualization for ESWA/IS journals
-
-### 3. Resource Utilization Plot (`*_utilization.png`)
-
-Shows how resource utilization changes as resources are added:
-
-- **X-axis**: Number of resources
-- **Y-axis**: Average utilization percentage
-- **Color zones**:
-  - **Green (70-85%)**: Optimal utilization zone
-  - **Red (>85%)**: Over-utilized / bottleneck risk
-  - **Yellow (<70%)**: Under-utilized / resource waste
-- **Use case**: Demonstrates the trade-off between capacity and efficiency
-
-### 4. Aggregate Comparison (`aggregate_comparison.png`)
-
-Bar chart comparing iterations to solution across all logs:
-
-- **Error bars**: Standard deviation when multiple experiments exist
-- **Speedup annotations**: Shows speedup ratio between bars
-- **Value labels**: Exact iteration counts on each bar
-
-### 5. Convergence Overlay (`convergence_overlay_*.png`)
-
-Overlaid curves for all experiments on a single metric:
-
-- **Log scale**: For time-based metrics (cycle_time, waiting_time)
-- **Resource annotations**: Numbers on points indicate resource count tried
-- **Reference lines**: Optimal and faulty baselines
-
-### Visualization Features
-
-| Feature | Implementation | Purpose |
-|---------|----------------|---------|
-| Log Y-axis | `plt.yscale('log')` | Handle massive fault spikes |
-| Resource annotations | Text labels on points | Show decision context |
-| Star markers | Gold star for LLM | Visual prominence |
-| Horizontal dashed line | From LLM solution | Target baseline reference |
-| Colorblind palette | Vermillion, Bluish-green | Accessibility |
-| Thick lines | `linewidth=2.5` | Print readability |
-| Large fonts | 14-16pt | Journal figure scaling |
-| Utilization zones | Colored axhspan | Show optimal/over/under-utilized |
-
-## Results Interpretation
-
-### Example Output
-
-```
-Aggregate Results:
-  Avg Grid iterations: 3.00
-  Avg LLM iterations:  1.00
-  Avg Speedup ratio:   3.00x
-  Grid success rate:   100.0%
-  LLM success rate:    100.0%
-
-Per-log results:
-  LoanApp.csv: Grid=3, LLM=1, Speedup=3.00x
-```
-
-### What Makes Good Results for a Paper
-
-1. **Meaningful fault**: Degradation should be significant (>100% cycle time increase)
-2. **Clear speedup**: LLM should find solution in fewer iterations than grid search
-3. **LLM rationale**: The LLM should correctly identify the bottleneck in its reasoning
-4. **Trade-off visualization**: Shows efficient resource allocation vs over-provisioning
-
-## Module Structure
+## 13. Module Structure
 
 ```
 src/evaluation/quantitative/
-├── __init__.py
-├── README.md                    # This file
-├── run_evaluation.py            # CLI entry point
-├── evaluation_runner.py         # Main orchestrator (5 DES runs averaged)
-├── fault_injector.py            # Fault injection (pattern + activity-based grouping)
-├── grid_search.py               # Systematic grid search
-├── llm_search.py                # LLM-guided search (uses HypothesisGenerator)
-└── results_visualizer.py        # Publication-quality charts
+├── __init__.py                         # Exports all components
+├── README.md                           # This documentation
+│
+│ # Resource Allocation
+├── fault_injector.py                   # Resource count fault injection
+├── grid_search.py                      # Systematic grid search
+├── llm_search.py                       # LLM-guided resource search
+│
+│ # Calendar Adjustment
+├── calendar_fault_injector.py          # Calendar hours fault injection
+├── calendar_grid_search.py             # Systematic hours grid search
+├── calendar_llm_search.py              # LLM-guided calendar search
+│
+│ # Role Redesign
+├── role_redesign_fault_injector.py     # Workload imbalance fault injection
+├── role_redesign_heuristic_search.py   # Heuristic baseline (util-based)
+├── role_redesign_llm_search.py         # LLM-guided role redesign search
+│
+│ # Comprehensive Evaluation
+├── comprehensive_evaluation_runner.py  # Main orchestrator for all types
+├── comprehensive_results_reporter.py   # Statistical reporting
+├── results_visualizer.py               # charts
+│
+│ # Entry Points
+├── run_evaluation.py                   # Original single-type evaluation
+└── run_comprehensive_evaluation.py     # Full comprehensive evaluation CLI
 ```
 
-## How It Works
+---
 
-### 1. Resource Grouping (`fault_injector.py`)
+## 14. Summary
 
-Resources are grouped into roles for fault injection using two strategies:
+This evaluation framework provides:
 
-**Pattern-based grouping** (preferred):
-```python
-# "Clerk-000001" to "Clerk-000008" → "Clerk" role with 8 resources
-target_resource = "Clerk"
-original_count = 8
+1. **Rigorous methodology:** Fault injection with known ground truth
+2. **Fair comparison:** Grid search/heuristic baseline with comparable search space
+3. **Dual-simulator validation:** Both DES (Prosimos) and ABS (AgentSimulator) for robustness
+4. **Comprehensive metrics:** Iterations, speedup, accuracy, convergence quality, intervention cost
+5. **Statistical validity:** 5 repetitions per experiment with mean ± std reporting
+6. **Practical scope:** 3 logs × 3 improvement types × 5 reps = 40 experiments
+7. **Clear implementation path:** All phases implemented, ready for full experiment runs
+
+The expected contribution is demonstrating that LLM-guided search can achieve **sample efficiency** in process improvement—finding valid improvements with fewer simulation calls than systematic search, while respecting both structural (DES) and behavioral (ABS) constraints.
+
+---
+
+## Appendix A: Data Structures
+
+### A.1 SIMOD Output Structure (Prosimos JSON)
+
+```json
+{
+  "resource_profiles": [
+    {
+      "id": "Role-000001_profile",
+      "resource_list": [
+        {
+          "id": "Role-000001",
+          "amount": 1,
+          "calendar": "Role-000001_profile_calendar",
+          "assignedTasks": ["task_id_1", "task_id_2"]
+        }
+      ]
+    }
+  ],
+  "resource_calendars": [
+    {
+      "id": "Role-000001_profile_calendar",
+      "time_periods": [
+        {"from": "MONDAY", "to": "MONDAY", "beginTime": "07:00:00", "endTime": "15:00:00"}
+      ]
+    }
+  ],
+  "task_resource_distribution": [...]
+}
 ```
 
-**Activity-based grouping** (fallback):
-```python
-# Resources performing identical activities are grouped together
-# e.g., Users 1-5 all do tasks {A, B, C} → "Group_A+B+C" role
+### A.2 Hypothesis JSON Structure
+
+```json
+{
+  "description": "Add 1 AML Investigator to reduce queue time",
+  "improvement_type": "resource_allocation",
+  "changes": {
+    "parameter_type": "resources",
+    "specific_changes": [
+      {"target": "AML Investigator", "change": "increase_count", "value": 1}
+    ]
+  },
+  "expected_impact": {
+    "cycle_time": "-5%",
+    "throughput": "+2%",
+    "waiting_time": "-10%"
+  }
+}
 ```
 
-**Role Selection Criteria**:
-- PRIMARY: Prefer roles with the **highest resource count** (more dramatic fault effect)
-- SECONDARY: Higher utilization as tie-breaker
-- Minimum: Prefers roles with 3+ resources; falls back to 2+ if none found
+---
 
-### 2. Fault Injection
+## Appendix B: Available Event Logs
 
-Reduces resources to create a bottleneck:
-```python
-fault_count = 1
-# Result: Only Clerk-000001 remains, creating 99% utilization
-```
+| Log | Resources | Pattern | Suitable For |
+|-----|-----------|---------|--------------|
+| LoanApp.csv | 19 | Role-based (Clerk-000001) | Resource, Calendar, Role Redesign |
+| cvs_pharmacy.csv | ~6 | Role-based (Technician-000001) | Resource, Calendar |
+| Confidential_1000.csv | Multiple | Role-based (ABC-000001) | Resource |
+| p2p.csv | ~27 | Individual names | Role Redesign |
+| env_permit.csv | ~30 | Named + Groups | Role Redesign |
 
-### 3. Grid Search (`grid_search.py`)
+---
 
-Systematically tries resource counts from 1 until KPIs match (or beat) optimal:
-
-```python
-for count in range(1, max_count + 1):
-    metrics = simulate(model, count)
-    if metrics.cycle_time <= optimal.cycle_time:  # Better or equal
-        return count
-    if within_tolerance(metrics.cycle_time, optimal.cycle_time):
-        return count  # Within tolerance
-```
-
-### 4. LLM Search (`llm_search.py`)
-
-Uses the existing `HypothesisGenerator` for LLM calls, constrained to `resource_allocation` changes:
-
-```python
-# LLM sees metrics with 99% Clerk utilization
-# LLM proposes: {"target": "Clerk", "change": "increase_count", "value": 4}
-# Simulate, check improvement, iterate
-```
-
-### 5. Simulation Averaging
-
-Each simulation call runs **5 DES replicas** and averages results to reduce variance:
-
-```python
-des_runs = 5  # Default, configurable
-for run in range(des_runs):
-    metrics = prosimos.simulate(model, modifications)
-    results.append(metrics)
-return average(results)
-```
-
-### 6. Fair Benchmarking with Simulation Cache
-
-To ensure fair comparison between Grid Search and LLM Search, the evaluation uses a **simulation cache**:
-
-**How It Works**:
-```python
-# Cache keyed by resource count
-simulation_cache: Dict[int, Dict] = {}
-
-def simulate_with_role_count(role_name: str, count: int) -> Dict:
-    # Check cache first - ensures fair benchmarking
-    if count in simulation_cache:
-        print(f"[CACHE HIT] Using cached result for count={count}")
-        return simulation_cache[count]  # Identical metrics guaranteed
-
-    # Run simulation and cache the result
-    result = run_simulation(model, count)
-    simulation_cache[count] = result
-    return result
-```
-
-**Why This Matters**:
-- DES simulators have inherent randomness (arrival times, service times)
-- Without caching, Grid testing count=3 might get cycle_time=75,000s
-- While LLM testing count=3 might get cycle_time=78,000s (different random draws)
-- This variance could unfairly favor one method over the other
-- The cache ensures: **identical inputs → identical outputs**
-
-**Example**:
-1. Grid Search tests count=1 → runs simulation → caches result
-2. Grid Search tests count=2 → runs simulation → caches result
-3. Grid Search tests count=3 → runs simulation → caches result (**solution found**)
-4. LLM Search tests count=4 → runs simulation → caches result (**solution found in 1 iteration**)
-
-If LLM had also proposed count=3, it would get the **exact same cached result** as Grid Search.
-
-## Paper Argument
-
-> "While systematic search guarantees optimality eventually, it is computationally
-> intractable for complex processes. The LLM acts as a **Semantic Heuristic**,
-> pruning the search space by leveraging domain knowledge encoded in its training."
-
-The experimental results demonstrate that the LLM achieves equivalent solutions with significantly fewer simulation calls by:
-1. Recognizing bottleneck patterns (high utilization, high waiting time)
-2. Making informed jumps rather than incremental exploration
-3. Learning from previous attempts within the same search
-
-## Supported Event Logs
-
-| Log | Resources | Grouping Method | Evaluation Quality |
-|-----|-----------|-----------------|-------------------|
-| LoanApp.csv | 19 | Pattern-based (Clerk, Loan Officer, etc.) | **Excellent** - 38x degradation, clear speedup |
-| cvs_pharmacy.csv | 8 | Pattern-based (Technician, Pharmacist) | Good |
-| Confidential_1000.csv | 26 | Pattern-based (ABC, DEF, etc.) | Good |
-| Confidential_2000.csv | 26 | Pattern-based | Good |
-| BPIC_2012W.csv | 62 | Activity-based (5 groups) | Good - well-known benchmark |
-| BPIC_2017W.csv | 148 | Activity-based (15 groups, up to 42 resources) | Good - well-known benchmark |
-| p2p.csv | 27 | Activity-based (6 groups) | **Poor** - groups not on critical path |
-| ACR.csv | 511 | Activity-based (20 groups) | Moderate |
-| Production.csv | 41 | Activity-based (7 groups) | **Poor** - small groups |
-
-**Recommended logs for publication**:
-- **LoanApp.csv** - Best results, clear speedup demonstration
-- **BPIC_2012W.csv**, **BPIC_2017W.csv** - Well-known in BPM community, good for credibility
-- **cvs_pharmacy.csv**, **Confidential_*.csv** - Pattern-based, reliable results
-
-**Note**: Activity-based grouping now balances resource count with utilization to prefer groups on the critical path. Groups with >70% utilization get priority even if smaller.
+*End of Document*

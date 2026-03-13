@@ -1,7 +1,7 @@
 """
 Results Visualizer for Quantitative Evaluation.
 
-Generates publication-quality charts for comparing LLM-guided search vs Grid Search:
+Generates charts for comparing LLM-guided search vs Grid Search:
 - Convergence plots with log scale for time metrics
 - Resource allocation trade-off plots (Pareto view)
 - Aggregate comparison with error bars
@@ -16,7 +16,7 @@ import numpy as np
 
 
 class ResultsVisualizer:
-    """Generate publication-quality charts from evaluation results."""
+    """Generate charts from evaluation results."""
 
     def __init__(self, output_dir: str):
         """
@@ -28,7 +28,7 @@ class ResultsVisualizer:
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
 
-        # Publication-quality style settings
+        # style settings
         plt.style.use('seaborn-v0_8-whitegrid')
 
         # Colorblind-friendly palette with high contrast
@@ -181,7 +181,7 @@ class ResultsVisualizer:
         y_max = max(all_y) * 2
         ax.set_ylim(y_min, y_max)
 
-        # Formatting with publication-quality fonts
+        # Formatting with fonts
         ax.set_xlabel('Simulation Calls (Iterations)', fontsize=self.fontsize['axis_label'])
         ax.set_ylabel('Cycle Time (seconds, log scale)', fontsize=self.fontsize['axis_label'])
         ax.set_title(f'Convergence Comparison: {log_name}\nGrid Search vs LLM-Guided Search',
@@ -650,7 +650,7 @@ class ResultsVisualizer:
 
         figures = []
 
-        print("\nGenerating publication-quality visualizations...")
+        print("\nGenerating visualizations...")
 
         # Individual experiment plots (convergence + trade-off)
         for exp in summary.get("experiments", []):
@@ -682,7 +682,7 @@ class ResultsVisualizer:
             if fig_path:
                 figures.append(fig_path)
 
-        print(f"\nGenerated {len(figures)} publication-quality visualizations")
+        print(f"\nGenerated {len(figures)} visualizations")
         return figures
 
     def plot_resource_utilization(

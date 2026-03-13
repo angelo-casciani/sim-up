@@ -215,3 +215,4 @@ simulated_data/
 .claude/
 logs/o2c
 evaluation_results/
+output/

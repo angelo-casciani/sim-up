@@ -32,7 +32,7 @@ class AgentSimulatorRunner:
             if self.agent_simulator_path not in sys.path:
                 sys.path.insert(0, self.agent_simulator_path)
             try:
-                from source.agent_simulator import AgentSimulator
+                from source.agent_simulator import AgentSimulator  # type: ignore[import-not-found]
                 self.agent_simulator_module = AgentSimulator
                 self.available = True
                 logger.info(f"AgentSimulator initialized from {self.agent_simulator_path}")

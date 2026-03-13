@@ -736,13 +736,16 @@ class ProsimosRunner:
         output_dir = os.path.join(work_dir, "simulated_output")
         os.makedirs(output_dir, exist_ok=True)
 
+        # Convert to absolute path for Docker volume mount (required on Windows)
+        abs_work_dir = os.path.abspath(work_dir)
+
         cmd = []
         if self.use_sudo:
             cmd.append("sudo")
         sim_cases = int(total_cases) if total_cases is not None else 1000
         cmd.extend([
             "docker", "run", "--rm",
-            "-v", f"{work_dir}:/data",
+            "-v", f"{abs_work_dir}:/data",
             "-w", "/usr/src/Simod",
             self.docker_image,
             "/usr/src/Simod/.venv/bin/prosimos",

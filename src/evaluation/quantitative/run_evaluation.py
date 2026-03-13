@@ -138,7 +138,7 @@ def main():
 
     # Generate visualizations
     print("\n" + "=" * 60)
-    print("GENERATING PUBLICATION-QUALITY VISUALIZATIONS")
+    print("GENERATING VISUALIZATIONS")
     print("=" * 60)
 
     viz_output = os.path.join(output_dir, f"quantitative_eval_{summary.timestamp}", "figures")

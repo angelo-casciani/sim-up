@@ -141,12 +141,15 @@ class LLMResourceSearch:
             model_name=self.model_name
         )
 
-        optimal_cycle = optimal_metrics.get("avg_cycle_time", 0)
+        # Store baseline metrics for comparison
+        faulty_cycle_time = faulty_metrics.get("avg_cycle_time", 0)
+        optimal_cycle_time = optimal_metrics.get("avg_cycle_time", 0)
 
         print(f"\n[LLM Search] Starting guided search for {target_resource}")
         print(f"  Model: {self.model_name}")
-        print(f"  Target cycle time: {optimal_cycle:.2f}s (tolerance: {self.tolerance_pct}%)")
-        print(f"  Current (faulty) cycle time: {faulty_metrics.get('avg_cycle_time', 0):.2f}s")
+        print(f"  Target count: {optimal_count} (ground truth)")
+        print(f"  Faulty cycle time: {faulty_cycle_time:.2f}s")
+        print(f"  Optimal cycle time: {optimal_cycle_time:.2f}s")
 
         current_metrics = faulty_metrics
         previous_attempts = []
@@ -159,7 +162,9 @@ class LLMResourceSearch:
                 target_resource=target_resource,
                 current_metrics=current_metrics,
                 previous_attempts=previous_attempts,
-                max_count=optimal_count  # Pass the actual max valid count
+                faulty_cycle_time=faulty_cycle_time,
+                optimal_cycle_time=optimal_cycle_time,
+                max_count=optimal_count
             )
 
             proposed_count = proposal.get("proposed_count", 2)
@@ -184,8 +189,8 @@ class LLMResourceSearch:
             waiting_time = metrics.get("avg_waiting_time", float("inf"))
             throughput = metrics.get("avg_throughput", 0)
 
-            # Check if KPIs are within tolerance of optimal
-            is_solution = self._is_within_tolerance(cycle_time, optimal_cycle)
+            # Solution found when LLM proposes the exact optimal count
+            is_solution = (proposed_count == optimal_count)
 
             result = LLMSearchResult(
                 iteration=iteration,
@@ -199,22 +204,23 @@ class LLMResourceSearch:
             )
             history.results.append(result)
 
-            # Track for next iteration
+            # Track for next iteration - compare to FAULTY baseline
+            improvement_pct = ((faulty_cycle_time - cycle_time) / faulty_cycle_time * 100) if faulty_cycle_time > 0 else 0
             previous_attempts.append({
                 "count": proposed_count,
                 "cycle_time": cycle_time,
                 "waiting_time": waiting_time,
                 "throughput": throughput,
-                "improved": cycle_time < current_metrics.get("avg_cycle_time", float("inf"))
+                "improvement_pct": improvement_pct
             })
 
             status = "FOUND!" if is_solution else ""
-            print(f"cycle_time={cycle_time:.2f}s {status}")
+            print(f"cycle_time={cycle_time:.2f}s ({improvement_pct:+.1f}% vs faulty) {status}")
 
             # Record first hit and stop searching
             if is_solution and history.solution_found_at is None:
                 history.solution_found_at = iteration
-                print(f"  [OK] Solution found at iteration {iteration} (count={proposed_count})")
+                print(f"  [OK] Solution found at iteration {iteration} (count={proposed_count} matches optimal)")
                 break
 
             # Update current metrics for next iteration
@@ -230,6 +236,8 @@ class LLMResourceSearch:
         target_resource: str,
         current_metrics: Dict,
         previous_attempts: List[Dict],
+        faulty_cycle_time: float,
+        optimal_cycle_time: float,
         max_count: int = 10
     ) -> Dict:
         """Generate resource count proposal from LLM."""
@@ -238,43 +246,67 @@ class LLMResourceSearch:
         tried_counts = [attempt["count"] for attempt in previous_attempts]
         available_counts = [c for c in range(1, max_count + 1) if c not in tried_counts]
 
+        # Sort previous attempts by count for clearer pattern recognition
+        sorted_attempts = sorted(previous_attempts, key=lambda x: x["count"])
+
         system_prompt = f"""You are a process optimization expert analyzing simulation metrics.
 
 Your ONLY task is to propose the optimal resource count for: {target_resource}
+
+PROBLEM CONTEXT:
+- The process currently has insufficient resources (count=1), causing high cycle times
+- You need to find the EXACT resource count that brings cycle time back to optimal levels
+- Faulty baseline cycle time: {faulty_cycle_time:.2f}s (BAD - too high)
+- Target optimal cycle time: ~{optimal_cycle_time:.2f}s (GOOD - this is your goal)
 
 CONSTRAINTS (CRITICAL):
 - You can ONLY propose resource_allocation changes (increase_count)
 - You must propose a single integer value for the resource count
 - Valid range: 1 to {max_count}
 - DO NOT propose a count that was already tried: {tried_counts if tried_counts else 'none yet'}
+- Available counts to try: {available_counts if available_counts else 'NONE LEFT'}
 
-Analysis strategy:
-- High waiting_time indicates resource bottleneck -> need MORE resources
-- High resource utilization (>80%) indicates bottleneck -> need MORE resources
-- If previous attempts with higher counts improved metrics, continue increasing
-- If previous attempts plateaued, you've likely found the optimal count
+ANALYSIS STRATEGY:
+- Look at the pattern: as resource count increases, cycle time should DECREASE
+- Find where cycle time plateaus near the optimal (~{optimal_cycle_time:.2f}s)
+- The optimal count is where adding more resources stops improving cycle time significantly
+- If you see cycle time reaching ~{optimal_cycle_time:.2f}s, that count is likely optimal
 
 Return ONLY a JSON object:
 {{
-  "proposed_count": <integer 1-{max_count}, NOT in {tried_counts}>,
-  "rationale": "Brief explanation of why this count"
+  "proposed_count": <integer from available counts: {available_counts}>,
+  "rationale": "Brief explanation based on the trend analysis"
 }}"""
 
-        user_prompt = f"""CURRENT SIMULATION METRICS:
-{json.dumps(current_metrics, indent=2)}
+        user_prompt = f"""CURRENT SIMULATION METRICS (count=1, faulty):
+- Cycle time: {current_metrics.get('avg_cycle_time', 0):.2f}s
+- Waiting time: {current_metrics.get('avg_waiting_time', 0):.2f}s
+
+TARGET: Reduce cycle time from {faulty_cycle_time:.2f}s to ~{optimal_cycle_time:.2f}s
 
 """
-        if previous_attempts:
-            user_prompt += "PREVIOUS ATTEMPTS (most recent last):\n"
-            for i, attempt in enumerate(previous_attempts[-5:], 1):
-                improved = "improved" if attempt.get("improved") else "no improvement"
-                user_prompt += f"  {i}. count={attempt['count']}: cycle_time={attempt['cycle_time']:.2f}s ({improved})\n"
+        if sorted_attempts:
+            user_prompt += "PREVIOUS ATTEMPTS (sorted by count):\n"
+            user_prompt += f"{'Count':<8} {'Cycle Time':<15} {'Improvement vs Faulty':<20}\n"
+            user_prompt += "-" * 45 + "\n"
+            for attempt in sorted_attempts:
+                imp = attempt.get("improvement_pct", 0)
+                user_prompt += f"{attempt['count']:<8} {attempt['cycle_time']:.2f}s{'':<8} {imp:+.1f}%\n"
             user_prompt += "\n"
 
-        user_prompt += f"""Based on the metrics and previous attempts, propose the next resource count to try.
-Focus on the waiting_time and resource_utilization to identify bottlenecks.
-IMPORTANT: Do NOT propose any of these already-tried counts: {tried_counts}
-Valid range: 1 to {max_count}
+            # Highlight the trend
+            if len(sorted_attempts) >= 2:
+                best = min(sorted_attempts, key=lambda x: x["cycle_time"])
+                user_prompt += f"BEST SO FAR: count={best['count']} with cycle_time={best['cycle_time']:.2f}s\n"
+                if best['cycle_time'] <= optimal_cycle_time * 1.05:
+                    user_prompt += f"NOTE: count={best['count']} is very close to optimal! Consider trying {max_count} to confirm.\n"
+            user_prompt += "\n"
+
+        user_prompt += f"""Based on the pattern above, propose the next count to try.
+REMEMBER:
+- Target cycle time is ~{optimal_cycle_time:.2f}s
+- Available counts: {available_counts}
+- You MUST pick from available counts only
 
 Return ONLY the JSON object."""
 
@@ -315,7 +347,7 @@ Return ONLY the JSON object."""
             return {"proposed_count": min(available_counts), "rationale": "Fallback: lowest untried"}
 
         # All counts exhausted
-        return {"proposed_count": 10, "rationale": "Fallback: all counts tried"}
+        return {"proposed_count": max_count, "rationale": "Fallback: all counts tried, returning max"}
 
     def _is_within_tolerance(self, value: float, target: float) -> bool:
         """Check if value is within tolerance of target (or better).

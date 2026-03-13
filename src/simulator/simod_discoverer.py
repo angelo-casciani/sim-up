@@ -189,12 +189,15 @@ class SIMODDiscoverer:
         return config_path
     def _run_simod_discovery(self, work_dir: str, output_dir: str):
         """Run SIMOD discovery via Docker."""
+        # Convert to absolute path for Docker volume mount (required on Windows)
+        abs_work_dir = os.path.abspath(work_dir)
+
         cmd = []
         if self.use_sudo:
             cmd.append("sudo")
         cmd.extend([
             "docker", "run", "--rm",
-            "-v", f"{work_dir}:/data",
+            "-v", f"{abs_work_dir}:/data",
             "-w", "/usr/src/Simod",
             self.docker_image,
             "bash", "/usr/src/Simod/run.sh",

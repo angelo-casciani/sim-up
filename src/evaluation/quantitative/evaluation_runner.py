@@ -22,9 +22,9 @@ from dataclasses import dataclass, field
 
 from simulator.simod_discoverer import SIMODDiscoverer
 from simulator.prosimos_runner import ProsimosRunner
-from evaluation.quantitative.fault_injector import FaultInjector
-from evaluation.quantitative.grid_search import GridSearch, GridSearchHistory
-from evaluation.quantitative.llm_search import LLMResourceSearch, LLMSearchHistory
+from evaluation.quantitative.resource_fault_injector import FaultInjector
+from evaluation.quantitative.resource_grid_search import GridSearch, GridSearchHistory
+from evaluation.quantitative.resource_llm_search import LLMResourceSearch, LLMSearchHistory
 
 
 @dataclass
