@@ -189,8 +189,9 @@ class LLMResourceSearch:
             waiting_time = metrics.get("avg_waiting_time", float("inf"))
             throughput = metrics.get("avg_throughput", 0)
 
-            # Solution found when LLM proposes the exact optimal count
-            is_solution = (proposed_count == optimal_count)
+            # Solution found when cycle_time is within tolerance of optimal
+            # (same criterion as grid search for fair comparison)
+            is_solution = self._is_within_tolerance(cycle_time, optimal_cycle_time)
 
             result = LLMSearchResult(
                 iteration=iteration,
@@ -220,7 +221,7 @@ class LLMResourceSearch:
             # Record first hit and stop searching
             if is_solution and history.solution_found_at is None:
                 history.solution_found_at = iteration
-                print(f"  [OK] Solution found at iteration {iteration} (count={proposed_count} matches optimal)")
+                print(f"  [OK] Solution found at iteration {iteration} (count={proposed_count}, cycle_time within tolerance)")
                 break
 
             # Update current metrics for next iteration

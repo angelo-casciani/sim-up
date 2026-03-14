@@ -107,8 +107,8 @@ class PaperVisualizer:
         """
         Figure 1: Bar chart comparing iterations required.
 
-        Shows the number of iterations Grid Search vs LLM Pipeline need
-        to find the optimal improvement.
+        Shows the average number of iterations Grid Search vs LLM Pipeline need
+        to find the optimal improvement, grouped by evaluation type.
         """
         # Filter experiments with valid data
         valid_exps = [e for e in experiments
@@ -119,17 +119,27 @@ class PaperVisualizer:
             print("No valid experiments for iterations comparison")
             return ""
 
+        # Group by improvement type and compute averages
+        by_type = {}
+        for e in valid_exps:
+            imp_type = e.get("improvement_type", "unknown")
+            if imp_type not in by_type:
+                by_type[imp_type] = {"grid": [], "llm": []}
+            by_type[imp_type]["grid"].append(e["baseline_iterations"]["mean"])
+            by_type[imp_type]["llm"].append(e["llm_iterations"]["mean"])
+
+        types = list(by_type.keys())
+        grid_iters = [np.mean(by_type[t]["grid"]) for t in types]
+        llm_iters = [np.mean(by_type[t]["llm"]) for t in types]
+        labels = [t.replace("_", "\n").title() for t in types]
+
         fig, ax = plt.subplots(figsize=(10, 5))
 
-        x = np.arange(len(valid_exps))
+        x = np.arange(len(types))
         width = 0.35
 
-        grid_iters = [e["baseline_iterations"]["mean"] for e in valid_exps]
-        llm_iters = [e["llm_iterations"]["mean"] for e in valid_exps]
-        labels = [f"{e['experiment_id']}\n({e.get('improvement_type', '')[:8]})" for e in valid_exps]
-
         bars1 = ax.bar(x - width/2, grid_iters, width,
-                       label='Grid/Heuristic Search',
+                       label='Grid Search',
                        color=self.colors['grid'],
                        edgecolor='black', linewidth=0.5)
         bars2 = ax.bar(x + width/2, llm_iters, width,
@@ -139,20 +149,20 @@ class PaperVisualizer:
 
         # Add value labels on bars
         for bar, val in zip(bars1, grid_iters):
-            ax.annotate(f'{val:.0f}',
+            ax.annotate(f'{val:.1f}',
                        xy=(bar.get_x() + bar.get_width()/2, bar.get_height()),
                        xytext=(0, 3), textcoords='offset points',
                        ha='center', va='bottom', fontsize=10, fontweight='bold')
 
         for bar, val in zip(bars2, llm_iters):
-            ax.annotate(f'{val:.0f}',
+            ax.annotate(f'{val:.1f}',
                        xy=(bar.get_x() + bar.get_width()/2, bar.get_height()),
                        xytext=(0, 3), textcoords='offset points',
                        ha='center', va='bottom', fontsize=10, fontweight='bold')
 
-        ax.set_ylabel('Number of Iterations to Solution')
-        ax.set_xlabel('Experiment (Improvement Type)')
-        ax.set_title('Grid/Heuristic Search vs. LLM Pipeline: Iterations Required')
+        ax.set_ylabel('Average Iterations to Solution')
+        ax.set_xlabel('Evaluation Type')
+        ax.set_title('Grid Search vs. LLM Pipeline: Average Iterations by Type')
         ax.set_xticks(x)
         ax.set_xticklabels(labels)
         ax.legend(loc='upper right')
@@ -175,7 +185,7 @@ class PaperVisualizer:
         """
         Figure 2: Speedup ratio achieved by LLM Pipeline.
 
-        Visualizes how much faster the LLM pipeline is compared to grid search.
+        Visualizes average speedup by evaluation type compared to grid search.
         """
         valid_exps = [e for e in experiments
                       if e.get("speedup_ratio", {}).get("mean") is not None]
@@ -184,19 +194,28 @@ class PaperVisualizer:
             print("No valid experiments for speedup visualization")
             return ""
 
+        # Group by improvement type and compute averages
+        by_type = {}
+        for e in valid_exps:
+            imp_type = e.get("improvement_type", "unknown")
+            if imp_type not in by_type:
+                by_type[imp_type] = []
+            by_type[imp_type].append(e["speedup_ratio"]["mean"])
+
+        types = list(by_type.keys())
+        speedups = [np.mean(by_type[t]) for t in types]
+        labels = [t.replace("_", "\n").title() for t in types]
+
         fig, ax = plt.subplots(figsize=(8, 5))
 
-        x = np.arange(len(valid_exps))
-        speedups = [e["speedup_ratio"]["mean"] for e in valid_exps]
-        labels = [e['experiment_id'] for e in valid_exps]
+        x = np.arange(len(types))
 
         # Color bars by improvement type
         bar_colors = []
-        for e in valid_exps:
-            imp_type = e.get("improvement_type", "")
-            if "calendar" in imp_type:
+        for t in types:
+            if "calendar" in t:
                 bar_colors.append(self.colors['calendar'])
-            elif "role" in imp_type:
+            elif "role" in t:
                 bar_colors.append(self.colors['role'])
             else:
                 bar_colors.append(self.colors['resource'])
@@ -205,7 +224,7 @@ class PaperVisualizer:
 
         # Add value labels
         for bar, val in zip(bars, speedups):
-            ax.annotate(f'{val:.1f}x',
+            ax.annotate(f'{val:.2f}x',
                        xy=(bar.get_x() + bar.get_width()/2, bar.get_height()),
                        xytext=(0, 3), textcoords='offset points',
                        ha='center', va='bottom', fontsize=11, fontweight='bold')
@@ -216,9 +235,9 @@ class PaperVisualizer:
         ax.axhline(y=1.0, color='gray', linestyle='-', linewidth=1, alpha=0.5,
                    label='Baseline (1.0x)')
 
-        ax.set_ylabel('Speedup Ratio (Baseline Iter. / LLM Iter.)')
-        ax.set_xlabel('Experiment')
-        ax.set_title('LLM Pipeline Speedup Compared to Baseline Search')
+        ax.set_ylabel('Average Speedup Ratio (Grid Iter. / LLM Iter.)')
+        ax.set_xlabel('Evaluation Type')
+        ax.set_title('LLM Pipeline Average Speedup by Evaluation Type')
         ax.set_xticks(x)
         ax.set_xticklabels(labels)
         ax.set_ylim(0, max(speedups) + 1.5)
@@ -262,23 +281,34 @@ class PaperVisualizer:
 
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
-        # Left: Grouped bar chart
+        # Left: Grouped bar chart (averages by type)
         ax1 = axes[0]
-        x = np.arange(len(valid_exps))
+
+        # Group by improvement type
+        by_type = {}
+        for e in valid_exps:
+            imp_type = e.get("improvement_type", "unknown")
+            if imp_type not in by_type:
+                by_type[imp_type] = {"grid": [], "llm": []}
+            by_type[imp_type]["grid"].append(e.get("baseline_iterations", {}).get("mean", 0) or 0)
+            by_type[imp_type]["llm"].append(e.get("llm_iterations", {}).get("mean", 0) or 0)
+
+        types = list(by_type.keys())
+        grid_iters = [np.mean(by_type[t]["grid"]) for t in types]
+        llm_iters = [np.mean(by_type[t]["llm"]) for t in types]
+        labels = [t.replace("_", "\n").title() for t in types]
+
+        x = np.arange(len(types))
         width = 0.35
 
-        grid_iters = [e.get("baseline_iterations", {}).get("mean", 0) or 0 for e in valid_exps]
-        llm_iters = [e.get("llm_iterations", {}).get("mean", 0) or 0 for e in valid_exps]
-        labels = [e['experiment_id'] for e in valid_exps]
-
-        ax1.bar(x - width/2, grid_iters, width, label='Baseline', color=self.colors['grid'],
+        ax1.bar(x - width/2, grid_iters, width, label='Grid', color=self.colors['grid'],
                 edgecolor='black', linewidth=0.5)
         ax1.bar(x + width/2, llm_iters, width, label='LLM', color=self.colors['llm'],
                 edgecolor='black', linewidth=0.5)
 
-        ax1.set_ylabel('Iterations to Solution')
-        ax1.set_xlabel('Experiment ID')
-        ax1.set_title('(a) Search Iterations Comparison')
+        ax1.set_ylabel('Avg Iterations to Solution')
+        ax1.set_xlabel('Evaluation Type')
+        ax1.set_title('(a) Average Search Iterations by Type')
         ax1.set_xticks(x)
         ax1.set_xticklabels(labels)
         ax1.legend(loc='upper left')
@@ -525,7 +555,7 @@ class PaperVisualizer:
         save_name: str = "fig6_results_table"
     ) -> str:
         """
-        Figure 6: Table-style visualization of all results.
+        Figure 6: Table-style visualization of results averaged by evaluation type.
 
         Good for paper appendix or quick reference.
         """
@@ -537,27 +567,45 @@ class PaperVisualizer:
             print("No valid experiments for results table")
             return ""
 
-        fig, ax = plt.subplots(figsize=(12, 3 + 0.5 * len(valid_exps)))
-        ax.axis('off')
-
-        headers = ['Exp', 'Log', 'Type', 'Fault', 'Baseline', 'LLM', 'Speedup', 'Success']
-        data = []
-
+        # Group by improvement type and compute averages
+        by_type = {}
         for e in valid_exps:
+            imp_type = e.get("improvement_type", "unknown")
+            if imp_type not in by_type:
+                by_type[imp_type] = {"grid": [], "llm": [], "speedup": [], "success": []}
             baseline = e.get("baseline_iterations", {}).get("mean")
             llm = e.get("llm_iterations", {}).get("mean")
             speedup = e.get("speedup_ratio", {}).get("mean")
             success = e.get("success_rates", {}).get("llm", 0)
+            if baseline:
+                by_type[imp_type]["grid"].append(baseline)
+            if llm:
+                by_type[imp_type]["llm"].append(llm)
+            if speedup:
+                by_type[imp_type]["speedup"].append(speedup)
+            by_type[imp_type]["success"].append(success)
+
+        fig, ax = plt.subplots(figsize=(10, 3 + 0.5 * len(by_type)))
+        ax.axis('off')
+
+        headers = ['Evaluation Type', 'N', 'Avg Grid', 'Avg LLM', 'Avg Speedup', 'Success Rate']
+        data = []
+
+        for imp_type in sorted(by_type.keys()):
+            vals = by_type[imp_type]
+            n = len(vals["speedup"]) if vals["speedup"] else len(vals["success"])
+            avg_grid = np.mean(vals["grid"]) if vals["grid"] else None
+            avg_llm = np.mean(vals["llm"]) if vals["llm"] else None
+            avg_speedup = np.mean(vals["speedup"]) if vals["speedup"] else None
+            success_rate = np.mean([1 if s >= 0.8 else 0 for s in vals["success"]]) if vals["success"] else 0
 
             data.append([
-                e.get("experiment_id", ""),
-                e.get("log_name", "")[:12],
-                e.get("improvement_type", "")[:10],
-                e.get("fault_description", "")[:20],
-                f'{baseline:.0f}' if baseline else 'N/A',
-                f'{llm:.0f}' if llm else 'N/A',
-                f'{speedup:.1f}x' if speedup else 'N/A',
-                'Yes' if success >= 0.8 else 'No'  # Use text instead of Unicode
+                imp_type.replace("_", " ").title(),
+                str(n),
+                f'{avg_grid:.1f}' if avg_grid else 'N/A',
+                f'{avg_llm:.1f}' if avg_llm else 'N/A',
+                f'{avg_speedup:.2f}x' if avg_speedup else 'N/A',
+                f'{success_rate*100:.0f}%'
             ])
 
         table = ax.table(
@@ -578,15 +626,15 @@ class PaperVisualizer:
 
         # Color code speedup
         for i, row in enumerate(data):
-            speedup_str = row[6]
+            speedup_str = row[4]
             if speedup_str != 'N/A':
                 speedup = float(speedup_str.replace('x', ''))
                 if speedup > 1.5:
-                    table[(i + 1, 6)].set_facecolor('#90EE90')  # Light green
+                    table[(i + 1, 4)].set_facecolor('#90EE90')  # Light green
                 elif speedup >= 1.0:
-                    table[(i + 1, 6)].set_facecolor('#FFFACD')  # Light yellow
+                    table[(i + 1, 4)].set_facecolor('#FFFACD')  # Light yellow
 
-        plt.title('Comprehensive Evaluation Results Summary', fontsize=14,
+        plt.title('Evaluation Results by Type (Averaged)', fontsize=14,
                   fontweight='bold', y=0.98)
 
         plt.tight_layout()
@@ -599,43 +647,67 @@ class PaperVisualizer:
         return str(fig_path)
 
     def generate_latex_table(self, experiments: List[Dict]) -> str:
-        """Generate LaTeX table for paper."""
+        """Generate LaTeX table for paper with averages by evaluation type."""
         valid_exps = [e for e in experiments
                       if e.get("baseline_iterations", {}).get("mean") is not None
                       or e.get("llm_iterations", {}).get("mean") is not None]
 
-        lines = [
-            r"\begin{table}[htbp]",
-            r"\centering",
-            r"\caption{Comparative Evaluation: Grid Search vs. LLM Pipeline}",
-            r"\label{tab:results}",
-            r"\begin{tabular}{llcccc}",
-            r"\toprule",
-            r"\textbf{ID} & \textbf{Type} & \textbf{Baseline} & \textbf{LLM} & \textbf{Speedup} & \textbf{Success} \\",
-            r"\midrule",
-        ]
-
+        # Group by improvement type
+        by_type = {}
         for e in valid_exps:
-            exp_id = e.get("experiment_id", "")
-            imp_type = e.get("improvement_type", "")[:10].replace("_", " ").title()
+            imp_type = e.get("improvement_type", "unknown")
+            if imp_type not in by_type:
+                by_type[imp_type] = {"grid": [], "llm": [], "speedup": [], "success": []}
             baseline = e.get("baseline_iterations", {}).get("mean")
             llm = e.get("llm_iterations", {}).get("mean")
             speedup = e.get("speedup_ratio", {}).get("mean")
             success = e.get("success_rates", {}).get("llm", 0)
+            if baseline:
+                by_type[imp_type]["grid"].append(baseline)
+            if llm:
+                by_type[imp_type]["llm"].append(llm)
+            if speedup:
+                by_type[imp_type]["speedup"].append(speedup)
+            by_type[imp_type]["success"].append(success)
 
-            baseline_str = f'{baseline:.0f}' if baseline else 'N/A'
-            llm_str = f'{llm:.0f}' if llm else 'N/A'
-            speedup_str = f'\\textbf{{{speedup:.1f}$\\times$}}' if speedup and speedup > 1.5 else (f'{speedup:.1f}$\\times$' if speedup else 'N/A')
-            success_str = r'\checkmark' if success >= 0.8 else r'$\times$'
+        lines = [
+            r"\begin{table}[htbp]",
+            r"\centering",
+            r"\caption{Comparative Evaluation: Grid Search vs. LLM Pipeline (Averaged by Type)}",
+            r"\label{tab:results}",
+            r"\begin{tabular}{lcccc}",
+            r"\toprule",
+            r"\textbf{Evaluation Type} & \textbf{Avg Grid} & \textbf{Avg LLM} & \textbf{Avg Speedup} & \textbf{Success Rate} \\",
+            r"\midrule",
+        ]
 
-            lines.append(f"{exp_id} & {imp_type} & {baseline_str} & {llm_str} & {speedup_str} & {success_str} \\\\")
+        for imp_type in sorted(by_type.keys()):
+            vals = by_type[imp_type]
+            type_name = imp_type.replace("_", " ").title()
+            avg_grid = np.mean(vals["grid"]) if vals["grid"] else None
+            avg_llm = np.mean(vals["llm"]) if vals["llm"] else None
+            avg_speedup = np.mean(vals["speedup"]) if vals["speedup"] else None
+            success_rate = np.mean([1 if s >= 0.8 else 0 for s in vals["success"]]) if vals["success"] else 0
 
-        # Add summary row
-        avg_speedups = [e["speedup_ratio"]["mean"] for e in valid_exps if e.get("speedup_ratio", {}).get("mean")]
-        if avg_speedups:
-            avg = np.mean(avg_speedups)
+            grid_str = f'{avg_grid:.1f}' if avg_grid else 'N/A'
+            llm_str = f'{avg_llm:.1f}' if avg_llm else 'N/A'
+            speedup_str = f'\\textbf{{{avg_speedup:.2f}$\\times$}}' if avg_speedup and avg_speedup > 1.5 else (f'{avg_speedup:.2f}$\\times$' if avg_speedup else 'N/A')
+            success_str = f'{success_rate*100:.0f}\\%'
+
+            lines.append(f"{type_name} & {grid_str} & {llm_str} & {speedup_str} & {success_str} \\\\")
+
+        # Add overall summary row
+        all_speedups = [e["speedup_ratio"]["mean"] for e in valid_exps if e.get("speedup_ratio", {}).get("mean")]
+        all_grid = [e["baseline_iterations"]["mean"] for e in valid_exps if e.get("baseline_iterations", {}).get("mean")]
+        all_llm = [e["llm_iterations"]["mean"] for e in valid_exps if e.get("llm_iterations", {}).get("mean")]
+        if all_speedups:
+            avg_speedup = np.mean(all_speedups)
+            avg_grid = np.mean(all_grid) if all_grid else None
+            avg_llm = np.mean(all_llm) if all_llm else None
             lines.append(r"\midrule")
-            lines.append(f"\\multicolumn{{3}}{{l}}{{\\textit{{Average}}}} & & \\textbf{{{avg:.2f}$\\times$}} & \\\\")
+            grid_str = f'{avg_grid:.1f}' if avg_grid else ''
+            llm_str = f'{avg_llm:.1f}' if avg_llm else ''
+            lines.append(f"\\textit{{Overall}} & {grid_str} & {llm_str} & \\textbf{{{avg_speedup:.2f}$\\times$}} & \\\\")
 
         lines.extend([
             r"\bottomrule",

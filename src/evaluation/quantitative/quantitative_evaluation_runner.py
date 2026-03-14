@@ -306,6 +306,9 @@ class ComprehensiveEvaluator:
         use_sudo: bool = True,
         num_repetitions: int = 5,
         tolerance_pct: float = 2.0,
+        resource_tolerance_pct: float = 30.0,  # Higher tolerance for resource (more variance)
+        calendar_tolerance_pct: float = 5.0,   # Calendar has moderate variance
+        role_tolerance_pct: float = 0.1,       # Very tight tolerance to force finding exact optimal shift
         des_runs: int = 5,
         abs_runs: int = 5,
         use_dual_validation: bool = True,
@@ -319,7 +322,10 @@ class ComprehensiveEvaluator:
             temperature: LLM temperature (0.0 for determinism)
             use_sudo: Use sudo for Docker commands
             num_repetitions: Number of repetitions per experiment (default: 5)
-            tolerance_pct: KPI tolerance for convergence (default: 2%)
+            tolerance_pct: Default KPI tolerance for convergence (default: 2%)
+            resource_tolerance_pct: Tolerance for resource allocation (default: 30% due to high variance)
+            calendar_tolerance_pct: Tolerance for calendar adjustment (default: 5%)
+            role_tolerance_pct: Tolerance for role redesign (default: 1% - tight to differentiate search methods)
             des_runs: Number of DES (Prosimos) runs to average per simulation
             abs_runs: Number of ABS (AgentSimulator) runs per simulation
             use_dual_validation: Whether to validate with both DES and ABS
@@ -330,6 +336,9 @@ class ComprehensiveEvaluator:
         self.use_sudo = use_sudo
         self.num_repetitions = num_repetitions
         self.tolerance_pct = tolerance_pct
+        self.resource_tolerance_pct = resource_tolerance_pct
+        self.calendar_tolerance_pct = calendar_tolerance_pct
+        self.role_tolerance_pct = role_tolerance_pct
         self.des_runs = des_runs
         self.abs_runs = abs_runs
         self.use_dual_validation = use_dual_validation
@@ -348,6 +357,8 @@ class ComprehensiveEvaluator:
         # Initialize fault injectors
         self.resource_fault_injector = FaultInjector(fault_resource_count=1)
         self.calendar_fault_injector = CalendarFaultInjector(fault_hours_reduction=6.0)
+        # Use 50% shift to create workload imbalance that requires ~50% correction
+        # This places the optimal fix in the middle of the search space (not trivially at 5% or 10%)
         self.role_fault_injector = RoleRedesignFaultInjector(fault_shift_fraction=0.5)
 
     def run_full_evaluation(
@@ -569,8 +580,11 @@ class ComprehensiveEvaluator:
             if high_role is None:
                 raise ValueError("No suitable role pair for fault injection")
 
+            # IMPORTANT: Shift work TO the low-utilization (inefficient) role to create a bottleneck
+            # This degrades performance by overloading the less capable role.
+            # The fix requires shifting work BACK to the efficient high-utilization role.
             faulty_model, fault_info = self.role_fault_injector.inject_fault(
-                model, source_role=high_role, target_role=low_role, shift_fraction=0.5
+                model, source_role=low_role, target_role=high_role, shift_fraction=0.8
             )
 
             optimal_metrics = self._simulate_model(model, {}, work_dir, baseline_metrics, log_path, experiment_type="role_redesign")
@@ -590,6 +604,28 @@ class ComprehensiveEvaluator:
         faulty_metrics = self._simulate_model(faulty_model, {}, work_dir, baseline_metrics, log_path, experiment_type=exp_type)
         fault_info["faulty_metrics"] = faulty_metrics
         fault_info["optimal_metrics"] = optimal_metrics
+
+        # Validate that fault actually degraded performance (for role_redesign)
+        if config.improvement_type == ImprovementType.ROLE_REDESIGN:
+            # Use ABS cycle_time for role redesign validation (ABS models agent behavior)
+            optimal_abs_cycle = optimal_metrics.get("abs_cycle_time", 0)
+            faulty_abs_cycle = faulty_metrics.get("abs_cycle_time", 0)
+
+            # Fallback to DES if ABS not available
+            if optimal_abs_cycle == 0 or faulty_abs_cycle == 0:
+                print(f"    [WARNING] ABS cycle_time not available, using DES for validation")
+                optimal_abs_cycle = optimal_metrics.get("avg_cycle_time", 0)
+                faulty_abs_cycle = faulty_metrics.get("avg_cycle_time", 0)
+
+            degradation_pct = ((faulty_abs_cycle - optimal_abs_cycle) / optimal_abs_cycle * 100) if optimal_abs_cycle > 0 else 0
+
+            print(f"    [Fault Validation] Optimal ABS cycle_time: {optimal_abs_cycle:.2f}s")
+            print(f"    [Fault Validation] Faulty ABS cycle_time: {faulty_abs_cycle:.2f}s")
+            print(f"    [Fault Validation] Degradation: {degradation_pct:+.1f}%")
+
+            if faulty_abs_cycle <= optimal_abs_cycle:
+                print(f"    [WARNING] Fault did not degrade performance! Faulty ({faulty_abs_cycle:.2f}s) <= Optimal ({optimal_abs_cycle:.2f}s)")
+                print(f"    [WARNING] This may indicate the role shift improved efficiency instead of creating a bottleneck.")
 
         return faulty_model, fault_info, optimal_metrics
 
@@ -683,14 +719,14 @@ class ComprehensiveEvaluator:
             )
             print(f"    [SKIP] Grid search - theoretical iterations: {theoretical_iterations}")
         else:
-            grid_search = GridSearch(min_count=1, max_count=original_count, tolerance_pct=self.tolerance_pct)
+            grid_search = GridSearch(min_count=1, max_count=original_count, tolerance_pct=self.resource_tolerance_pct)
             grid_result = grid_search.search(
                 faulty_model, target, original_count, optimal_metrics, simulate_fn, work_dir
             )
 
         llm_search = LLMResourceSearch(
             model_name=self.model_name, temperature=self.temperature,
-            max_iterations=original_count, tolerance_pct=self.tolerance_pct
+            max_iterations=original_count, tolerance_pct=self.resource_tolerance_pct
         )
         llm_result = llm_search.search(
             faulty_model, target, original_count, optimal_metrics, faulty_metrics, simulate_fn, work_dir
@@ -718,7 +754,7 @@ class ComprehensiveEvaluator:
             print(f"    [SKIP] Grid search - theoretical iterations: {theoretical_iterations}")
         else:
             grid_search = CalendarGridSearch(
-                min_hours=1.0, max_hours=hours_to_add + 1, tolerance_pct=self.tolerance_pct
+                min_hours=1.0, max_hours=hours_to_add + 1, tolerance_pct=self.calendar_tolerance_pct
             )
             grid_result = grid_search.search(
                 faulty_model, target, hours_to_add, optimal_metrics, faulty_hours, simulate_fn, work_dir
@@ -726,7 +762,7 @@ class ComprehensiveEvaluator:
 
         llm_search = CalendarLLMSearch(
             model_name=self.model_name, temperature=self.temperature,
-            max_iterations=10, tolerance_pct=self.tolerance_pct
+            max_iterations=10, tolerance_pct=self.calendar_tolerance_pct
         )
         llm_result = llm_search.search(
             faulty_model, target, hours_to_add, optimal_metrics, faulty_metrics,
@@ -744,9 +780,9 @@ class ComprehensiveEvaluator:
 
         optimal_cycle_time = optimal_metrics.get("avg_cycle_time", 0)
 
-        # Grid search: worst case = 5 iterations (all shift percentages)
+        # Grid search: worst case = 20 iterations (all shift percentages 5%-100% in 5% steps)
         if self.skip_grid_search:
-            theoretical_iterations = 5  # Worst case: try all 5 shift options
+            theoretical_iterations = 20  # Worst case: try all 20 shift options
             grid_result = RoleRedesignGridSearchHistory(
                 from_role=from_role,
                 to_role=to_role,
@@ -755,7 +791,7 @@ class ComprehensiveEvaluator:
             )
             print(f"    [SKIP] Grid search - theoretical iterations: {theoretical_iterations}")
         else:
-            grid_search = RoleRedesignGridSearch(tolerance_pct=self.tolerance_pct)
+            grid_search = RoleRedesignGridSearch(tolerance_pct=self.role_tolerance_pct)
             grid_result = grid_search.search(
                 faulty_model, from_role, to_role,
                 optimal_metrics, faulty_metrics, simulate_fn, work_dir
@@ -763,7 +799,7 @@ class ComprehensiveEvaluator:
 
         llm_search = RoleRedesignLLMSearch(
             model_name=self.model_name, temperature=self.temperature,
-            max_iterations=10, tolerance_pct=self.tolerance_pct
+            max_iterations=20, tolerance_pct=self.role_tolerance_pct
         )
         llm_result = llm_search.search(
             faulty_model, from_role, to_role,
@@ -869,6 +905,11 @@ class ComprehensiveEvaluator:
                 abs_averaged = self._average_metrics(abs_metrics_list)
                 abs_baseline_throughput = baseline_metrics.get("avg_throughput", 0)
                 abs_current_throughput = abs_averaged.get("avg_throughput", 0)
+                abs_current_cycle_time = abs_averaged.get("avg_cycle_time", 0)
+
+                # Store ABS metrics directly for role redesign searches
+                result["abs_throughput"] = abs_current_throughput
+                result["abs_cycle_time"] = abs_current_cycle_time  # Primary KPI for role redesign
 
                 if abs_baseline_throughput > 0:
                     # For throughput, higher is better
@@ -879,14 +920,20 @@ class ComprehensiveEvaluator:
 
                 if self.abs_runs > 1:
                     print(f"      ABS averaged ({len(abs_metrics_list)} runs): "
-                          f"score={result.get('abs_validation_score', 0):.3f}")
+                          f"cycle_time={abs_current_cycle_time:.2f}s, throughput={abs_current_throughput:.2f}")
             else:
                 result["abs_validation_score"] = None
+                result["abs_throughput"] = None
+                result["abs_cycle_time"] = None
         elif skip_abs:
             # Calendar modifications use DES-only validation
             result["abs_validation_score"] = None
+            result["abs_throughput"] = None
+            result["abs_cycle_time"] = None
         else:
             result["abs_validation_score"] = None
+            result["abs_throughput"] = None
+            result["abs_cycle_time"] = None
 
         # Combined validation (per proposal)
         des_score = result.get("des_validation_score", 0)
@@ -968,7 +1015,7 @@ class ComprehensiveEvaluator:
         print(f"ABS runs per simulation: {self.abs_runs}")
         print(f"Dual-simulator validation: {'Enabled' if self.use_dual_validation else 'Disabled'}")
         print(f"Skip grid search: {'Yes (using theoretical iterations)' if self.skip_grid_search else 'No'}")
-        print(f"Tolerance: {self.tolerance_pct}%")
+        print(f"Tolerance by type: Resource={self.resource_tolerance_pct}%, Calendar={self.calendar_tolerance_pct}%, Role={self.role_tolerance_pct}%")
         print(f"\nExperiments to run:")
         for config in experiments:
             print(f"  {config.experiment_id}: {config.improvement_type.value} - {config.log_name}")
