@@ -4,9 +4,8 @@ Role Redesign LLM-Guided Search for Quantitative Evaluation.
 This module uses an LLM to propose role redesign changes (shift_responsibility)
 and iteratively refines based on simulation feedback.
 
-Solution Detection: Requires a MINIMUM IMPROVEMENT over the faulty state.
-Uses ABS (Agent-Based Simulation) cycle_time as the primary KPI for role redesign,
-since ABS explicitly models agent handover and routing behavior.
+Solution Detection: Check if cycle_time is within TOLERANCE of optimal (above or below).
+Uses ABS (Agent-Based Simulation) cycle_time as the primary KPI for role redesign.
 
 Fair Benchmarking: The simulate_fn provided by evaluation_runner uses a
 simulation cache with fixed random seeds. This ensures that if both LLM
@@ -26,10 +25,8 @@ from llm import HypothesisGenerator
 SHIFT_FRACTION_OPTIONS = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50,
                           0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00]
 
-# Minimum required improvement over faulty state to count as "solution found"
-# This accounts for simulation variance - small improvements could be noise
-# Set high enough that multiple iterations are needed, giving LLM time to learn patterns
-MIN_IMPROVEMENT_PCT = 7.0  # Require at least 7% improvement over faulty ABS cycle time
+# Tolerance for considering cycle_time as "matching" optimal (above or below)
+TOLERANCE_PCT = 5.0  # Within 5% of optimal cycle time (symmetric)
 
 
 @dataclass
@@ -52,7 +49,7 @@ class RoleRedesignLLMHistory:
     """Complete history of role redesign LLM-guided search experiment."""
     from_role: str  # Role to shift work FROM (overloaded)
     to_role: str    # Role to shift work TO (underloaded)
-    target_cycle_time: float  # Target ABS cycle time to improve upon
+    target_cycle_time: float  # Target ABS cycle time (optimal)
     model_name: str
     results: List[RoleRedesignLLMResult] = field(default_factory=list)
     solution_found_at: Optional[int] = None
@@ -89,9 +86,8 @@ class RoleRedesignLLMSearch:
     LLM-guided search for role redesign optimization.
 
     Uses an LLM to intelligently propose shift percentages based on
-    simulation feedback, aiming to find a configuration that achieves
-    minimum improvement over faulty state faster than grid search.
-    Uses ABS cycle_time as the primary KPI.
+    simulation feedback, aiming to find a configuration where ABS cycle_time
+    is within tolerance of optimal faster than grid search.
     """
 
     def __init__(
@@ -100,8 +96,7 @@ class RoleRedesignLLMSearch:
         temperature: float = 0.0,
         max_tokens: int = 2048,
         max_iterations: int = 10,
-        tolerance_pct: float = 1.0,
-        min_improvement_pct: float = None
+        tolerance_pct: float = None
     ):
         """
         Initialize LLM-guided role redesign search.
@@ -111,15 +106,13 @@ class RoleRedesignLLMSearch:
             temperature: Sampling temperature
             max_tokens: Max tokens for response
             max_iterations: Maximum search iterations (default: 10, capped by available options)
-            tolerance_pct: DEPRECATED - kept for API compatibility
-            min_improvement_pct: Minimum % improvement over faulty to count as solution
+            tolerance_pct: Tolerance % for considering cycle_time as "matching" optimal (default: 5%)
         """
         self.model_name = model_name
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.max_iterations = min(max_iterations, len(SHIFT_FRACTION_OPTIONS))
-        self.tolerance_pct = tolerance_pct  # Kept for compatibility
-        self.min_improvement_pct = min_improvement_pct if min_improvement_pct is not None else MIN_IMPROVEMENT_PCT
+        self.tolerance_pct = tolerance_pct if tolerance_pct is not None else TOLERANCE_PCT
 
         self._llm = HypothesisGenerator(
             model_name=model_name,
@@ -144,8 +137,8 @@ class RoleRedesignLLMSearch:
             faulty_model: Model with injected fault (workload imbalance)
             from_role: Role to shift work FROM (overloaded)
             to_role: Role to shift work TO (underloaded)
-            optimal_metrics: Metrics from optimal model (for reference only)
-            faulty_metrics: Current metrics from faulty model - TARGET TO IMPROVE
+            optimal_metrics: Metrics from optimal model - TARGET TO MATCH
+            faulty_metrics: Current metrics from faulty model
             simulate_fn: Function(model, modifications) -> metrics
             work_dir: Working directory for simulation
 
@@ -153,34 +146,33 @@ class RoleRedesignLLMSearch:
             RoleRedesignLLMHistory with all iterations and solution info
         """
         # Use ABS cycle_time as the primary KPI for role redesign
-        # ABS explicitly models agent handover and routing behavior
-        optimal_abs_cycle = optimal_metrics.get("abs_cycle_time", 0)
-        faulty_abs_cycle = faulty_metrics.get("abs_cycle_time", 0)
+        optimal_cycle = optimal_metrics.get("abs_cycle_time", 0)
+        faulty_cycle = faulty_metrics.get("abs_cycle_time", 0)
 
         # Fallback to DES if ABS not available
-        if faulty_abs_cycle == 0:
+        if optimal_cycle == 0:
             print("  [WARNING] ABS cycle_time not available, falling back to DES")
-            faulty_abs_cycle = faulty_metrics.get("avg_cycle_time", 0)
-            optimal_abs_cycle = optimal_metrics.get("avg_cycle_time", 0)
+            optimal_cycle = optimal_metrics.get("avg_cycle_time", 0)
+            faulty_cycle = faulty_metrics.get("avg_cycle_time", 0)
 
         history = RoleRedesignLLMHistory(
             from_role=from_role,
             to_role=to_role,
-            target_cycle_time=faulty_abs_cycle,  # Target is to improve over faulty
+            target_cycle_time=optimal_cycle,
             model_name=self.model_name
         )
 
         print(f"\n[Role Redesign LLM Search] Starting guided search")
         print(f"  Model: {self.model_name}")
         print(f"  Role pair: {from_role} → {to_role}")
-        print(f"  Faulty ABS cycle_time: {faulty_abs_cycle:.2f}s - MUST IMPROVE BY ≥{self.min_improvement_pct}%")
-        print(f"  Optimal ABS cycle_time: {optimal_abs_cycle:.2f}s (for reference)")
+        print(f"  Faulty ABS cycle_time: {faulty_cycle:.2f}s")
+        print(f"  Optimal ABS cycle_time: {optimal_cycle:.2f}s (target, ±{self.tolerance_pct}%)")
         print(f"  Shift options: {[f'{x:.0%}' for x in SHIFT_FRACTION_OPTIONS]}")
 
         current_metrics = faulty_metrics
         previous_attempts = []
         tried_fractions = []
-        best_improvement = 0.0
+        best_diff_pct = float("inf")
         best_shift = None
 
         for iteration in range(1, self.max_iterations + 1):
@@ -193,8 +185,8 @@ class RoleRedesignLLMSearch:
                 current_metrics=current_metrics,
                 previous_attempts=previous_attempts,
                 tried_fractions=tried_fractions,
-                faulty_abs_cycle=faulty_abs_cycle,
-                optimal_abs_cycle=optimal_abs_cycle
+                faulty_cycle=faulty_cycle,
+                optimal_cycle=optimal_cycle
             )
 
             shift_fraction = proposal.get("shift_fraction", 0.2)
@@ -223,15 +215,15 @@ class RoleRedesignLLMSearch:
             waiting_time = metrics.get("avg_waiting_time", float("inf"))
             throughput = metrics.get("abs_throughput", metrics.get("avg_throughput", 0))
 
-            # Calculate improvement over faulty (lower cycle_time = better)
-            improvement_pct = ((faulty_abs_cycle - cycle_time) / faulty_abs_cycle * 100) if faulty_abs_cycle > 0 else 0
+            # Calculate difference from optimal (symmetric - above or below)
+            diff_pct = abs(cycle_time - optimal_cycle) / optimal_cycle * 100 if optimal_cycle > 0 else float("inf")
 
-            # Solution found when improvement exceeds minimum threshold
-            is_solution = improvement_pct >= self.min_improvement_pct
+            # Solution found when within tolerance of optimal (above OR below)
+            is_solution = diff_pct <= self.tolerance_pct
 
-            # Track best result
-            if improvement_pct > best_improvement:
-                best_improvement = improvement_pct
+            # Track best result (closest to optimal)
+            if diff_pct < best_diff_pct:
+                best_diff_pct = diff_pct
                 best_shift = shift_fraction
 
             result = RoleRedesignLLMResult(
@@ -253,16 +245,18 @@ class RoleRedesignLLMSearch:
                 "shift_fraction": shift_fraction,
                 "cycle_time": cycle_time,
                 "waiting_time": waiting_time,
-                "improvement_pct": improvement_pct
+                "diff_pct": diff_pct
             })
             tried_fractions.append(shift_fraction)
 
+            # Show difference from optimal
+            direction = "+" if cycle_time > optimal_cycle else "-"
             status = "FOUND!" if is_solution else ""
-            print(f"ABS cycle_time={cycle_time:.2f}s ({improvement_pct:+.1f}% vs faulty) {status}")
+            print(f"ABS cycle_time={cycle_time:.2f}s ({direction}{diff_pct:.1f}% vs optimal) {status}")
 
             if is_solution and history.solution_found_at is None:
                 history.solution_found_at = iteration
-                print(f"  [OK] Solution found at iteration {iteration} ({shift_fraction:.0%} shift, {improvement_pct:.1f}% improvement)")
+                print(f"  [OK] Solution found at iteration {iteration} ({shift_fraction:.0%} shift, within {diff_pct:.1f}% of optimal)")
                 break
 
             current_metrics = metrics
@@ -270,9 +264,9 @@ class RoleRedesignLLMSearch:
         if history.solution_found_at is None:
             print(f"  [X] No solution found in {self.max_iterations} iterations")
             if best_shift is not None:
-                print(f"      Best improvement: {best_improvement:.1f}% at {best_shift:.0%} shift (required: ≥{self.min_improvement_pct}%)")
+                print(f"      Best: {best_diff_pct:.1f}% from optimal at {best_shift:.0%} shift (required: ≤{self.tolerance_pct}%)")
             else:
-                print(f"      No positive improvements found (required: ≥{self.min_improvement_pct}%)")
+                print(f"      No results (required: ≤{self.tolerance_pct}% from optimal)")
 
         return history
 
@@ -283,8 +277,8 @@ class RoleRedesignLLMSearch:
         current_metrics: Dict,
         previous_attempts: List[Dict],
         tried_fractions: List[float],
-        faulty_abs_cycle: float,
-        optimal_abs_cycle: float
+        faulty_cycle: float,
+        optimal_cycle: float
     ) -> Dict:
         """Generate shift fraction proposal from LLM."""
 
@@ -300,19 +294,19 @@ TASK: Find the optimal shift fraction to rebalance workload between roles.
 CONTEXT:
 - Work should be shifted FROM '{from_role}' (overloaded) TO '{to_role}' (underloaded)
 - The role pair is already determined - you only need to find the right PERCENTAGE to shift
-- Faulty ABS cycle_time: {faulty_abs_cycle:.2f}s (BAD - too high due to imbalance)
-- You need to achieve ≥{self.min_improvement_pct}% IMPROVEMENT over faulty cycle_time
-- Target cycle_time: ≤{faulty_abs_cycle * (1 - self.min_improvement_pct/100):.2f}s (to achieve {self.min_improvement_pct}% improvement)
+- Optimal ABS cycle_time: {optimal_cycle:.2f}s (TARGET)
+- Faulty ABS cycle_time: {faulty_cycle:.2f}s (current bad state)
+- Goal: Get cycle_time WITHIN ±{self.tolerance_pct}% of optimal ({optimal_cycle * (1 - self.tolerance_pct/100):.2f}s to {optimal_cycle * (1 + self.tolerance_pct/100):.2f}s)
 
 VALID SHIFT OPTIONS: {[f'{x:.0%}' for x in SHIFT_FRACTION_OPTIONS]}
 ALREADY TRIED: {[f'{x:.0%}' for x in tried_fractions] if tried_fractions else 'none yet'}
 AVAILABLE OPTIONS: {[f'{x:.0%}' for x in available_fractions] if available_fractions else 'NONE LEFT'}
 
 ANALYSIS STRATEGY:
-- Look at the pattern: shifting work redistributes load, which should reduce cycle_time
-- If a lower shift didn't improve enough, try a HIGHER shift
-- If a higher shift made things worse (over-correction), try a MODERATE shift
-- Look for the shift % that gives the BEST improvement over faulty
+- Look at the pattern: how does cycle_time change with different shift percentages?
+- Find the shift % that brings cycle_time closest to optimal ({optimal_cycle:.2f}s)
+- If lower shifts are too far from optimal, try higher shifts
+- If higher shifts overshoot, try moderate shifts
 
 Return ONLY a JSON object:
 {{
@@ -325,26 +319,26 @@ Return ONLY a JSON object:
         if current_cycle_time == 0:
             current_cycle_time = current_metrics.get("avg_cycle_time", 0)
 
-        current_improvement = ((faulty_abs_cycle - current_cycle_time) / faulty_abs_cycle * 100) if faulty_abs_cycle > 0 else 0
+        current_diff = abs(current_cycle_time - optimal_cycle) / optimal_cycle * 100 if optimal_cycle > 0 else 0
 
         user_prompt = f"""CURRENT METRICS:
 - ABS Cycle time: {current_cycle_time:.2f}s
-- Current improvement: {current_improvement:+.1f}% vs faulty
-- Required improvement: ≥{self.min_improvement_pct}%
+- Distance from optimal: {current_diff:.1f}%
+- Required: ≤{self.tolerance_pct}% from optimal
 
 """
         if sorted_attempts:
             user_prompt += "PREVIOUS ATTEMPTS (sorted by shift %):\n"
-            user_prompt += f"{'Shift %':<10} {'Cycle Time':<15} {'Improvement':<15}\n"
-            user_prompt += "-" * 40 + "\n"
+            user_prompt += f"{'Shift %':<10} {'Cycle Time':<15} {'Diff from Optimal':<20}\n"
+            user_prompt += "-" * 45 + "\n"
             for attempt in sorted_attempts:
-                imp = attempt.get("improvement_pct", 0)
-                user_prompt += f"{attempt['shift_fraction']:.0%}{'':<6} {attempt['cycle_time']:.2f}s{'':<8} {imp:+.1f}%\n"
+                diff = attempt.get("diff_pct", 0)
+                user_prompt += f"{attempt['shift_fraction']:.0%}{'':<6} {attempt['cycle_time']:.2f}s{'':<8} {diff:.1f}%\n"
             user_prompt += "\n"
 
-            # Highlight best result (highest improvement)
-            best = max(sorted_attempts, key=lambda x: x.get("improvement_pct", 0))
-            user_prompt += f"BEST SO FAR: {best['shift_fraction']:.0%} with {best.get('improvement_pct', 0):+.1f}% improvement\n\n"
+            # Highlight best result (closest to optimal)
+            best = min(sorted_attempts, key=lambda x: x.get("diff_pct", float("inf")))
+            user_prompt += f"BEST SO FAR: {best['shift_fraction']:.0%} with {best.get('diff_pct', 0):.1f}% from optimal\n\n"
 
         user_prompt += f"""Based on the pattern, propose the next shift fraction to try.
 AVAILABLE OPTIONS: {[f'{x:.0%}' for x in available_fractions]}

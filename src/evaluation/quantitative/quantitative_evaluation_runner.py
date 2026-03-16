@@ -308,7 +308,7 @@ class ComprehensiveEvaluator:
         tolerance_pct: float = 2.0,
         resource_tolerance_pct: float = 30.0,  # Higher tolerance for resource (more variance)
         calendar_tolerance_pct: float = 5.0,   # Calendar has moderate variance
-        role_tolerance_pct: float = 0.1,       # Very tight tolerance to force finding exact optimal shift
+        role_tolerance_pct: float = 5.0,        # Within 5% of optimal (symmetric, above or below)
         des_runs: int = 5,
         abs_runs: int = 5,
         use_dual_validation: bool = True,
@@ -325,7 +325,7 @@ class ComprehensiveEvaluator:
             tolerance_pct: Default KPI tolerance for convergence (default: 2%)
             resource_tolerance_pct: Tolerance for resource allocation (default: 30% due to high variance)
             calendar_tolerance_pct: Tolerance for calendar adjustment (default: 5%)
-            role_tolerance_pct: Tolerance for role redesign (default: 1% - tight to differentiate search methods)
+            role_tolerance_pct: Tolerance for role redesign (default: 5% - symmetric above/below optimal)
             des_runs: Number of DES (Prosimos) runs to average per simulation
             abs_runs: Number of ABS (AgentSimulator) runs per simulation
             use_dual_validation: Whether to validate with both DES and ABS
@@ -458,10 +458,15 @@ class ComprehensiveEvaluator:
         model, simod_metrics = self.discoverer.discover(log_path, work_dir)
         print(f"    [OK] SIMOD metrics cycle_time: {simod_metrics.get('avg_cycle_time', 0):.2f}s")
 
-        # Step 1.5: Simulate baseline with Prosimos to get simulator-aligned metrics
-        # (same as main pipeline - use simulated baseline, not SIMOD-extracted metrics)
-        print(f"\n  Simulating baseline model with Prosimos...")
-        baseline_metrics = self._simulate_baseline(model, work_dir, simod_metrics, log_path)
+        # Step 1.5: Simulate baseline with appropriate simulator
+        # For role_redesign: use ABS (AgentSimulator) as primary
+        # For resource/calendar: use DES (Prosimos) as primary
+        if config.improvement_type == ImprovementType.ROLE_REDESIGN:
+            print(f"\n  Simulating baseline model with AgentSimulator (ABS)...")
+            baseline_metrics = self._simulate_baseline_abs(log_path, work_dir, simod_metrics)
+        else:
+            print(f"\n  Simulating baseline model with Prosimos (DES)...")
+            baseline_metrics = self._simulate_baseline(model, work_dir, simod_metrics, log_path)
         print(f"    [OK] Simulated baseline cycle_time: {baseline_metrics.get('avg_cycle_time', 0):.2f}s")
 
         # Step 2: Inject fault based on improvement type
@@ -532,6 +537,55 @@ class ComprehensiveEvaluator:
 
         # Fallback to SIMOD metrics if simulation fails
         print("      [!] Baseline simulation failed, using SIMOD metrics as fallback")
+        return simod_metrics
+
+    def _simulate_baseline_abs(
+        self,
+        log_path: str,
+        work_dir: str,
+        simod_metrics: Dict
+    ) -> Dict:
+        """
+        Simulate the baseline model with AgentSimulator (ABS) for role redesign.
+
+        For role redesign evaluation, ABS is the primary simulator because it better
+        captures role-based behavior and workload distribution.
+        """
+        baseline_dir = os.path.join(work_dir, "baseline_simulation_abs")
+        os.makedirs(baseline_dir, exist_ok=True)
+
+        # No modifications - simulate the original model
+        empty_modifications = {"parameter_type": None, "specific_changes": []}
+
+        if not self.agent_simulator.available:
+            print("      [!] AgentSimulator not available, falling back to SIMOD metrics")
+            return simod_metrics
+
+        # Run ABS simulation(s) and average
+        abs_metrics_list = []
+        for run_idx in range(self.abs_runs):
+            try:
+                abs_result = self.agent_simulator.simulate(
+                    log_path=log_path,
+                    modifications=empty_modifications,
+                    output_dir=os.path.join(baseline_dir, f"abs_run_{run_idx}"),
+                    num_simulations=1
+                )
+                if abs_result and abs_result[0]:
+                    abs_metrics_list.append(abs_result[0])
+            except Exception as e:
+                print(f"      [!] Baseline ABS run {run_idx + 1} failed: {e}")
+
+        if abs_metrics_list:
+            baseline_metrics = self._average_metrics(abs_metrics_list)
+            baseline_metrics["simulation_source"] = "AgentSimulator (ABS)"
+            # Store ABS-specific metrics
+            baseline_metrics["abs_cycle_time"] = baseline_metrics.get("avg_cycle_time", 0)
+            baseline_metrics["abs_throughput"] = baseline_metrics.get("avg_throughput", 0)
+            return baseline_metrics
+
+        # Fallback to SIMOD metrics if simulation fails
+        print("      [!] Baseline ABS simulation failed, using SIMOD metrics as fallback")
         return simod_metrics
 
     def _inject_fault(
@@ -607,24 +661,18 @@ class ComprehensiveEvaluator:
 
         # Validate that fault actually degraded performance (for role_redesign)
         if config.improvement_type == ImprovementType.ROLE_REDESIGN:
-            # Use ABS cycle_time for role redesign validation (ABS models agent behavior)
-            optimal_abs_cycle = optimal_metrics.get("abs_cycle_time", 0)
-            faulty_abs_cycle = faulty_metrics.get("abs_cycle_time", 0)
+            # Use DES cycle_time for role redesign validation
+            optimal_cycle = optimal_metrics.get("avg_cycle_time", 0)
+            faulty_cycle = faulty_metrics.get("avg_cycle_time", 0)
 
-            # Fallback to DES if ABS not available
-            if optimal_abs_cycle == 0 or faulty_abs_cycle == 0:
-                print(f"    [WARNING] ABS cycle_time not available, using DES for validation")
-                optimal_abs_cycle = optimal_metrics.get("avg_cycle_time", 0)
-                faulty_abs_cycle = faulty_metrics.get("avg_cycle_time", 0)
+            degradation_pct = ((faulty_cycle - optimal_cycle) / optimal_cycle * 100) if optimal_cycle > 0 else 0
 
-            degradation_pct = ((faulty_abs_cycle - optimal_abs_cycle) / optimal_abs_cycle * 100) if optimal_abs_cycle > 0 else 0
-
-            print(f"    [Fault Validation] Optimal ABS cycle_time: {optimal_abs_cycle:.2f}s")
-            print(f"    [Fault Validation] Faulty ABS cycle_time: {faulty_abs_cycle:.2f}s")
+            print(f"    [Fault Validation] Optimal DES cycle_time: {optimal_cycle:.2f}s")
+            print(f"    [Fault Validation] Faulty DES cycle_time: {faulty_cycle:.2f}s")
             print(f"    [Fault Validation] Degradation: {degradation_pct:+.1f}%")
 
-            if faulty_abs_cycle <= optimal_abs_cycle:
-                print(f"    [WARNING] Fault did not degrade performance! Faulty ({faulty_abs_cycle:.2f}s) <= Optimal ({optimal_abs_cycle:.2f}s)")
+            if faulty_cycle <= optimal_cycle:
+                print(f"    [WARNING] Fault did not degrade performance! Faulty ({faulty_cycle:.2f}s) <= Optimal ({optimal_cycle:.2f}s)")
                 print(f"    [WARNING] This may indicate the role shift improved efficiency instead of creating a bottleneck.")
 
         return faulty_model, fault_info, optimal_metrics
@@ -780,16 +828,22 @@ class ComprehensiveEvaluator:
 
         optimal_cycle_time = optimal_metrics.get("avg_cycle_time", 0)
 
-        # Grid search: worst case = 20 iterations (all shift percentages 5%-100% in 5% steps)
+        # Grid search iterations = position of expected fix in 5% step grid
+        # Fault shift fraction tells us approximately where the fix should be
         if self.skip_grid_search:
-            theoretical_iterations = 20  # Worst case: try all 20 shift options
+            # Expected fix is approximately the same as the fault shift fraction
+            # Grid options: 5%, 10%, 15%... so position = shift_fraction / 0.05
+            fault_shift = fault_info.get("shift_fraction", 0.5)
+            theoretical_iterations = int(fault_shift / 0.05)  # e.g., 0.8 / 0.05 = 16
+            theoretical_iterations = max(1, min(theoretical_iterations, 20))  # Clamp to 1-20
+
             grid_result = RoleRedesignGridSearchHistory(
                 from_role=from_role,
                 to_role=to_role,
                 target_cycle_time=optimal_cycle_time,
                 solution_found_at=theoretical_iterations
             )
-            print(f"    [SKIP] Grid search - theoretical iterations: {theoretical_iterations}")
+            print(f"    [SKIP] Grid search - theoretical iterations: {theoretical_iterations} (based on {fault_shift:.0%} fault)")
         else:
             grid_search = RoleRedesignGridSearch(tolerance_pct=self.role_tolerance_pct)
             grid_result = grid_search.search(
@@ -799,7 +853,7 @@ class ComprehensiveEvaluator:
 
         llm_search = RoleRedesignLLMSearch(
             model_name=self.model_name, temperature=self.temperature,
-            max_iterations=20, tolerance_pct=self.role_tolerance_pct
+            max_iterations=10, tolerance_pct=self.role_tolerance_pct
         )
         llm_result = llm_search.search(
             faulty_model, from_role, to_role,

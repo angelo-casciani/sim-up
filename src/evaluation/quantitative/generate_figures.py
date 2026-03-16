@@ -354,12 +354,9 @@ class PaperVisualizer:
                         xytext=(0, 3), textcoords='offset points',
                         ha='center', va='bottom', fontsize=11, fontweight='bold')
 
-        ax2.axhline(y=1.5, color='red', linestyle='--', linewidth=1.5, alpha=0.7,
-                    label='Target (1.5x)')
         ax2.set_ylabel('Average Speedup Ratio')
         ax2.set_xlabel('Improvement Type')
         ax2.set_title('(b) Average Speedup by Type')
-        ax2.legend(loc='upper right')
         ax2.set_ylim(0, max(avg_speedups) + 1.5)
 
         plt.tight_layout()
@@ -762,10 +759,6 @@ class PaperVisualizer:
             figures.append(fig)
 
         fig = self.plot_combined_summary(experiments)
-        if fig:
-            figures.append(fig)
-
-        fig = self.plot_search_trajectory()
         if fig:
             figures.append(fig)
 

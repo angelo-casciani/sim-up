@@ -46,6 +46,12 @@ class SIMODDiscoverer:
         # Create SIMOD output directory
         output_dir = os.path.join(work_dir, "baseline")
         os.makedirs(output_dir, exist_ok=True)
+
+        # Pre-create SIMOD's internal subdirectories to avoid permission issues
+        # SIMOD creates these during optimization and can have permission conflicts
+        for subdir in ["control-flow", "resource_model", "best_result"]:
+            subdir_path = os.path.join(output_dir, subdir)
+            os.makedirs(subdir_path, exist_ok=True)
         # Create and run SIMOD configuration (pass actual csv_path for column detection)
         config_path = self._create_simod_config(
             actual_csv_path=csv_path,
@@ -189,8 +195,16 @@ class SIMODDiscoverer:
         return config_path
     def _run_simod_discovery(self, work_dir: str, output_dir: str):
         """Run SIMOD discovery via Docker."""
+        import platform
+
         # Convert to absolute path for Docker volume mount (required on Windows)
         abs_work_dir = os.path.abspath(work_dir)
+
+        # On Linux, fix permissions on the output directory before running SIMOD
+        # This ensures SIMOD can write to all subdirectories it creates
+        if platform.system() != "Windows" and self.use_sudo:
+            chmod_cmd = ["sudo", "chmod", "-R", "777", abs_work_dir]
+            subprocess.run(chmod_cmd, capture_output=True)
 
         cmd = []
         if self.use_sudo:
