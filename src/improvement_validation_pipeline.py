@@ -613,6 +613,8 @@ class ImprovementValidationAgent:
                     })
                     print(f"\n[SUCCESS] IMPROVEMENT VALIDATED!")
                     print(f"  Impact: {improvement_result['summary']}")
+                    # Stop iterating after finding first valid improvement
+                    break
                 else:
                     print(f"[X] No improvement: {improvement_result['summary']}")
             

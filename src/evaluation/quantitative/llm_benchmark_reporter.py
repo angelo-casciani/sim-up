@@ -103,7 +103,6 @@ class LLMBenchmarkReporter:
             f"**Timestamp:** {report.timestamp}",
             f"**Event Log:** {os.path.basename(report.event_log)}",
             f"**Repetitions per Model:** {report.num_repetitions}",
-            f"**Timeout:** {report.timeout_seconds}s ({report.timeout_seconds/60:.0f} min)",
             f"**Max Iterations:** {report.max_iterations}",
             "",
             "---",
@@ -199,7 +198,6 @@ class LLMBenchmarkReporter:
                 "",
                 f"- **Runs:** {result.num_runs}",
                 f"- **Successful:** {result.num_successful}",
-                f"- **Timeouts:** {result.num_timeouts}",
                 f"- **Errors:** {result.num_errors}",
                 f"- **No Improvement:** {result.num_no_improvement}",
                 "",
@@ -218,6 +216,42 @@ class LLMBenchmarkReporter:
                     lines.append(f"| {run.run_id} | {run.status} | {time_str} | {iter_str} | {score_str} |")
 
                 lines.append("")
+
+                # Add iteration details for each run
+                for run in result.runs:
+                    if run.iterations:
+                        lines.extend([
+                            f"#### Run {run.run_id} - Iteration Details",
+                            "",
+                        ])
+
+                        # Show baseline KPIs if available
+                        if run.baseline_kpis:
+                            lines.extend([
+                                "**Baseline KPIs:**",
+                                f"- Cycle Time: {run.baseline_kpis.get('avg_cycle_time', 'N/A')}",
+                                f"- Throughput: {run.baseline_kpis.get('throughput', 'N/A')}",
+                                f"- Waiting Time: {run.baseline_kpis.get('avg_waiting_time', 'N/A')}",
+                                "",
+                            ])
+
+                        lines.extend([
+                            "| Iter | Type | Hypothesis | Valid? | DES Cycle% | DES Thru% | ABS Cycle% | ABS Thru% | Score | Time (s) |",
+                            "|------|------|------------|--------|------------|-----------|------------|-----------|-------|----------|",
+                        ])
+
+                        for it in run.iterations:
+                            valid_str = "Yes" if it.is_improvement else "No"
+                            hyp_short = (it.hypothesis_description[:40] + "...") if len(it.hypothesis_description) > 40 else it.hypothesis_description
+                            des_cycle = f"{it.des_cycle_time_change:.1f}" if it.des_cycle_time_change is not None else "-"
+                            des_thru = f"{it.des_throughput_change:.1f}" if it.des_throughput_change is not None else "-"
+                            abs_cycle = f"{it.abs_cycle_time_change:.1f}" if it.abs_cycle_time_change is not None else "-"
+                            abs_thru = f"{it.abs_throughput_change:.1f}" if it.abs_throughput_change is not None else "-"
+                            score = f"{it.averaged_score:.4f}" if it.averaged_score is not None else "-"
+                            time_s = f"{it.iteration_time:.1f}" if it.iteration_time else "-"
+                            lines.append(f"| {it.iteration_num} | {it.hypothesis_type} | {hyp_short} | {valid_str} | {des_cycle} | {des_thru} | {abs_cycle} | {abs_thru} | {score} | {time_s} |")
+
+                        lines.append("")
 
         with open(md_path, 'w', encoding='utf-8') as f:
             f.write("\n".join(lines))

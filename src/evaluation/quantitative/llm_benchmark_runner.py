@@ -9,7 +9,6 @@ impact (averaged validation formula score).
 import os
 import sys
 import time
-import threading
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -27,7 +26,6 @@ class LLMBenchmarkConfig:
     models: List[str]
     event_log: str
     repetitions: int = 1
-    timeout_seconds: int = 900  # 15 minutes default
     max_iterations: int = 5
     use_sudo: bool = True
     des_runs: int = 5
@@ -35,18 +33,68 @@ class LLMBenchmarkConfig:
 
 
 @dataclass
+class IterationResult:
+    """Result of a single iteration within a run."""
+    iteration_num: int
+    hypothesis_description: str
+    hypothesis_type: str  # e.g., "resource_allocation", "calendar_adjustment", "role_redesign"
+    is_improvement: bool
+
+    # KPI impacts vs baseline (percentage change)
+    des_cycle_time_change: Optional[float] = None
+    des_throughput_change: Optional[float] = None
+    des_waiting_time_change: Optional[float] = None
+    abs_cycle_time_change: Optional[float] = None
+    abs_throughput_change: Optional[float] = None
+    abs_waiting_time_change: Optional[float] = None
+
+    # Validation scores
+    des_score: Optional[float] = None
+    abs_score: Optional[float] = None
+    averaged_score: Optional[float] = None
+
+    # Timing
+    iteration_time: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "iteration_num": self.iteration_num,
+            "hypothesis_description": self.hypothesis_description,
+            "hypothesis_type": self.hypothesis_type,
+            "is_improvement": self.is_improvement,
+            "kpi_impact": {
+                "des": {
+                    "cycle_time_change_pct": self.des_cycle_time_change,
+                    "throughput_change_pct": self.des_throughput_change,
+                    "waiting_time_change_pct": self.des_waiting_time_change,
+                    "score": self.des_score
+                },
+                "abs": {
+                    "cycle_time_change_pct": self.abs_cycle_time_change,
+                    "throughput_change_pct": self.abs_throughput_change,
+                    "waiting_time_change_pct": self.abs_waiting_time_change,
+                    "score": self.abs_score
+                },
+                "averaged_score": self.averaged_score
+            },
+            "iteration_time": self.iteration_time
+        }
+
+
+@dataclass
 class SingleModelRun:
     """Result of a single model run."""
     run_id: int
     model_name: str
-    status: str  # "success", "timeout", "error", "no_improvement"
+    status: str  # "success", "error", "no_improvement"
 
     # Speed metrics
     time_to_first_improvement: Optional[float] = None  # seconds
     iterations_to_first_improvement: Optional[int] = None
     total_time: float = 0.0
+    total_iterations: int = 0
 
-    # Impact metrics
+    # Impact metrics (from first successful improvement)
     averaged_score: Optional[float] = None  # (des_score + abs_score) / 2
     des_score: Optional[float] = None
     abs_score: Optional[float] = None
@@ -54,6 +102,12 @@ class SingleModelRun:
     # Details
     first_improvement_hypothesis: Optional[str] = None
     error_message: Optional[str] = None
+
+    # Detailed iteration history
+    iterations: List[IterationResult] = field(default_factory=list)
+
+    # Baseline KPIs for reference
+    baseline_kpis: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -63,11 +117,14 @@ class SingleModelRun:
             "time_to_first_improvement": self.time_to_first_improvement,
             "iterations_to_first_improvement": self.iterations_to_first_improvement,
             "total_time": self.total_time,
+            "total_iterations": self.total_iterations,
             "averaged_score": self.averaged_score,
             "des_score": self.des_score,
             "abs_score": self.abs_score,
             "first_improvement_hypothesis": self.first_improvement_hypothesis,
-            "error_message": self.error_message
+            "error_message": self.error_message,
+            "baseline_kpis": self.baseline_kpis,
+            "iterations": [it.to_dict() for it in self.iterations]
         }
 
 
@@ -77,7 +134,6 @@ class ModelBenchmarkResult:
     model_name: str
     num_runs: int = 0
     num_successful: int = 0
-    num_timeouts: int = 0
     num_errors: int = 0
     num_no_improvement: int = 0
 
@@ -102,7 +158,6 @@ class ModelBenchmarkResult:
             "model_name": self.model_name,
             "num_runs": self.num_runs,
             "num_successful": self.num_successful,
-            "num_timeouts": self.num_timeouts,
             "num_errors": self.num_errors,
             "num_no_improvement": self.num_no_improvement,
             "success_rate": self.success_rate,
@@ -122,7 +177,6 @@ class LLMBenchmarkReport:
     timestamp: str
     event_log: str
     num_repetitions: int
-    timeout_seconds: int
     max_iterations: int
 
     # Per-model results
@@ -138,7 +192,6 @@ class LLMBenchmarkReport:
             "timestamp": self.timestamp,
             "event_log": self.event_log,
             "num_repetitions": self.num_repetitions,
-            "timeout_seconds": self.timeout_seconds,
             "max_iterations": self.max_iterations,
             "results": [r.to_dict() for r in self.results],
             "rankings": {
@@ -187,7 +240,7 @@ class LLMBenchmarkRunner:
         print(f"\nStarting LLM Benchmark at {timestamp}")
         print(f"Models to benchmark: {len(self.config.models)}")
         print(f"Repetitions per model: {self.config.repetitions}")
-        print(f"Timeout per run: {self.config.timeout_seconds}s ({self.config.timeout_seconds/60:.0f} min)")
+        print(f"Max iterations per run: {self.config.max_iterations}")
 
         for i, model_name in enumerate(self.config.models, 1):
             print(f"\n{'='*70}")
@@ -232,50 +285,34 @@ class LLMBenchmarkRunner:
         return self._aggregate_model_results(model_name, runs)
 
     def _run_single_benchmark(self, model_name: str, run_id: int) -> SingleModelRun:
-        """Execute a single benchmark run with timeout handling."""
+        """Execute a single benchmark run. Stops based on max_iterations only."""
         result_holder = {
             "agent": None,
-            "status": "timeout",
+            "status": "error",
             "error": None,
             "total_time": 0.0
         }
 
-        def run_agent():
-            try:
-                agent = ImprovementValidationAgent(
-                    model_name=model_name,
-                    temperature=0.0,
-                    max_tokens=4096,
-                    max_iterations=self.config.max_iterations,
-                    use_sudo=self.config.use_sudo,
-                    des_runs=self.config.des_runs,
-                    abs_runs=self.config.abs_runs
-                )
-
-                start_time = time.time()
-                agent.run_improvement_pipeline(self.config.event_log)
-                result_holder["total_time"] = time.time() - start_time
-                result_holder["agent"] = agent
-                result_holder["status"] = "completed"
-
-            except Exception as e:
-                result_holder["status"] = "error"
-                result_holder["error"] = str(e)
-
-        # Run in thread with timeout
-        thread = threading.Thread(target=run_agent, daemon=True)
-        thread.start()
-        thread.join(timeout=self.config.timeout_seconds)
-
-        if thread.is_alive():
-            # Timeout occurred - thread is still running
-            return SingleModelRun(
-                run_id=run_id,
+        try:
+            agent = ImprovementValidationAgent(
                 model_name=model_name,
-                status="timeout",
-                total_time=self.config.timeout_seconds,
-                error_message=f"Exceeded {self.config.timeout_seconds}s timeout"
+                temperature=0.0,
+                max_tokens=4096,
+                max_iterations=self.config.max_iterations,
+                use_sudo=self.config.use_sudo,
+                des_runs=self.config.des_runs,
+                abs_runs=self.config.abs_runs
             )
+
+            start_time = time.time()
+            agent.run_improvement_pipeline(self.config.event_log)
+            result_holder["total_time"] = time.time() - start_time
+            result_holder["agent"] = agent
+            result_holder["status"] = "completed"
+
+        except Exception as e:
+            result_holder["status"] = "error"
+            result_holder["error"] = str(e)
 
         # Extract metrics from completed run
         return self._extract_metrics_from_result(
@@ -309,10 +346,18 @@ class LLMBenchmarkRunner:
                 error_message="Agent was not initialized"
             )
 
-        # Find first validated improvement in history
+        # Extract baseline KPIs
+        baseline_kpis = None
+        for entry in agent.history:
+            if entry.get("step") == "baseline":
+                baseline_kpis = entry.get("metrics", {})
+                break
+
+        # Process all iterations
         baseline_time = agent.execution_times.get('step_1_baseline_discovery', 0)
         cumulative_time = baseline_time
 
+        iterations_list = []
         first_improvement = None
         first_improvement_iteration = None
         first_improvement_time = None
@@ -326,24 +371,57 @@ class LLMBenchmarkRunner:
                 iteration_time = entry.get("execution_time", 0)
                 cumulative_time += iteration_time
 
+                hypothesis = entry.get("hypothesis", {})
                 improvement = entry.get("improvement", {})
-                if improvement.get("is_improvement"):
+                des_impact = entry.get("des_impact_vs_baseline", {})
+                abs_impact = entry.get("abs_impact_vs_baseline", {})
+                des_validation = entry.get("des_validation", {})
+                abs_validation = entry.get("abs_validation", {})
+
+                # Create iteration result
+                iter_result = IterationResult(
+                    iteration_num=iteration_num,
+                    hypothesis_description=hypothesis.get("description", ""),
+                    hypothesis_type=hypothesis.get("type", "unknown"),
+                    is_improvement=improvement.get("is_improvement", False),
+                    # DES KPI changes
+                    des_cycle_time_change=des_impact.get("cycle_time"),
+                    des_throughput_change=des_impact.get("throughput"),
+                    des_waiting_time_change=des_impact.get("waiting_time"),
+                    # ABS KPI changes
+                    abs_cycle_time_change=abs_impact.get("cycle_time"),
+                    abs_throughput_change=abs_impact.get("throughput"),
+                    abs_waiting_time_change=abs_impact.get("waiting_time"),
+                    # Scores
+                    des_score=des_validation.get("score") if des_validation else None,
+                    abs_score=abs_validation.get("score") if abs_validation else None,
+                    averaged_score=improvement.get("averaged_score"),
+                    iteration_time=iteration_time
+                )
+                iterations_list.append(iter_result)
+
+                # Track first improvement
+                if improvement.get("is_improvement") and first_improvement is None:
                     first_improvement = improvement
                     first_improvement_iteration = iteration_num
                     first_improvement_time = cumulative_time
-                    hypothesis_description = entry.get("hypothesis", {}).get("description")
+                    hypothesis_description = hypothesis.get("description")
                     first_improvement_entry = entry
-                    break
+
+        total_iterations = len(iterations_list)
 
         if first_improvement is None:
             return SingleModelRun(
                 run_id=run_id,
                 model_name=model_name,
                 status="no_improvement",
-                total_time=agent.execution_times.get('total_pipeline', result_holder.get("total_time", 0))
+                total_time=agent.execution_times.get('total_pipeline', result_holder.get("total_time", 0)),
+                total_iterations=total_iterations,
+                iterations=iterations_list,
+                baseline_kpis=baseline_kpis
             )
 
-        # Extract scores
+        # Extract scores from first improvement
         averaged_score = first_improvement.get('averaged_score')
         des_validation = first_improvement_entry.get('des_validation', {}) if first_improvement_entry else {}
         abs_validation = first_improvement_entry.get('abs_validation', {}) if first_improvement_entry else {}
@@ -357,10 +435,13 @@ class LLMBenchmarkRunner:
             time_to_first_improvement=first_improvement_time,
             iterations_to_first_improvement=first_improvement_iteration,
             total_time=agent.execution_times.get('total_pipeline', result_holder.get("total_time", 0)),
+            total_iterations=total_iterations,
             averaged_score=averaged_score,
             des_score=des_score,
             abs_score=abs_score,
-            first_improvement_hypothesis=hypothesis_description
+            first_improvement_hypothesis=hypothesis_description,
+            iterations=iterations_list,
+            baseline_kpis=baseline_kpis
         )
 
     def _aggregate_model_results(
@@ -377,8 +458,6 @@ class LLMBenchmarkRunner:
         for run in runs:
             if run.status == "success":
                 result.num_successful += 1
-            elif run.status == "timeout":
-                result.num_timeouts += 1
             elif run.status == "error":
                 result.num_errors += 1
             elif run.status == "no_improvement":
@@ -421,7 +500,6 @@ class LLMBenchmarkRunner:
             timestamp=timestamp,
             event_log=self.config.event_log,
             num_repetitions=self.config.repetitions,
-            timeout_seconds=self.config.timeout_seconds,
             max_iterations=self.config.max_iterations,
             results=results
         )
@@ -471,8 +549,6 @@ class LLMBenchmarkRunner:
                 std_str = f" +/- {result.averaged_score_std:.4f}" if result.averaged_score_std else ""
                 print(f"    Avg impact score: {result.averaged_score_mean:.4f}{std_str}")
 
-        if result.num_timeouts > 0:
-            print(f"    Timeouts: {result.num_timeouts}")
         if result.num_errors > 0:
             print(f"    Errors: {result.num_errors}")
         if result.num_no_improvement > 0:

@@ -14,6 +14,9 @@ from gen_ai_hub.proxy.native.openai import chat
 AMAZON_BEDROCK_MODELS = {'anthropic--claude-4.5-opus', 'anthropic--claude-4.5-sonnet', 'anthropic--claude-4.5-haiku',
                          'anthropic--claude-4-opus', 'anthropic--claude-4-sonnet'}
 
+# Models that require max_completion_tokens instead of max_tokens (newer OpenAI reasoning models)
+MAX_COMPLETION_TOKENS_MODELS = {'gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'o3', 'o3-mini', 'o1', 'o1-mini', 'o1-preview'}
+
 
 class ReportGenerator:
     """Generates comprehensive process improvement reports."""
@@ -34,17 +37,30 @@ class ReportGenerator:
         model_lower = self.model_name.lower()
         return any(m in model_lower for m in AMAZON_BEDROCK_MODELS)
 
+    def _uses_max_completion_tokens(self) -> bool:
+        """Check if the model requires max_completion_tokens instead of max_tokens (and no temperature)."""
+        return self.model_name in MAX_COMPLETION_TOKENS_MODELS
+
     def _call_openai_chat(self, system_prompt: str, user_prompt: str) -> str:
         """Call OpenAI-compatible chat API (works for GPT, Mistral models)."""
-        response = chat.completions.create(
-            model_name=self.model_name,
-            messages=[
+        # Build parameters - reasoning models need different params
+        params = {
+            "model_name": self.model_name,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
-            ],
-            temperature=self.temperature,
-            max_tokens=self.max_tokens
-        )
+            ]
+        }
+
+        if self._uses_max_completion_tokens():
+            # Reasoning models: use max_completion_tokens via extra_body, no temperature
+            params["extra_body"] = {"max_completion_tokens": self.max_tokens}
+        else:
+            # Standard models: use max_tokens and temperature
+            params["temperature"] = self.temperature
+            params["max_tokens"] = self.max_tokens
+
+        response = chat.completions.create(**params)
         return response.choices[0].message.content
 
     def _call_amazon_bedrock(self, system_prompt: str, user_prompt: str) -> str:

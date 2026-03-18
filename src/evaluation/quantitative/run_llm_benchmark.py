@@ -75,13 +75,6 @@ Examples:
     )
 
     parser.add_argument(
-        "--timeout",
-        type=int,
-        default=900,
-        help="Timeout per run in seconds (default: 900 = 15 minutes)"
-    )
-
-    parser.add_argument(
         "--max-iterations",
         type=int,
         default=5,
@@ -90,7 +83,7 @@ Examples:
 
     parser.add_argument(
         "--output-dir", "-o",
-        default="output",
+        default="../output",
         help="Output directory for results (default: output)"
     )
 
@@ -151,7 +144,6 @@ Examples:
         models=models,
         event_log=log_path,
         repetitions=args.repetitions,
-        timeout_seconds=args.timeout,
         max_iterations=args.max_iterations,
         use_sudo=not args.no_sudo,
         des_runs=args.des_runs,
@@ -166,7 +158,6 @@ Examples:
     print(f"  Log path:       {log_path}")
     print(f"  Models:         {len(config.models)}")
     print(f"  Repetitions:    {config.repetitions}")
-    print(f"  Timeout:        {config.timeout_seconds}s ({config.timeout_seconds/60:.0f} min)")
     print(f"  Max iterations: {config.max_iterations}")
     print(f"  Use sudo:       {config.use_sudo}")
     print(f"  DES runs:       {config.des_runs}")
@@ -178,7 +169,6 @@ Examples:
         print("\n[DRY RUN] Configuration validated. Would benchmark these models:")
         for i, model in enumerate(config.models, 1):
             print(f"  {i}. {model}")
-        print(f"\nTotal estimated max time: {len(config.models) * config.repetitions * config.timeout_seconds / 60:.0f} minutes")
         return
 
     # Run benchmark
