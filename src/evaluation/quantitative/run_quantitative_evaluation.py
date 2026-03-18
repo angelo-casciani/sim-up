@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import os
+import platform
 import sys
 
 # Add src to path
@@ -30,6 +31,9 @@ from evaluation.quantitative.results_visualizer import ResultsVisualizer
 
 
 def main():
+    # Auto-detect Windows for sudo default
+    is_windows = platform.system() == "Windows"
+
     parser = argparse.ArgumentParser(
         description="Run comprehensive evaluation framework for LLM-guided process improvement",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -48,13 +52,13 @@ Examples:
 
     parser.add_argument(
         "--logs-dir", "-l",
-        default="logs",
+        default="../logs",
         help="Directory containing event logs (default: logs)"
     )
 
     parser.add_argument(
         "--output-dir", "-o",
-        default="output",
+        default="../output",
         help="Output directory for results (default: output)"
     )
 
@@ -108,7 +112,8 @@ Examples:
     parser.add_argument(
         "--no-sudo",
         action="store_true",
-        help="Don't use sudo for Docker commands"
+        default=is_windows,
+        help="Don't use sudo for Docker commands (auto-detected: disabled on Windows)"
     )
 
     parser.add_argument(

@@ -443,3 +443,62 @@ class RoleRedesignFaultInjector:
             })
 
         return sorted(results, key=lambda x: x["num_activities"], reverse=True)
+
+    def find_target_role_for_overload(
+        self,
+        model: Dict,
+        overload_role: str
+    ) -> Tuple[Optional[str], Optional[Set[str]]]:
+        """
+        Find a suitable target role to shift work FROM when overloading a specific role.
+
+        The target role should share activities with the overload role so work can be shifted.
+
+        Args:
+            model: The simulation model
+            overload_role: The role we want to overload (shift work TO)
+
+        Returns:
+            Tuple of (target_role, shared_activities) or (None, None) if no suitable target
+        """
+        role_activities = self._get_role_activities(model)
+        overload_activities = role_activities.get(overload_role, set())
+
+        if not overload_activities:
+            # Try case-insensitive match
+            for role, activities in role_activities.items():
+                if role.lower() == overload_role.lower():
+                    overload_activities = activities
+                    overload_role = role
+                    break
+
+        if not overload_activities:
+            print(f"  [!] Role '{overload_role}' not found or has no activities")
+            return None, None
+
+        # Find roles that share activities with the overload role
+        candidates = []
+        for role, activities in role_activities.items():
+            if role.lower() == overload_role.lower():
+                continue
+
+            shared = overload_activities & activities
+            if shared:
+                candidates.append({
+                    "role": role,
+                    "shared_activities": shared,
+                    "num_shared": len(shared)
+                })
+
+        if not candidates:
+            print(f"  [!] No roles share activities with '{overload_role}'")
+            return None, None
+
+        # Sort by number of shared activities (more = better flexibility)
+        candidates.sort(key=lambda x: x["num_shared"], reverse=True)
+        best = candidates[0]
+
+        print(f"  [OK] Found target role for overloading '{overload_role}':")
+        print(f"       Target: {best['role']} ({best['num_shared']} shared activities)")
+
+        return best["role"], best["shared_activities"]

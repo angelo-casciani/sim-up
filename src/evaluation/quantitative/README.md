@@ -1,15 +1,51 @@
 # Comprehensive Evaluation Framework for LLM-Guided Process Improvement
 
-**Document Version:** 1.2
-**Date:** March 13, 2026
+**Document Version:** 1.3
+**Date:** March 18, 2026
 **Purpose:** Evaluation design proposal for journal paper submission
-**Revision Notes:** v1.2 - Fixed evaluation issues for fair comparison across all improvement types
+**Revision Notes:** v1.3 - Validated log selection, fixed fragmented calendar handling, reduced to 15 experiments across working logs
 
 ---
 
-## Changelog (v1.2)
+## Changelog
 
-### Issues Fixed
+### v1.3 (March 18, 2026) - Log Validation & Calendar Fix
+
+#### Critical Discovery: SIMOD resourceId Column Behavior
+
+Logs with a `resourceId` column cause SIMOD to discover UUIDs instead of the `resource` column's Role-NNNNNN pattern. This breaks role-based reasoning for the LLM.
+
+**Affected logs (excluded):**
+- `cvs_pharmacy.csv` - has `resourceId` column with UUIDs
+- `Confidential_1000.csv` - has `resourceId` column with UUIDs
+
+**Working logs (no resourceId column):**
+- `LoanApp.csv` - Role-NNNNNN pattern discovered correctly
+- `p2p.csv` - Named individuals discovered correctly
+- `helpdesk.csv` - Value N pattern discovered correctly
+- `env_permit.csv` - ResourceNN pattern discovered correctly
+
+#### Calendar Fault Injection Fix
+
+**Problem:** SIMOD discovers **fragmented calendars** with multiple time periods per day (e.g., Mon 13:00-15:00, Tue 07:00-08:00 + 10:00-12:00). The old code only modified the first period.
+
+**Fix:** `calendar_fault_injector.py` now:
+1. `get_calendar_hours()` - Sums ALL time periods for total weekly hours
+2. `inject_fault()` - Reduces ALL periods proportionally using keep_ratio
+3. `restore_hours()` - Expands ALL periods proportionally
+
+**Bug fix:** `quantitative_evaluation_runner.py` was using old `fault_hours` key instead of new `fault_hours_daily` key, causing LLM to receive wrong context.
+
+#### Experiment Reduction
+
+Reduced from 24 to **15 experiments** using only validated logs:
+- Resource Allocation: 5 experiments (LoanApp.csv only)
+- Calendar Adjustment: 5 experiments (LoanApp, p2p, helpdesk, env_permit)
+- Role Redesign: 5 experiments (LoanApp, p2p)
+
+### v1.2 (March 13, 2026) - Fair Comparison Fixes
+
+#### Issues Fixed
 
 1. **Resource Allocation: Constant 7:4 ratio regardless of fault**
    - **Root cause:** LLM search used exact-count matching (`proposed_count == optimal_count`) while Grid search used tolerance-based matching (`_is_within_tolerance`)
@@ -27,9 +63,8 @@
    - Both Grid and LLM use identical tolerance-based detection on `waiting_time`
    - LLM can propose any value in continuous range, enabling intelligent jumps
    - Uses 5% tolerance
-   - Achieves 5.33x average speedup across experiments
 
-### Key Changes
+### Key Changes (v1.2)
 
 | Component | Before | After |
 |-----------|--------|-------|
@@ -38,7 +73,7 @@
 | `role_redesign_llm_search.py` | 8 options, 5% tolerance, max 5 iterations | 20 options, 5% tolerance, max 20 iterations |
 | `quantitative_evaluation_runner.py` | 80% fault shift, single tolerance | 50% fault shift, per-type tolerances |
 
-### Tolerance Settings (v1.2.2)
+### Tolerance Settings
 
 | Improvement Type | Tolerance | Rationale |
 |------------------|-----------|-----------|
@@ -59,6 +94,10 @@ This document outlines a comprehensive evaluation framework to assess the effect
 3. **Role Redesign** - Redistributing workload between roles
 
 A fourth scenario—**Mixed/Cross-type**—where the LLM freely chooses among all three improvement types is deferred to future work due to the difficulty of establishing a fair grid search baseline.
+
+Additionally, an **LLM Benchmark Evaluation** tests multiple LLM models on the full improvement pipeline to measure:
+- **Speed**: Time and iterations to find a validated improvement
+- **Impact**: Quality of the improvement (averaged validation formula score)
 
 The primary research question is: **Can an LLM identify optimal process improvements with fewer simulation calls than systematic search methods?**
 
@@ -160,6 +199,10 @@ This ensures improvements are validated by both simulators, preventing acceptanc
 | Results Visualizer | ✅ Implemented | `src/evaluation/quantitative/results_visualizer.py` |
 | CLI Entry Point | ✅ Implemented | `src/evaluation/quantitative/run_comprehensive_evaluation.py` |
 | Mixed/Cross-type Evaluation | ❌ Future work | - |
+| **LLM Benchmark Evaluation** | | |
+| LLM Benchmark Runner | ✅ Implemented | `src/evaluation/quantitative/llm_benchmark_runner.py` |
+| LLM Benchmark Reporter | ✅ Implemented | `src/evaluation/quantitative/llm_benchmark_reporter.py` |
+| LLM Benchmark CLI | ✅ Implemented | `src/evaluation/quantitative/run_llm_benchmark.py` |
 
 ---
 
@@ -424,7 +467,88 @@ Same as other evaluation types, plus:
 
 ---
 
-## 7. Future Work: Mixed/Cross-type Evaluation
+## 7. LLM Benchmark Evaluation
+
+### 7.1 Overview
+
+The LLM Benchmark Evaluation tests multiple LLM models on the full `ImprovementValidationAgent` pipeline to compare their performance in finding validated process improvements. Unlike the fault-injection evaluations (Sections 4-6), this benchmark uses the complete pipeline without artificial faults.
+
+**Research Question:** Which LLM models are fastest at finding validated improvements, and what is the quality of their solutions?
+
+### 7.2 Models Benchmarked
+
+| Provider | Models |
+|----------|--------|
+| OpenAI | gpt-4.1, gpt-5, gpt-5-mini, gpt-5-nano, o3 |
+| Anthropic | anthropic--claude-4.5-opus, anthropic--claude-4.5-sonnet, anthropic--claude-4.5-haiku |
+| Mistral | mistralai--mistral-small-instruct, mistralai--mistral-medium-instruct, mistralai--mistral-large-instruct |
+
+### 7.3 Metrics
+
+| Metric | Definition |
+|--------|------------|
+| **Time to first improvement** | Wall-clock seconds until first validated improvement |
+| **Iterations to first improvement** | Number of hypothesis iterations until success |
+| **Averaged validation score** | `(S_DES + S_ABS) / 2` where `S = delta_throughput - delta_cycle_time` |
+| **Success rate** | Percentage of runs that found a validated improvement |
+
+### 7.4 Usage
+
+```bash
+# Run benchmark with default settings (all 11 models)
+python src/evaluation/quantitative/run_llm_benchmark.py --log LoanApp.csv
+
+# Run with specific models
+python src/evaluation/quantitative/run_llm_benchmark.py \
+    --models gpt-4.1 anthropic--claude-4.5-sonnet --log LoanApp.csv
+
+# Run with multiple repetitions for statistical significance
+python src/evaluation/quantitative/run_llm_benchmark.py --log LoanApp.csv --repetitions 5
+
+# Run with custom timeout (30 minutes)
+python src/evaluation/quantitative/run_llm_benchmark.py --log LoanApp.csv --timeout 1800
+
+# Dry run to validate configuration
+python src/evaluation/quantitative/run_llm_benchmark.py --log LoanApp.csv --dry-run
+```
+
+### 7.5 Configuration Options
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--log`, `-l` | `LoanApp.csv` | Event log file in logs/ directory |
+| `--models`, `-m` | All 11 models | Specific models to benchmark |
+| `--repetitions`, `-r` | `1` | Number of runs per model |
+| `--timeout` | `900` (15 min) | Timeout per run in seconds |
+| `--max-iterations` | `5` | Maximum hypothesis iterations per run |
+| `--output-dir`, `-o` | `output` | Output directory for results |
+| `--no-sudo` | Auto (Windows) | Don't use sudo for Docker commands |
+| `--des-runs` | `5` | Number of DES (Prosimos) runs to average |
+| `--abs-runs` | `5` | Number of ABS (AgentSimulator) runs |
+| `--dry-run` | - | Print configuration without running |
+
+### 7.6 Output Structure
+
+```
+output/llm_benchmark_YYYYMMDD_HHMMSS/
+├── benchmark_results.json      # Full structured results
+├── benchmark_results.csv       # Spreadsheet export
+└── benchmark_report.md         # Summary with rankings
+```
+
+### 7.7 Report Contents
+
+The benchmark report includes:
+
+1. **Summary Table**: All models with success rate, avg time, avg iterations, avg score
+2. **Speed Ranking**: Models sorted by time to first improvement (ascending)
+3. **Iteration Ranking**: Models sorted by iterations to first improvement (ascending)
+4. **Impact Ranking**: Models sorted by averaged validation score (descending)
+5. **Detailed Results**: Per-model breakdown with individual run data
+
+---
+
+## 8. Future Work: Mixed/Cross-type Evaluation
 
 ### 7.1 Scenario Description
 
@@ -456,9 +580,9 @@ When implemented, mixed evaluation would test:
 
 ---
 
-## 8. Experimental Setup
+## 9. Experimental Setup
 
-### 8.1 Configuration
+### 9.1 Configuration
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
@@ -475,21 +599,61 @@ When implemented, mixed evaluation would test:
 
 **Note on Per-Type Tolerances (v1.2.2):** Different improvement types exhibit different levels of simulation variance. Resource allocation has the highest variance because adding/removing resources significantly changes the simulation dynamics. Role redesign requires very tight tolerance (1%) because even small shifts can significantly improve KPIs, causing trivial solutions with 5% tolerance.
 
-### 8.2 Experimental Matrix
+### 9.2 Experimental Matrix
 
-| ID | Log | Improvement Type | Fault | Ground Truth |
-|----|-----|------------------|-------|--------------|
-| E1.1 | LoanApp | Resource | AML Inv: 2→1 | count=2 |
-| E1.2 | LoanApp | Resource | Clerk: 8→2 | count=8 |
-| E1.3 | LoanApp | Resource | Loan Officer: 4→1 | count=4 |
-| E2.1 | LoanApp | Calendar | AML Inv: 8h→2h | +6 hours |
-| E2.2 | LoanApp | Calendar | Clerk: 8h→2h | +6 hours |
-| E2.3 | LoanApp | Calendar | Loan Officer: 8h→2h | +6 hours |
-| E3.1 | p2p | Role Redesign | 50% shift to overloaded | ~50% shift back |
+**Note:** Only logs WITHOUT `resourceId` column are used (SIMOD discovers Role-NNNNNN patterns correctly). Logs with `resourceId` column cause SIMOD to discover UUIDs, breaking role-based reasoning.
 
-**Total experiments:** 7 configurations × 5 repetitions = **35 experiment runs**
+#### Resource Allocation (E1.1 - E1.5)
 
-### 8.3 Results Reporting
+| ID | Log | Domain | Target Role | Resources | Fault |
+|----|-----|--------|-------------|-----------|-------|
+| E1.1 | LoanApp.csv | Financial | Clerk | 8 | 8->1 |
+| E1.2 | LoanApp.csv | Financial | Loan Officer | 4 | 4->1 |
+| E1.3 | LoanApp.csv | Financial | AML Investigator | 2 | 2->1 |
+| E1.4 | LoanApp.csv | Financial | Appraiser | 2 | 2->1 |
+| E1.5 | LoanApp.csv | Financial | Senior Officer | 2 | 2->1 |
+
+**Validation criteria:** Each role must have 2+ resources to allow reduction and recovery. Only LoanApp.csv has proper Role-NNNNNN pattern without resourceId column.
+
+#### Calendar Adjustment (E2.1 - E2.5)
+
+| ID | Log | Domain | Target Resource | Fault |
+|----|-----|--------|-----------------|-------|
+| E2.1 | LoanApp.csv | Financial | Clerk | 8h->2h |
+| E2.2 | LoanApp.csv | Financial | Loan Officer | 8h->2h |
+| E2.3 | p2p.csv | Procurement | Karel de Groot | 8h->2h |
+| E2.4 | helpdesk.csv | IT Support | Value 2 | 8h->2h |
+| E2.5 | env_permit.csv | Government | Resource01 | 8h->2h |
+
+**Validation criteria:** Calendar adjustment works with any resource. Diverse logs across 4 domains.
+
+**Note on fragmented calendars:** SIMOD discovers fragmented calendars (multiple periods per day). The fault injector reduces ALL periods proportionally to achieve target reduction.
+
+#### Role Redesign (E3.1 - E3.5)
+
+| ID | Log | Domain | Overloaded Role | Target Role | Shared Activities |
+|----|-----|--------|-----------------|-------------|-------------------|
+| E3.1 | LoanApp.csv | Financial | Clerk | Loan Officer | Document processing |
+| E3.2 | LoanApp.csv | Financial | AML Investigator | Senior Officer | Review tasks |
+| E3.3 | p2p.csv | Procurement | Karel de Groot | Magdalena Predutta | Quotation/order activities |
+| E3.4 | p2p.csv | Procurement | Francois de Perrier | Karel de Groot | Quotation/order activities |
+| E3.5 | p2p.csv | Procurement | Pedro Alvares | Karalda Nimwada | Invoice activities |
+
+**Validation criteria:** Role redesign requires overlapping activities between roles. p2p.csv has two distinct activity groups with clear overlaps.
+
+#### Excluded Logs (with reasons)
+
+| Log | Reason for Exclusion |
+|-----|---------------------|
+| cvs_pharmacy.csv | Has `resourceId` column - SIMOD discovers UUIDs instead of Role-NNNNNN |
+| Confidential_1000.csv | Has `resourceId` column - SIMOD discovers UUIDs instead of ABC-NNNNNN |
+| BPI_Challenge_2012_A.csv | Numeric resource IDs only - no identifiable roles for LLM |
+| BPIC_2012W.csv | Mixed numeric/artificial IDs - poor role identifiability |
+| bpi_challenge_2013_incidents.csv | Each person is unique - no multi-resource roles |
+
+**Total experiments:** 15 configurations × 5 repetitions = **75 experiment runs**
+
+### 9.3 Results Reporting
 
 For each experiment, we report:
 
@@ -503,7 +667,7 @@ For each experiment, we report:
 | DES validation score | Mean ± Std | 0.042 ± 0.008 |
 | ABS validation score | Mean ± Std | 0.031 ± 0.005 |
 
-### 8.4 Hardware/Software Requirements
+### 9.4 Hardware/Software Requirements
 
 - Docker (for SIMOD and Prosimos)
 - Python 3.11
@@ -512,9 +676,9 @@ For each experiment, we report:
 
 ---
 
-## 9. Expected Outcomes
+## 10. Expected Outcomes
 
-### 9.1 Hypotheses
+### 10.1 Hypotheses
 
 **H1:** LLM search requires fewer iterations than grid search for resource allocation (speedup > 1.5×)
 
@@ -524,7 +688,7 @@ For each experiment, we report:
 
 **H4:** LLM proposes lower-cost interventions when multiple solution types are viable
 
-### 9.2 Success Criteria
+### 10.2 Success Criteria
 
 | Criterion | Threshold |
 |-----------|-----------|
@@ -534,7 +698,7 @@ For each experiment, we report:
 | Dual-simulator agreement | Both S_DES > 0 and S_ABS > 0 |
 | Cost-optimal solution rate | > 60% (when lower-cost alternative exists) |
 
-### 9.3 Potential Findings
+### 10.3 Potential Findings
 
 **Positive outcomes:**
 - LLM demonstrates sample efficiency (fewer simulations needed)
@@ -548,7 +712,7 @@ For each experiment, we report:
 
 ---
 
-## 10. Implementation Plan
+## 11. Implementation Plan
 
 ### Phase 1: Resource Allocation ✅ Complete
 - [x] Fault injector for resource count
@@ -582,9 +746,9 @@ For each experiment, we report:
 
 ---
 
-## 11. Threats to Validity
+## 12. Threats to Validity
 
-### 11.1 Internal Validity
+### 12.1 Internal Validity
 
 | Threat | Mitigation |
 |--------|------------|
@@ -593,7 +757,7 @@ For each experiment, we report:
 | Unfair comparison | Use simulation cache (same inputs → same outputs) |
 | Single-simulator bias | Validate with **both DES and ABS** for all improvement types |
 
-### 11.2 External Validity
+### 12.2 External Validity
 
 | Threat | Mitigation |
 |--------|------------|
@@ -601,7 +765,7 @@ For each experiment, we report:
 | Artificial fault injection | Inject realistic faults (bottleneck scenarios) |
 | Single LLM model | Focus on one model first, extend later |
 
-### 11.3 Construct Validity
+### 12.3 Construct Validity
 
 | Threat | Mitigation |
 |--------|------------|
@@ -610,7 +774,7 @@ For each experiment, we report:
 
 ---
 
-## 12. Usage
+## 13. Usage
 
 ### Running the Comprehensive Evaluation
 
@@ -678,7 +842,7 @@ output/comprehensive_eval_YYYYMMDD_HHMMSS/
 
 ---
 
-## 13. Module Structure
+## 14. Module Structure
 
 ```
 src/evaluation/quantitative/
@@ -707,12 +871,17 @@ src/evaluation/quantitative/
 │
 │ # Entry Points
 ├── run_evaluation.py                   # Original single-type evaluation
-└── run_comprehensive_evaluation.py     # Full comprehensive evaluation CLI
+├── run_comprehensive_evaluation.py     # Full comprehensive evaluation CLI
+│
+│ # LLM Benchmark Evaluation
+├── llm_benchmark_runner.py             # Multi-model benchmark runner
+├── llm_benchmark_reporter.py           # Benchmark report generation
+└── run_llm_benchmark.py                # LLM benchmark CLI
 ```
 
 ---
 
-## 14. Summary
+## 15. Summary
 
 This evaluation framework provides:
 
@@ -721,7 +890,7 @@ This evaluation framework provides:
 3. **Dual-simulator validation:** Both DES (Prosimos) and ABS (AgentSimulator) for robustness
 4. **Comprehensive metrics:** Iterations, speedup, accuracy, convergence quality, intervention cost
 5. **Statistical validity:** 5 repetitions per experiment with mean ± std reporting
-6. **Practical scope:** 3 logs × 3 improvement types × 5 reps = 40 experiments
+6. **Practical scope:** 15 experiments × 5 reps = 75 runs (across 4 validated logs)
 7. **Clear implementation path:** All phases implemented, ready for full experiment runs
 
 The expected contribution is demonstrating that LLM-guided search can achieve **sample efficiency** in process improvement—finding valid improvements with fewer simulation calls than systematic search, while respecting both structural (DES) and behavioral (ABS) constraints.
@@ -783,13 +952,62 @@ The expected contribution is demonstrating that LLM-guided search can achieve **
 
 ## Appendix B: Available Event Logs
 
-| Log | Resources | Pattern | Suitable For |
-|-----|-----------|---------|--------------|
-| LoanApp.csv | 19 | Role-based (Clerk-000001) | Resource, Calendar, Role Redesign |
-| cvs_pharmacy.csv | ~6 | Role-based (Technician-000001) | Resource, Calendar |
-| Confidential_1000.csv | Multiple | Role-based (ABC-000001) | Resource |
-| p2p.csv | ~27 | Individual names | Role Redesign |
-| env_permit.csv | ~30 | Named + Groups | Role Redesign |
+### Critical: resourceId Column Behavior
+
+**IMPORTANT:** SIMOD uses the `resourceId` column when present, otherwise falls back to `resource` column. Logs with `resourceId` containing UUIDs will have UUIDs discovered as resources, breaking role-based reasoning.
+
+**Check before using a log:**
+```bash
+head -1 logs/LogName.csv | tr ',' '\n' | grep -i resourceid
+```
+
+If `resourceId` is present, the log likely won't work for this evaluation framework.
+
+### Validated Logs (used in evaluation)
+
+| Log | Domain | Resources | Pattern | Has resourceId? | Suitable For |
+|-----|--------|-----------|---------|-----------------|--------------|
+| LoanApp.csv | Financial | 19 | Role-NNNNNN | **No** | Resource, Calendar, Role Redesign |
+| p2p.csv | Procurement | ~27 | Named individuals | **No** | Calendar, Role Redesign |
+| helpdesk.csv | IT Support | ~20 | Value N | **No** | Calendar only |
+| env_permit.csv | Government | ~30 | ResourceNN | **No** | Calendar only |
+
+**LoanApp.csv roles:** Clerk(8), Loan Officer(4), AML Investigator(2), Appraiser(2), Senior Officer(2)
+
+**p2p.csv resources:** Karel de Groot, Magdalena Predutta, Francois de Perrier, Pedro Alvares, Karalda Nimwada, etc.
+- Group 1 (quotation/order): Karel, Magdalena, Francois share 6 activities
+- Group 2 (invoice): Pedro, Karalda share 4 activities
+
+### Excluded Logs (with reasons)
+
+| Log | Domain | Has resourceId? | Reason for Exclusion |
+|-----|--------|-----------------|---------------------|
+| cvs_pharmacy.csv | Healthcare | **Yes** | SIMOD discovers UUIDs instead of Role-NNNNNN pattern |
+| Confidential_1000.csv | Business | **Yes** | SIMOD discovers UUIDs instead of ABC-NNNNNN pattern |
+| BPI_Challenge_2012_A.csv | Banking | No | Numeric resource IDs only - no identifiable roles |
+| BPIC_2012W.csv | Banking | No | Mixed numeric/artificial IDs - poor role identifiability |
+| bpi_challenge_2013_incidents.csv | IT Support | No | Each person unique - no multi-resource roles |
+
+### Resource Count Validation
+
+To verify a log is suitable for resource allocation evaluation:
+
+```python
+import pandas as pd
+
+# First check for resourceId column
+df = pd.read_csv('logs/LogName.csv')
+if 'resourceId' in df.columns:
+    print("WARNING: Log has resourceId column - SIMOD will use UUIDs!")
+
+# Check role counts
+df['role'] = df['resource'].str.split('-').str[0]  # Extract role prefix
+role_counts = df.groupby('role')['resource'].nunique()
+valid_roles = role_counts[role_counts >= 2]
+print(f"Valid roles for resource allocation: {dict(valid_roles)}")
+```
+
+**Rule:** A role must have 2+ unique resources to be valid for resource allocation testing (allows reduction and recovery).
 
 ---
 

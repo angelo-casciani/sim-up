@@ -477,3 +477,19 @@ class FaultInjector:
             })
 
         return result
+
+    def get_role_count(self, model: Dict, role_name: str) -> Optional[int]:
+        """
+        Get the resource count for a specific role.
+
+        Args:
+            model: The simulation model
+            role_name: Name of the role (e.g., "Clerk", "Loan Officer")
+
+        Returns:
+            Number of resources in this role, or None if role not found
+        """
+        roles = self._group_resources_by_role(model)
+        if role_name in roles:
+            return len(roles[role_name])
+        return None

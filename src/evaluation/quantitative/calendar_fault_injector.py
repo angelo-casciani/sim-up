@@ -72,12 +72,18 @@ class CalendarFaultInjector:
         end_h, end_m, _ = self._parse_time(end_time)
         return (end_h - begin_h) + (end_m - begin_m) / 60
 
-    def get_calendar_hours(self, model: Dict, calendar_id: str) -> Optional[Dict]:
+    def get_calendar_hours(self, model: Dict, calendar_id: str) -> float:
         """
-        Get hours information for a specific calendar.
+        Get total weekly hours for a specific calendar.
+
+        For fragmented calendars, sums ALL time periods.
+
+        Args:
+            model: The simulation model
+            calendar_id: Calendar ID to look up
 
         Returns:
-            Dict with calendar info or None if not found
+            Total hours per week, or 0.0 if not found
         """
         resource_calendars = model.get("prosimos_params", {}).get("resource_calendars", [])
 
@@ -88,19 +94,37 @@ class CalendarFaultInjector:
                 if not time_periods:
                     continue
 
-                # Calculate total hours per day (approximate - use first period)
-                period = time_periods[0]
-                begin_time = period.get("beginTime", "09:00:00")
-                end_time = period.get("endTime", "17:00:00")
-                hours_per_day = self._calculate_hours_in_period(begin_time, end_time)
+                # Calculate total hours across ALL periods (weekly)
+                return self._calculate_total_weekly_hours(time_periods)
 
-                return {
-                    "calendar_id": cal_id,
-                    "hours_per_day": hours_per_day,
-                    "begin_time": begin_time,
-                    "end_time": end_time,
-                    "num_periods": len(time_periods)
-                }
+        return 0.0
+
+    def find_calendar_for_role(self, model: Dict, role_name: str) -> Optional[str]:
+        """
+        Find a calendar ID that matches the given role name.
+
+        Args:
+            model: The simulation model
+            role_name: Role name to search for (e.g., "Clerk", "Loan Officer")
+
+        Returns:
+            Calendar ID if found, None otherwise
+        """
+        resource_calendars = model.get("prosimos_params", {}).get("resource_calendars", [])
+        role_lower = role_name.lower()
+
+        for calendar in resource_calendars:
+            cal_id = calendar.get("id", calendar.get("name", ""))
+            extracted_role = self._extract_role_name(cal_id).lower()
+
+            if extracted_role == role_lower:
+                return cal_id
+
+        # Fallback: partial match
+        for calendar in resource_calendars:
+            cal_id = calendar.get("id", calendar.get("name", ""))
+            if role_lower in cal_id.lower():
+                return cal_id
 
         return None
 
@@ -212,6 +236,16 @@ class CalendarFaultInjector:
 
         return best["calendar_id"], best["hours"], best["utilization"]
 
+    def _calculate_total_weekly_hours(self, time_periods: List[Dict]) -> float:
+        """Calculate total working hours per week from all time periods."""
+        total = 0.0
+        for period in time_periods:
+            begin = period.get("beginTime", "")
+            end = period.get("endTime", "")
+            if begin and end:
+                total += self._calculate_hours_in_period(begin, end)
+        return total
+
     def inject_fault(
         self,
         model: Dict,
@@ -221,10 +255,13 @@ class CalendarFaultInjector:
         """
         Inject a fault by reducing working hours for a calendar.
 
+        For fragmented calendars (multiple time periods), this reduces ALL periods
+        proportionally to achieve the target reduction.
+
         Args:
             model: The original (optimal) simulation model
             target_calendar: Calendar ID to modify
-            hours_reduction: Number of hours to reduce (default: self.fault_hours_reduction)
+            hours_reduction: Number of hours to reduce PER DAY (default: self.fault_hours_reduction)
 
         Returns:
             Tuple of (faulty_model, fault_info)
@@ -240,8 +277,6 @@ class CalendarFaultInjector:
         modified_calendar = None
         original_hours = None
         new_hours = None
-        original_end_time = None
-        new_end_time = None
 
         for calendar in resource_calendars:
             cal_id = calendar.get("id", calendar.get("name", ""))
@@ -256,41 +291,62 @@ class CalendarFaultInjector:
 
             modified_calendar = cal_id
 
+            # Calculate total weekly hours across ALL periods
+            original_hours = self._calculate_total_weekly_hours(time_periods)
+
+            # For fragmented calendars, we reduce by removing periods or shortening them
+            # Target: reduce total weekly hours by hours_reduction * 5 (assuming 5-day week)
+            target_weekly_reduction = hours_reduction * 5
+            target_new_hours = max(original_hours - target_weekly_reduction, 5.0)  # Min 5h/week
+
+            # Calculate reduction ratio
+            if original_hours > 0:
+                keep_ratio = target_new_hours / original_hours
+            else:
+                keep_ratio = 0.5
+
+            # Apply reduction to each period by shortening end time
+            periods_to_keep = []
             for period in time_periods:
                 end_time_str = period.get("endTime", "")
                 begin_time_str = period.get("beginTime", "")
 
                 if not end_time_str or not begin_time_str:
+                    periods_to_keep.append(period)
                     continue
 
-                original_end_time = end_time_str
-                original_hours = self._calculate_hours_in_period(begin_time_str, end_time_str)
+                # Calculate period hours and new reduced hours
+                period_hours = self._calculate_hours_in_period(begin_time_str, end_time_str)
+                new_period_hours = period_hours * keep_ratio
 
-                # Reduce end time by hours_reduction
+                # Skip very short periods (less than 30 min after reduction)
+                if new_period_hours < 0.5:
+                    continue
+
+                # Calculate new end time
+                begin_h, begin_m, _ = self._parse_time(begin_time_str)
                 end_h, end_m, end_s = self._parse_time(end_time_str)
 
-                new_end_h = end_h - int(hours_reduction)
-                new_end_m = end_m - int((hours_reduction % 1) * 60)
+                # New end = begin + reduced hours
+                new_end_h = begin_h + int(new_period_hours)
+                new_end_m = begin_m + int((new_period_hours % 1) * 60)
 
-                # Handle minute underflow
-                if new_end_m < 0:
-                    new_end_h -= 1
-                    new_end_m += 60
-
-                # Ensure we don't go below start time
-                begin_h, begin_m, _ = self._parse_time(begin_time_str)
-                min_end_h = begin_h + 1  # At least 1 hour of work
-
-                if new_end_h < min_end_h:
-                    new_end_h = min_end_h
-                    new_end_m = 0
+                # Handle minute overflow
+                if new_end_m >= 60:
+                    new_end_h += 1
+                    new_end_m -= 60
 
                 microseconds = end_time_str.split('.')[-1] if '.' in end_time_str else ""
                 new_end_time_str = self._format_time(new_end_h, new_end_m, end_s, microseconds)
 
                 period["endTime"] = new_end_time_str
-                new_end_time = new_end_time_str
-                new_hours = self._calculate_hours_in_period(begin_time_str, new_end_time_str)
+                periods_to_keep.append(period)
+
+            # Update the calendar with reduced periods
+            calendar["time_periods"] = periods_to_keep
+
+            # Calculate actual new hours
+            new_hours = self._calculate_total_weekly_hours(periods_to_keep)
 
             break  # Only modify first matching calendar
 
@@ -299,16 +355,16 @@ class CalendarFaultInjector:
 
         fault_info = {
             "target_calendar": modified_calendar,
-            "original_hours": original_hours,
-            "fault_hours": new_hours,
-            "hours_reduced": original_hours - new_hours if original_hours and new_hours else hours_reduction,
-            "original_end_time": original_end_time,
-            "new_end_time": new_end_time,
-            "expected_fix_hours": original_hours - new_hours if original_hours and new_hours else hours_reduction
+            "original_hours_weekly": original_hours,
+            "fault_hours_weekly": new_hours,
+            "original_hours_daily": original_hours / 5 if original_hours else 0,
+            "fault_hours_daily": new_hours / 5 if new_hours else 0,
+            "hours_reduced_weekly": original_hours - new_hours if original_hours and new_hours else 0,
+            "expected_fix_hours": (original_hours - new_hours) / 5 if original_hours and new_hours else hours_reduction
         }
 
-        print(f"    Reduced {modified_calendar} from {original_hours:.1f}h to {new_hours:.1f}h/day")
-        print(f"    (endTime: {original_end_time} → {new_end_time})")
+        print(f"    Reduced {modified_calendar} from {original_hours:.1f}h/week to {new_hours:.1f}h/week")
+        print(f"    (Daily avg: {original_hours/5:.1f}h -> {new_hours/5:.1f}h)")
 
         return faulty_model, fault_info
 
@@ -319,12 +375,15 @@ class CalendarFaultInjector:
         hours_to_add: float
     ) -> Dict:
         """
-        Restore hours to a calendar by extending end time.
+        Restore hours to a calendar by extending all time periods proportionally.
+
+        For fragmented calendars, extends each period proportionally to achieve
+        the target hours increase.
 
         Args:
             model: Model with reduced hours
             target_calendar: Calendar ID to modify
-            hours_to_add: Number of hours to add back
+            hours_to_add: Number of hours PER DAY to add back (multiplied by 5 for weekly)
 
         Returns:
             Modified model with restored hours
@@ -342,16 +401,38 @@ class CalendarFaultInjector:
                 continue
 
             time_periods = calendar.get("time_periods", [])
+            if not time_periods:
+                continue
 
+            # Calculate current weekly hours
+            current_hours = self._calculate_total_weekly_hours(time_periods)
+            target_weekly_addition = hours_to_add * 5  # Convert daily to weekly
+            target_hours = current_hours + target_weekly_addition
+
+            # Calculate expansion ratio
+            if current_hours > 0:
+                expand_ratio = target_hours / current_hours
+            else:
+                expand_ratio = 1.5  # Default 50% increase
+
+            # Apply expansion to each period
             for period in time_periods:
                 end_time_str = period.get("endTime", "")
-                if not end_time_str:
+                begin_time_str = period.get("beginTime", "")
+
+                if not end_time_str or not begin_time_str:
                     continue
 
+                # Calculate current and new period hours
+                period_hours = self._calculate_hours_in_period(begin_time_str, end_time_str)
+                new_period_hours = period_hours * expand_ratio
+
+                # Calculate new end time
+                begin_h, begin_m, _ = self._parse_time(begin_time_str)
                 end_h, end_m, end_s = self._parse_time(end_time_str)
 
-                new_end_h = end_h + int(hours_to_add)
-                new_end_m = end_m + int((hours_to_add % 1) * 60)
+                new_end_h = begin_h + int(new_period_hours)
+                new_end_m = begin_m + int((new_period_hours % 1) * 60)
 
                 # Handle minute overflow
                 if new_end_m >= 60:

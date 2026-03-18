@@ -20,18 +20,26 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from evaluation.quantitative.evaluation_runner import QuantitativeEvaluator
 from evaluation.quantitative.results_visualizer import ResultsVisualizer
 
-# Logs that don't work well for evaluation (resource groups not on critical path)
+# Logs that don't work well for evaluation (known simulation issues)
 SKIP_LOGS = {
-    "p2p.csv",       # Activity groups have low utilization, not on critical path
-    "Production.csv" # Small groups, simulation often fails
+    "Production.csv"  # Small groups, simulation often fails
 }
 
-# Recommended logs for publication (pattern-based or known to work well)
+# Recommended logs for publication - covers 6 domains across 24 experiments
+# See quantitative_evaluation_runner.py DEFAULT_EXPERIMENTS for full configuration
 RECOMMENDED_LOGS = [
-    "LoanApp.csv",        # Excellent - 38x degradation, clear speedup
-    "BPIC_2012W.csv",     # Good - well-known BPM benchmark
-    "BPIC_2017W.csv",     # Good - well-known BPM benchmark
-    "cvs_pharmacy.csv",   # Good - pattern-based resources
+    # Resource Allocation & Calendar Adjustment logs
+    "LoanApp.csv",                      # Financial - 38x degradation, clear speedup
+    "cvs_pharmacy.csv",                 # Healthcare - pattern-based resources
+    "Confidential_1000.csv",            # Business - anonymized with clear role patterns
+    "BPI_Challenge_2012_A.csv",         # Banking - well-known BPM benchmark
+    # Calendar Adjustment additional logs
+    "env_permit.csv",                   # Government - org:group based
+    "helpdesk.csv",                     # IT Support - Value N resources
+    # Role Redesign logs
+    "p2p.csv",                          # Procurement - overlapping named resources
+    "bpi_challenge_2013_incidents.csv", # IT Support - explicit org:role column
+    "BPIC_2012W.csv",                   # Banking - activity-based overlap
 ]
 
 
