@@ -139,11 +139,11 @@ class PaperVisualizer:
         width = 0.35
 
         bars1 = ax.bar(x - width/2, grid_iters, width,
-                       label='Grid Search',
+                       label='Grid',
                        color=self.colors['grid'],
                        edgecolor='black', linewidth=0.5)
         bars2 = ax.bar(x + width/2, llm_iters, width,
-                       label='LLM Pipeline',
+                       label='Framework',
                        color=self.colors['llm'],
                        edgecolor='black', linewidth=0.5)
 
@@ -160,18 +160,17 @@ class PaperVisualizer:
                        xytext=(0, 3), textcoords='offset points',
                        ha='center', va='bottom', fontsize=10, fontweight='bold')
 
-        ax.set_ylabel('Average Iterations to Solution')
-        ax.set_xlabel('Evaluation Type')
-        ax.set_title('Grid Search vs. LLM Pipeline: Average Iterations by Type')
+        ax.set_ylabel('Avg # Iterations')
+        ax.set_xlabel('Improvement Type')
+        ax.set_title('Average Iterations to Solution by Improvement Type')
         ax.set_xticks(x)
         ax.set_xticklabels(labels)
         ax.legend(loc='upper right')
         ax.set_ylim(0, max(grid_iters) + 1.5)
 
         plt.tight_layout()
-        fig_path = self.figures_dir / f"{save_name}.pdf"
+        fig_path = self.figures_dir / f"{save_name}.png"
         plt.savefig(fig_path)
-        plt.savefig(str(fig_path).replace('.pdf', '.png'))
         plt.close()
 
         print(f"Generated: {fig_path}")
@@ -233,15 +232,9 @@ class PaperVisualizer:
                        xytext=(0, 3), textcoords='offset points',
                        ha='center', va='bottom', fontsize=11, fontweight='bold')
 
-        # Reference lines
-        ax.axhline(y=1.5, color='red', linestyle='--', linewidth=1.5, alpha=0.7,
-                   label='Target Threshold (1.5x)')
-        ax.axhline(y=1.0, color='gray', linestyle='-', linewidth=1, alpha=0.5,
-                   label='Baseline (1.0x)')
-
-        ax.set_ylabel('Speedup Ratio (Total Grid Iter. / Total LLM Iter.)')
-        ax.set_xlabel('Evaluation Type')
-        ax.set_title('LLM Pipeline Speedup by Evaluation Type')
+        ax.set_ylabel('Speedup (Grid / Framework # Iterations)')
+        ax.set_xlabel('Improvement Type')
+        ax.set_title('Framework Speedup wrt Grid Search')
         ax.set_xticks(x)
         ax.set_xticklabels(labels)
         ax.set_ylim(0, max(speedups) + 1.5)
@@ -251,15 +244,12 @@ class PaperVisualizer:
             mpatches.Patch(color=self.colors['calendar'], label='Calendar Adjustment'),
             mpatches.Patch(color=self.colors['role'], label='Role Redesign'),
             mpatches.Patch(color=self.colors['resource'], label='Resource Allocation'),
-            plt.Line2D([0], [0], color='red', linestyle='--', label='Target (1.5x)'),
-            plt.Line2D([0], [0], color='gray', linestyle='-', label='Baseline (1.0x)'),
         ]
         ax.legend(handles=legend_elements, loc='upper right')
 
         plt.tight_layout()
-        fig_path = self.figures_dir / f"{save_name}.pdf"
+        fig_path = self.figures_dir / f"{save_name}.png"
         plt.savefig(fig_path)
-        plt.savefig(str(fig_path).replace('.pdf', '.png'))
         plt.close()
 
         print(f"Generated: {fig_path}")
@@ -274,10 +264,11 @@ class PaperVisualizer:
         Figure 3: Combined two-panel summary view.
 
         Left: Iterations comparison
-        Right: Average speedup by improvement type
+        Right: Speedup by improvement type
         """
         valid_exps = [e for e in experiments
-                      if e.get("speedup_ratio", {}).get("mean") is not None]
+                      if e.get("baseline_iterations", {}).get("mean") is not None
+                      and e.get("llm_iterations", {}).get("mean") is not None]
 
         if not valid_exps:
             print("No valid experiments for combined summary")
@@ -307,12 +298,12 @@ class PaperVisualizer:
 
         ax1.bar(x - width/2, grid_iters, width, label='Grid', color=self.colors['grid'],
                 edgecolor='black', linewidth=0.5)
-        ax1.bar(x + width/2, llm_iters, width, label='LLM', color=self.colors['llm'],
+        ax1.bar(x + width/2, llm_iters, width, label='Framework', color=self.colors['llm'],
                 edgecolor='black', linewidth=0.5)
 
-        ax1.set_ylabel('Avg Iterations to Solution')
-        ax1.set_xlabel('Evaluation Type')
-        ax1.set_title('(a) Average Search Iterations by Type')
+        ax1.set_ylabel('Avg # Iterations')
+        ax1.set_xlabel('Improvement Type')
+        ax1.set_title('(a) Average Iterations to Solution')
         ax1.set_xticks(x)
         ax1.set_xticklabels(labels)
         ax1.legend(loc='upper left')
@@ -354,15 +345,14 @@ class PaperVisualizer:
                         xytext=(0, 3), textcoords='offset points',
                         ha='center', va='bottom', fontsize=11, fontweight='bold')
 
-        ax2.set_ylabel('Speedup Ratio')
+        ax2.set_ylabel('Speedup (Grid / Framework # Iterations)')
         ax2.set_xlabel('Improvement Type')
-        ax2.set_title('(b) Speedup by Type')
+        ax2.set_title('(b) Framework Speedup wrt Grid Search')
         ax2.set_ylim(0, max(speedups) + 1.5)
 
         plt.tight_layout()
-        fig_path = self.figures_dir / f"{save_name}.pdf"
+        fig_path = self.figures_dir / f"{save_name}.png"
         plt.savefig(fig_path)
-        plt.savefig(str(fig_path).replace('.pdf', '.png'))
         plt.close()
 
         print(f"Generated: {fig_path}")
@@ -764,14 +754,6 @@ class PaperVisualizer:
             figures.append(fig)
 
         fig = self.plot_combined_summary(experiments)
-        if fig:
-            figures.append(fig)
-
-        fig = self.plot_hypothesis_validation(experiments)
-        if fig:
-            figures.append(fig)
-
-        fig = self.plot_results_table(experiments)
         if fig:
             figures.append(fig)
 

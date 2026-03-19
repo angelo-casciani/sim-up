@@ -477,13 +477,37 @@ The LLM Benchmark Evaluation tests multiple LLM models on the full `ImprovementV
 
 ### 7.2 Models Benchmarked
 
-| Provider | Models |
-|----------|--------|
-| OpenAI | gpt-4.1, gpt-5, gpt-5-mini, gpt-5-nano, o3 |
-| Anthropic | anthropic--claude-4.5-opus, anthropic--claude-4.5-sonnet, anthropic--claude-4.5-haiku |
-| Mistral | mistralai--mistral-small-instruct, mistralai--mistral-medium-instruct, mistralai--mistral-large-instruct |
+| Provider | Models | Size Category |
+|----------|--------|---------------|
+| OpenAI | gpt-5 | Large |
+| OpenAI | gpt-5-mini | Medium |
+| OpenAI | gpt-5-nano | Small |
+| OpenAI | o3 | Reasoning |
+| Anthropic | anthropic--claude-4.5-opus | Large |
+| Anthropic | anthropic--claude-4.5-sonnet | Medium |
+| Anthropic | anthropic--claude-4.5-haiku | Small |
+| Mistral | mistralai--mistral-large-instruct | Large |
+| Mistral | mistralai--mistral-medium-instruct | Medium |
+| Mistral | mistralai--mistral-small-instruct | Small |
 
-### 7.3 Metrics
+**Total: 10 models** across 3 providers, covering large/medium/small tiers plus reasoning models.
+
+### 7.3 Evaluation Logs
+
+For comprehensive research evaluation, the benchmark uses validated logs from different domains:
+
+| Log | Domain | Rows | Cases | Activities | Resources | Status |
+|-----|--------|------|-------|------------|-----------|--------|
+| **LoanApp.csv** | Financial | 7.5K | 997 | 12 | 19 | Primary benchmark |
+| **BPIC_2012W.csv** | Banking (BPIC) | 51K | 8,030 | 6 | 62 | BPIC benchmark |
+| p2p.csv | Procurement | 7.9K | 550 | 21 | 27 | Validation |
+
+**Note on BPIC logs:**
+- BPIC_2012W and BPIC_2017W are standard BPI Challenge logs used in process mining research
+- BPIC_2017W (230K rows) is significantly larger and may require extended runtime for SIMOD discovery
+- Both logs have proper column structure (`case_id`, `activity_name`, `resource`, `start_timestamp`, `end_timestamp`)
+
+### 7.4 Metrics
 
 | Metric | Definition |
 |--------|------------|
@@ -492,10 +516,26 @@ The LLM Benchmark Evaluation tests multiple LLM models on the full `ImprovementV
 | **Averaged validation score** | `(S_DES + S_ABS) / 2` where `S = delta_throughput - delta_cycle_time` |
 | **Success rate** | Percentage of runs that found a validated improvement |
 
-### 7.4 Usage
+### 7.5 Per-Iteration Tracking
+
+For each iteration, the benchmark captures:
+
+| Field | Description |
+|-------|-------------|
+| `hypothesis_description` | Text description of the proposed improvement |
+| `hypothesis_type` | Type: `resource_allocation`, `calendar_adjustment`, or `role_redesign` |
+| `is_improvement` | Whether this iteration was validated as an improvement |
+| `des_cycle_time_change` | % change in DES cycle time vs baseline |
+| `des_throughput_change` | % change in DES throughput vs baseline |
+| `abs_cycle_time_change` | % change in ABS cycle time vs baseline |
+| `abs_throughput_change` | % change in ABS throughput vs baseline |
+| `averaged_score` | Combined validation score |
+| `iteration_time` | Wall-clock time for this iteration (seconds) |
+
+### 7.6 Usage
 
 ```bash
-# Run benchmark with default settings (all 11 models)
+# Run benchmark with default settings (all 10 models)
 python src/evaluation/quantitative/run_llm_benchmark.py --log LoanApp.csv
 
 # Run with specific models
@@ -505,21 +545,20 @@ python src/evaluation/quantitative/run_llm_benchmark.py \
 # Run with multiple repetitions for statistical significance
 python src/evaluation/quantitative/run_llm_benchmark.py --log LoanApp.csv --repetitions 5
 
-# Run with custom timeout (30 minutes)
-python src/evaluation/quantitative/run_llm_benchmark.py --log LoanApp.csv --timeout 1800
+# Run on BPIC benchmark log
+python src/evaluation/quantitative/run_llm_benchmark.py --log BPIC_2012W.csv --max-iterations 10
 
 # Dry run to validate configuration
 python src/evaluation/quantitative/run_llm_benchmark.py --log LoanApp.csv --dry-run
 ```
 
-### 7.5 Configuration Options
+### 7.7 Configuration Options
 
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--log`, `-l` | `LoanApp.csv` | Event log file in logs/ directory |
-| `--models`, `-m` | All 11 models | Specific models to benchmark |
+| `--models`, `-m` | All 10 models | Specific models to benchmark |
 | `--repetitions`, `-r` | `1` | Number of runs per model |
-| `--timeout` | `900` (15 min) | Timeout per run in seconds |
 | `--max-iterations` | `5` | Maximum hypothesis iterations per run |
 | `--output-dir`, `-o` | `output` | Output directory for results |
 | `--no-sudo` | Auto (Windows) | Don't use sudo for Docker commands |
@@ -527,7 +566,7 @@ python src/evaluation/quantitative/run_llm_benchmark.py --log LoanApp.csv --dry-
 | `--abs-runs` | `5` | Number of ABS (AgentSimulator) runs |
 | `--dry-run` | - | Print configuration without running |
 
-### 7.6 Output Structure
+### 7.8 Output Structure
 
 ```
 output/llm_benchmark_YYYYMMDD_HHMMSS/
@@ -536,7 +575,7 @@ output/llm_benchmark_YYYYMMDD_HHMMSS/
 └── benchmark_report.md         # Summary with rankings
 ```
 
-### 7.7 Report Contents
+### 7.9 Report Contents
 
 The benchmark report includes:
 
@@ -545,19 +584,43 @@ The benchmark report includes:
 3. **Iteration Ranking**: Models sorted by iterations to first improvement (ascending)
 4. **Impact Ranking**: Models sorted by averaged validation score (descending)
 5. **Detailed Results**: Per-model breakdown with individual run data
+6. **Iteration Details**: Per-iteration hypothesis, KPI impacts, and timing
+
+### 7.10 Research Paper Evaluation Setup
+
+For a comprehensive research paper evaluation:
+
+```bash
+# Run all 10 models on LoanApp with 3 repetitions
+python src/evaluation/quantitative/run_llm_benchmark.py \
+    --log LoanApp.csv --repetitions 3 --max-iterations 10
+
+# Run all 10 models on BPIC_2012W benchmark
+python src/evaluation/quantitative/run_llm_benchmark.py \
+    --log BPIC_2012W.csv --repetitions 3 --max-iterations 10
+```
+
+**Expected runtime estimates:**
+- LoanApp (small): ~15-20 min baseline + ~5 min/iteration × 10 iterations × 10 models × 3 reps = ~30-40 hours
+- BPIC_2012W (medium): ~20-30 min baseline + ~8 min/iteration × 10 iterations × 10 models × 3 reps = ~50-70 hours
+
+**Statistical reporting:**
+- Results reported as Mean ± Standard Deviation across repetitions
+- Rankings based on mean performance
+- Per-iteration analysis shows improvement trajectory
 
 ---
 
 ## 8. Future Work: Mixed/Cross-type Evaluation
 
-### 7.1 Scenario Description
+### 8.1 Scenario Description
 
 In a **mixed** scenario, the LLM is not told which improvement type to use. Given a degraded model, it must:
 1. Diagnose the problem (bottleneck identification)
 2. Choose the best intervention type (Resource, Calendar, or Role Redesign)
 3. Propose specific parameters
 
-### 7.2 Why Deferred
+### 8.2 Why Deferred
 
 **Challenge:** No fair grid search baseline exists for mixed scenarios.
 
@@ -571,7 +634,7 @@ In a **mixed** scenario, the LLM is not told which improvement type to use. Give
 - Multi-armed bandit approach
 - Requires additional research to define fair comparison
 
-### 7.3 Future Implementation
+### 8.3 Future Implementation
 
 When implemented, mixed evaluation would test:
 - LLM's ability to select the **cost-optimal** intervention type

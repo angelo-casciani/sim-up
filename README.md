@@ -118,6 +118,16 @@ The pipeline focuses on actionable interventions:
 
 Note: `activity_durations` is disabled as it identifies WHERE to improve but not HOW.
 
+### Role Compatibility
+
+Role redesign proposals (shifting responsibilities between roles) are validated for compatibility. A shift is **rejected** if:
+
+- The source or destination is an external actor (e.g., Applicant, Customer)
+- The roles have no overlapping tasks in the `role_task_mapping`
+- The roles are different types with incompatible task assignments
+
+Valid shifts require roles to share common tasks or be instances of the same role type (e.g., Loan Officer-001 → Loan Officer-002).
+
 ## Outputs
 
 | Output | Location |

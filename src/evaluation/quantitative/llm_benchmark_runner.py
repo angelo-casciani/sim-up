@@ -214,7 +214,6 @@ class LLMBenchmarkRunner:
 
     DEFAULT_MODELS = [
         # OpenAI
-        "gpt-4.1",
         "gpt-5",
         "gpt-5-mini",
         "gpt-5-nano",
