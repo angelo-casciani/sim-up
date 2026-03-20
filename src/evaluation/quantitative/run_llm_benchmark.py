@@ -83,7 +83,7 @@ Examples:
 
     parser.add_argument(
         "--output-dir", "-o",
-        default="../output",
+        default="output",
         help="Output directory for results (default: output)"
     )
 

@@ -1,0 +1,752 @@
+"""
+LLM Benchmark Visualizer
+
+Generates publication-quality charts for LLM benchmark evaluation:
+- Convergence trajectory: Distance to 1% improvement threshold vs proposals
+- Model comparison: Bar charts for proposals, time, and impact
+- Speed vs Impact scatter plots
+"""
+
+import os
+import json
+from typing import Dict, List, Optional, Any
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import numpy as np
+
+
+class LLMBenchmarkVisualizer:
+    """Generate charts from LLM benchmark results."""
+
+    # Validation threshold (1% improvement required)
+    IMPROVEMENT_THRESHOLD = 0.01
+
+    def __init__(self, output_dir: str):
+        """
+        Initialize visualizer.
+
+        Args:
+            output_dir: Directory to save generated charts
+        """
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Style settings
+        plt.style.use('seaborn-v0_8-whitegrid')
+
+        # Colorblind-friendly palette
+        self.model_colors = {
+            # OpenAI - Blue shades
+            'gpt-4.1': '#1E90FF',
+            'gpt-5': '#0072B2',
+            'gpt-5-mini': '#56B4E9',
+            'gpt-5-nano': '#ADD8E6',
+            'o3': '#003366',
+            # Anthropic - Orange/red shades
+            'anthropic--claude-4.5-opus': '#D55E00',
+            'anthropic--claude-4.5-sonnet': '#E69F00',
+            'anthropic--claude-4.5-haiku': '#F0E442',
+            # Mistral - Green shades
+            'mistralai--mistral-large-instruct': '#009E73',
+            'mistralai--mistral-small-instruct': '#B2DF8A',
+        }
+
+        # Fallback colors
+        self.fallback_colors = plt.cm.tab10.colors
+
+        # Publication font sizes
+        self.fontsize = {
+            'title': 16,
+            'axis_label': 14,
+            'tick': 12,
+            'legend': 10,
+            'annotation': 10
+        }
+
+        self.linewidth = 2.0
+        self.markersize = 8
+
+    def _get_model_color(self, model_name: str, index: int = 0) -> str:
+        """Get color for a model, with fallback."""
+        if model_name in self.model_colors:
+            return self.model_colors[model_name]
+        return self.fallback_colors[index % len(self.fallback_colors)]
+
+    def plot_score_progression(
+        self,
+        report: Dict,
+        save_name: str = "score_progression"
+    ) -> str:
+        """
+        Plot score progression: averaged_score vs proposals for each model.
+
+        Y-axis: Averaged validation score (higher is better)
+        X-axis: Proposal number
+        Includes 1% threshold line.
+        Rejected proposals (before simulation) are shown at 0.0.
+
+        Args:
+            report: Benchmark report dictionary
+            save_name: Output filename
+
+        Returns:
+            Path to saved figure
+        """
+        results = report.get("results", [])
+        if not results:
+            print("No results to plot")
+            return ""
+
+        fig, ax = plt.subplots(figsize=(12, 8))
+
+        for i, model_result in enumerate(results):
+            model_name = model_result.get("model_name", f"Model {i}")
+            runs = model_result.get("runs", [])
+
+            if not runs:
+                continue
+
+            # Aggregate all runs for this model
+            max_proposals = max(run.get("total_proposals", len(run.get("iterations", []))) for run in runs)
+            proposal_scores = {prop_num: [] for prop_num in range(1, max_proposals + 1)}
+
+            for run in runs:
+                # Get all proposals including rejected ones
+                all_proposals = run.get("all_proposals", run.get("iterations", []))
+                for prop in all_proposals:
+                    prop_num = prop.get("proposal_num", prop.get("iteration_num", 0))
+                    # Rejected proposals have score 0.0
+                    if prop.get("rejected_before_simulation", False):
+                        score = 0.0
+                    else:
+                        score = prop.get("kpi_impact", {}).get("averaged_score")
+                    if score is not None and prop_num in proposal_scores:
+                        proposal_scores[prop_num].append(score)
+
+            # Calculate mean and std for each proposal
+            x_vals = []
+            y_vals = []
+            y_std = []
+
+            for prop_num in sorted(proposal_scores.keys()):
+                scores = proposal_scores[prop_num]
+                if scores:
+                    x_vals.append(prop_num)
+                    y_vals.append(np.mean(scores))
+                    y_std.append(np.std(scores) if len(scores) > 1 else 0)
+
+            if x_vals and y_vals:
+                color = self._get_model_color(model_name, i)
+
+                ax.plot(x_vals, y_vals, 'o-',
+                        color=color,
+                        linewidth=self.linewidth,
+                        markersize=self.markersize,
+                        label=model_name)
+
+                # Add error bands
+                if any(s > 0 for s in y_std):
+                    y_lower = np.array(y_vals) - np.array(y_std)
+                    y_upper = np.array(y_vals) + np.array(y_std)
+                    ax.fill_between(x_vals, y_lower, y_upper, color=color, alpha=0.15)
+
+                # Mark threshold crossings
+                for j, (x, y) in enumerate(zip(x_vals, y_vals)):
+                    if y >= self.IMPROVEMENT_THRESHOLD:
+                        ax.plot(x, y, '*', color=color, markersize=15,
+                                markeredgecolor='black', markeredgewidth=1)
+                        break
+
+        # Add threshold line
+        ax.axhline(y=self.IMPROVEMENT_THRESHOLD, color='green', linestyle='--',
+                   linewidth=2, alpha=0.7, label='1% Improvement Threshold')
+
+        # Add 0 reference line
+        ax.axhline(y=0, color='gray', linestyle=':', linewidth=1, alpha=0.5)
+
+        # Formatting
+        ax.set_xlabel('# Proposal', fontsize=self.fontsize['axis_label'])
+        ax.set_ylabel('Averaged Validation Score', fontsize=self.fontsize['axis_label'])
+        ax.set_title(f'LLM Score Progression\n'
+                     f'Averaged Validation Score per Proposal (higher is better)',
+                     fontsize=self.fontsize['title'], fontweight='bold')
+
+        max_proposals = report.get("max_proposals", report.get("max_iterations", 5))
+        ax.set_xlim(0.5, max_proposals + 0.5)
+        ax.set_xticks(range(1, max_proposals + 1))
+
+        ax.tick_params(axis='both', labelsize=self.fontsize['tick'])
+        ax.legend(loc='lower right', fontsize=self.fontsize['legend'],
+                  frameon=True, facecolor='white', edgecolor='black',
+                  ncol=2)
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+
+        # Save (PNG only)
+        fig_path = os.path.join(self.output_dir, f"{save_name}.png")
+        plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"  Saved: {fig_path}")
+        return fig_path
+
+    def plot_proposals_comparison(
+        self,
+        report: Dict,
+        save_name: str = "proposals_comparison"
+    ) -> str:
+        """
+        Plot bar chart comparing # proposals to first improvement across models.
+
+        Args:
+            report: Benchmark report dictionary
+            save_name: Output filename
+
+        Returns:
+            Path to saved figure
+        """
+        results = report.get("results", [])
+        if not results:
+            return ""
+
+        fig, ax = plt.subplots(figsize=(14, 7))
+
+        model_names = []
+        proposals_means = []
+        proposals_stds = []
+        colors = []
+
+        for i, model_result in enumerate(results):
+            model_name = model_result.get("model_name", f"Model {i}")
+            # Use proposals_to_improvement if available, otherwise fall back to iterations_to_improvement
+            proposals_mean = model_result.get("proposals_to_improvement_mean") or model_result.get("iterations_to_improvement_mean")
+            proposals_std = model_result.get("proposals_to_improvement_std") or model_result.get("iterations_to_improvement_std", 0)
+
+            if proposals_mean is not None:
+                model_names.append(model_name)  # Use full model name
+                proposals_means.append(proposals_mean)
+                proposals_stds.append(proposals_std or 0)
+                colors.append(self._get_model_color(model_name, i))
+
+        if not model_names:
+            print("No successful runs to plot")
+            plt.close()
+            return ""
+
+        x = np.arange(len(model_names))
+        bars = ax.bar(x, proposals_means, color=colors, yerr=proposals_stds,
+                      capsize=5, error_kw={'linewidth': 2})
+
+        # Add value labels
+        for bar, mean, std in zip(bars, proposals_means, proposals_stds):
+            height = bar.get_height()
+            label = f'{mean:.1f}'
+            if std > 0:
+                label += f'\n(+/-{std:.1f})'
+            ax.annotate(label,
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 5), textcoords="offset points",
+                        ha='center', va='bottom',
+                        fontsize=self.fontsize['annotation'],
+                        fontweight='bold')
+
+        # Formatting
+        ax.set_xlabel('Model', fontsize=self.fontsize['axis_label'])
+        ax.set_ylabel('# Proposals to First Improvement', fontsize=self.fontsize['axis_label'])
+        ax.set_title('Proposals to First Validated Improvement',
+                     fontsize=self.fontsize['title'], fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(model_names, rotation=45, ha='right',
+                          fontsize=self.fontsize['tick'])
+        ax.tick_params(axis='y', labelsize=self.fontsize['tick'])
+        ax.set_ylim(0, max(proposals_means) * 1.3)
+
+        plt.tight_layout()
+
+        fig_path = os.path.join(self.output_dir, f"{save_name}.png")
+        plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"  Saved: {fig_path}")
+        return fig_path
+
+    def plot_time_comparison(
+        self,
+        report: Dict,
+        save_name: str = "time_comparison"
+    ) -> str:
+        """
+        Plot bar chart comparing time to first improvement across models.
+
+        Args:
+            report: Benchmark report dictionary
+            save_name: Output filename
+
+        Returns:
+            Path to saved figure
+        """
+        results = report.get("results", [])
+        if not results:
+            return ""
+
+        fig, ax = plt.subplots(figsize=(14, 7))
+
+        model_names = []
+        time_means = []
+        time_stds = []
+        colors = []
+
+        for i, model_result in enumerate(results):
+            model_name = model_result.get("model_name", f"Model {i}")
+            time_mean = model_result.get("time_to_improvement_mean")
+            time_std = model_result.get("time_to_improvement_std", 0)
+
+            if time_mean is not None:
+                model_names.append(model_name)  # Use full model name
+                time_means.append(time_mean / 60)  # Convert to minutes
+                time_stds.append((time_std or 0) / 60)
+                colors.append(self._get_model_color(model_name, i))
+
+        if not model_names:
+            print("No successful runs to plot")
+            plt.close()
+            return ""
+
+        x = np.arange(len(model_names))
+        bars = ax.bar(x, time_means, color=colors, yerr=time_stds,
+                      capsize=5, error_kw={'linewidth': 2})
+
+        # Add value labels
+        for bar, mean, std in zip(bars, time_means, time_stds):
+            height = bar.get_height()
+            label = f'{mean:.1f}m'
+            if std > 0:
+                label += f'\n(+/-{std:.1f})'
+            ax.annotate(label,
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 5), textcoords="offset points",
+                        ha='center', va='bottom',
+                        fontsize=self.fontsize['annotation'],
+                        fontweight='bold')
+
+        # Formatting
+        ax.set_xlabel('Model', fontsize=self.fontsize['axis_label'])
+        ax.set_ylabel('Time to First Improvement (minutes)', fontsize=self.fontsize['axis_label'])
+        ax.set_title('Time to First Validated Improvement',
+                     fontsize=self.fontsize['title'], fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(model_names, rotation=45, ha='right',
+                          fontsize=self.fontsize['tick'])
+        ax.tick_params(axis='y', labelsize=self.fontsize['tick'])
+        ax.set_ylim(0, max(time_means) * 1.3)
+
+        plt.tight_layout()
+
+        fig_path = os.path.join(self.output_dir, f"{save_name}.png")
+        plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"  Saved: {fig_path}")
+        return fig_path
+
+    def plot_speed_vs_impact(
+        self,
+        report: Dict,
+        save_name: str = "speed_vs_impact"
+    ) -> str:
+        """
+        Plot scatter: Speed (# proposals) vs Impact (score) with full model names.
+
+        Args:
+            report: Benchmark report dictionary
+            save_name: Output filename
+
+        Returns:
+            Path to saved figure
+        """
+        results = report.get("results", [])
+        if not results:
+            return ""
+
+        fig, ax = plt.subplots(figsize=(12, 8))
+
+        for i, model_result in enumerate(results):
+            model_name = model_result.get("model_name", f"Model {i}")
+            # Use proposals_to_improvement if available, otherwise fall back to iterations
+            proposals = model_result.get("proposals_to_improvement_mean") or model_result.get("iterations_to_improvement_mean")
+            score = model_result.get("averaged_score_mean")
+
+            if proposals is not None and score is not None:
+                color = self._get_model_color(model_name, i)
+
+                ax.scatter(proposals, score * 100, s=200, c=[color],
+                          edgecolors='black', linewidths=1.5, zorder=5)
+                ax.annotate(model_name,  # Use full model name
+                           xy=(proposals, score * 100),
+                           xytext=(8, 8), textcoords='offset points',
+                           fontsize=self.fontsize['annotation'],
+                           fontweight='bold')
+
+        # Add threshold line
+        ax.axhline(y=1.0, color='green', linestyle='--', linewidth=2,
+                   alpha=0.7, label='1% Threshold')
+
+        # Formatting (removed "Ideal" annotation)
+        ax.set_xlabel('# Proposals to First Improvement',
+                     fontsize=self.fontsize['axis_label'])
+        ax.set_ylabel('Averaged Validation Score %',
+                     fontsize=self.fontsize['axis_label'])
+        ax.set_title('Speed vs Impact Trade-off',
+                     fontsize=self.fontsize['title'], fontweight='bold')
+        ax.tick_params(axis='both', labelsize=self.fontsize['tick'])
+        ax.legend(loc='lower right', fontsize=self.fontsize['legend'])
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+
+        fig_path = os.path.join(self.output_dir, f"{save_name}.png")
+        plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"  Saved: {fig_path}")
+        return fig_path
+
+    def plot_success_rate(
+        self,
+        report: Dict,
+        save_name: str = "success_rate"
+    ) -> str:
+        """
+        Plot bar chart showing success rate per model.
+
+        Args:
+            report: Benchmark report dictionary
+            save_name: Output filename
+
+        Returns:
+            Path to saved figure
+        """
+        results = report.get("results", [])
+        if not results:
+            return ""
+
+        fig, ax = plt.subplots(figsize=(14, 7))
+
+        model_names = []
+        success_rates = []
+        colors = []
+
+        for i, model_result in enumerate(results):
+            model_name = model_result.get("model_name", f"Model {i}")
+            success_rate = model_result.get("success_rate", 0)
+
+            model_names.append(model_name)  # Use full model name
+            success_rates.append(success_rate * 100)
+            colors.append(self._get_model_color(model_name, i))
+
+        x = np.arange(len(model_names))
+        bars = ax.bar(x, success_rates, color=colors)
+
+        # Add value labels
+        for bar, rate in zip(bars, success_rates):
+            height = bar.get_height()
+            ax.annotate(f'{rate:.0f}%',
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 5), textcoords="offset points",
+                        ha='center', va='bottom',
+                        fontsize=self.fontsize['annotation'],
+                        fontweight='bold')
+
+        # Formatting
+        ax.set_xlabel('Model', fontsize=self.fontsize['axis_label'])
+        ax.set_ylabel('Success Rate (%)', fontsize=self.fontsize['axis_label'])
+        ax.set_title('Success Rate: Finding Validated Improvement',
+                     fontsize=self.fontsize['title'], fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(model_names, rotation=45, ha='right',
+                          fontsize=self.fontsize['tick'])
+        ax.tick_params(axis='y', labelsize=self.fontsize['tick'])
+        ax.set_ylim(0, 110)
+
+        plt.tight_layout()
+
+        fig_path = os.path.join(self.output_dir, f"{save_name}.png")
+        plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"  Saved: {fig_path}")
+        return fig_path
+
+    def plot_improvement_by_type(
+        self,
+        report: Dict,
+        save_name: str = "improvement_by_type"
+    ) -> str:
+        """
+        Plot grouped bar chart showing improvement magnitude by hypothesis type per model.
+
+        Shows which improvement types (resource/calendar/role_redesign) each model
+        excels at proposing.
+
+        Args:
+            report: Benchmark report dictionary
+            save_name: Output filename
+
+        Returns:
+            Path to saved figure
+        """
+        results = report.get("results", [])
+        if not results:
+            return ""
+
+        # Improvement type colors
+        type_colors = {
+            'resource_allocation': '#0072B2',  # Blue
+            'calendar_adjustment': '#E69F00',  # Orange
+            'role_redesign': '#009E73',        # Green
+        }
+
+        # Collect scores by model and type (excluding unknown)
+        model_type_scores = {}
+        all_types = set()
+
+        for model_result in results:
+            model_name = model_result.get("model_name", "Unknown")
+            model_type_scores[model_name] = {}
+
+            runs = model_result.get("runs", [])
+            for run in runs:
+                iterations = run.get("iterations", [])
+                for it in iterations:
+                    if it.get("is_improvement", False):
+                        hyp_type = it.get("hypothesis_type", "unknown")
+                        # Skip unknown types
+                        if hyp_type == "unknown":
+                            continue
+                        score = it.get("kpi_impact", {}).get("averaged_score")
+                        if score is not None:
+                            all_types.add(hyp_type)
+                            if hyp_type not in model_type_scores[model_name]:
+                                model_type_scores[model_name][hyp_type] = []
+                            model_type_scores[model_name][hyp_type].append(score * 100)
+
+        if not all_types:
+            print("No improvement types to plot")
+            plt.close()
+            return ""
+
+        # Sort types for consistent ordering (exclude unknown)
+        type_order = ['resource_allocation', 'calendar_adjustment', 'role_redesign']
+        types = [t for t in type_order if t in all_types]
+        types.extend([t for t in all_types if t not in type_order and t != 'unknown'])
+
+        fig, ax = plt.subplots(figsize=(14, 8))
+
+        model_names = list(model_type_scores.keys())
+        x = np.arange(len(model_names))
+        width = 0.8 / len(types) if types else 0.8
+
+        # Plot bars for each type
+        for i, hyp_type in enumerate(types):
+            means = []
+            stds = []
+            for model in model_names:
+                scores = model_type_scores[model].get(hyp_type, [])
+                if scores:
+                    means.append(np.mean(scores))
+                    stds.append(np.std(scores) if len(scores) > 1 else 0)
+                else:
+                    means.append(0)
+                    stds.append(0)
+
+            offset = (i - len(types) / 2 + 0.5) * width
+            color = type_colors.get(hyp_type, '#999999')
+            label = hyp_type.replace('_', ' ').title()
+
+            bars = ax.bar(x + offset, means, width, label=label,
+                         color=color, alpha=0.8, yerr=stds if any(stds) else None,
+                         capsize=3)
+
+        # Add 1% threshold line
+        ax.axhline(y=1.0, color='red', linestyle='--', linewidth=2,
+                   alpha=0.7, label='1% Threshold')
+
+        # Formatting
+        ax.set_xlabel('Model', fontsize=self.fontsize['axis_label'])
+        ax.set_ylabel('Avg Improvement Magnitude (%)', fontsize=self.fontsize['axis_label'])
+        ax.set_title('Improvement Magnitude by Hypothesis Type\n'
+                     '(Which improvement types does each model propose effectively?)',
+                     fontsize=self.fontsize['title'], fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(model_names, rotation=45, ha='right',
+                          fontsize=self.fontsize['tick'])
+        ax.tick_params(axis='y', labelsize=self.fontsize['tick'])
+        ax.legend(loc='upper right', fontsize=self.fontsize['legend'])
+        ax.grid(True, alpha=0.3, axis='y')
+
+        plt.tight_layout()
+
+        fig_path = os.path.join(self.output_dir, f"{save_name}.png")
+        plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"  Saved: {fig_path}")
+        return fig_path
+
+    def plot_best_improvement_comparison(
+        self,
+        report: Dict,
+        save_name: str = "best_improvement_comparison"
+    ) -> str:
+        """
+        Plot bar chart comparing the BEST improvement found by each model.
+
+        Shows the maximum improvement magnitude achieved by each model,
+        useful for understanding the upper potential of each LLM.
+        Only shows hypothesis type if it's known (not 'unknown').
+
+        Args:
+            report: Benchmark report dictionary
+            save_name: Output filename
+
+        Returns:
+            Path to saved figure
+        """
+        results = report.get("results", [])
+        if not results:
+            return ""
+
+        fig, ax = plt.subplots(figsize=(14, 7))
+
+        model_names = []
+        best_scores = []
+        colors = []
+        best_hypotheses = []
+
+        for i, model_result in enumerate(results):
+            model_name = model_result.get("model_name", f"Model {i}")
+            runs = model_result.get("runs", [])
+
+            # Find the best improvement across all runs
+            best_score = None
+            best_hyp = None
+            for run in runs:
+                iterations = run.get("iterations", [])
+                for it in iterations:
+                    if it.get("is_improvement", False):
+                        score = it.get("kpi_impact", {}).get("averaged_score")
+                        if score is not None and (best_score is None or score > best_score):
+                            best_score = score
+                            best_hyp = it.get("hypothesis_type", "unknown")
+
+            if best_score is not None:
+                model_names.append(model_name)  # Use full model name
+                best_scores.append(best_score * 100)  # Convert to percentage
+                colors.append(self._get_model_color(model_name, i))
+                best_hypotheses.append(best_hyp)
+
+        if not model_names:
+            print("No improvements to plot")
+            plt.close()
+            return ""
+
+        x = np.arange(len(model_names))
+        bars = ax.bar(x, best_scores, color=colors)
+
+        # Add value labels with hypothesis type (only if not 'unknown')
+        for bar, score, hyp in zip(bars, best_scores, best_hypotheses):
+            height = bar.get_height()
+            if hyp and hyp != "unknown":
+                hyp_short = hyp.replace('_', ' ').replace('allocation', '').replace('adjustment', '').strip()
+                label = f'{score:.2f}%\n({hyp_short})'
+            else:
+                label = f'{score:.2f}%'
+            ax.annotate(label,
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 5), textcoords="offset points",
+                        ha='center', va='bottom',
+                        fontsize=self.fontsize['annotation'] - 1,
+                        fontweight='bold')
+
+        # Add 1% threshold line
+        ax.axhline(y=1.0, color='green', linestyle='--', linewidth=2,
+                   alpha=0.7, label='1% Threshold')
+
+        # Formatting
+        ax.set_xlabel('Model', fontsize=self.fontsize['axis_label'])
+        ax.set_ylabel('Best Improvement Magnitude (%)', fontsize=self.fontsize['axis_label'])
+        ax.set_title('Best Validated Improvement per Model',
+                     fontsize=self.fontsize['title'], fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(model_names, rotation=45, ha='right',
+                          fontsize=self.fontsize['tick'])
+        ax.tick_params(axis='y', labelsize=self.fontsize['tick'])
+        ax.legend(loc='upper right', fontsize=self.fontsize['legend'])
+        ax.set_ylim(0, max(best_scores) * 1.3 if best_scores else 10)
+
+        plt.tight_layout()
+
+        fig_path = os.path.join(self.output_dir, f"{save_name}.png")
+        plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"  Saved: {fig_path}")
+        return fig_path
+
+    def generate_all_plots(
+        self,
+        report_path: str
+    ) -> List[str]:
+        """
+        Generate all benchmark visualizations from a saved report.
+
+        Args:
+            report_path: Path to benchmark_results.json
+
+        Returns:
+            List of generated figure paths
+        """
+        with open(report_path, 'r') as f:
+            report = json.load(f)
+
+        figures = []
+
+        print("\nGenerating LLM benchmark visualizations...")
+
+        # Score progression
+        fig_path = self.plot_score_progression(report)
+        if fig_path:
+            figures.append(fig_path)
+
+        # Bar charts
+        fig_path = self.plot_proposals_comparison(report)
+        if fig_path:
+            figures.append(fig_path)
+
+        fig_path = self.plot_time_comparison(report)
+        if fig_path:
+            figures.append(fig_path)
+
+        # Scatter plot
+        fig_path = self.plot_speed_vs_impact(report)
+        if fig_path:
+            figures.append(fig_path)
+
+        # Success rate
+        fig_path = self.plot_success_rate(report)
+        if fig_path:
+            figures.append(fig_path)
+
+        # Improvement by type
+        fig_path = self.plot_improvement_by_type(report)
+        if fig_path:
+            figures.append(fig_path)
+
+        # Best improvement comparison (replaces impact_comparison)
+        fig_path = self.plot_best_improvement_comparison(report)
+        if fig_path:
+            figures.append(fig_path)
+
+        print(f"\nGenerated {len(figures)} visualizations")
+        return figures

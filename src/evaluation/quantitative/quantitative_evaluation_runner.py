@@ -77,6 +77,9 @@ class SingleRunResult:
     des_validation_score: Optional[float] = None  # DES (Prosimos) validation
     abs_validation_score: Optional[float] = None  # ABS (AgentSimulator) validation
     dual_validation_passed: bool = False  # Both S_DES > 0 AND S_ABS > 0
+    # Trajectory data for proximity plots
+    baseline_trajectory: Optional[List[Dict]] = None  # Per-iteration data for grid search
+    llm_trajectory: Optional[List[Dict]] = None  # Per-iteration data for LLM search
 
 
 @dataclass
@@ -156,7 +159,9 @@ class AggregatedResult:
                     "speedup_ratio": r.speedup_ratio,
                     "baseline_found": r.baseline_found_solution,
                     "llm_found": r.llm_found_solution,
-                    "llm_accuracy": r.llm_accuracy
+                    "llm_accuracy": r.llm_accuracy,
+                    "baseline_trajectory": r.baseline_trajectory,
+                    "llm_trajectory": r.llm_trajectory
                 }
                 for r in self.runs
             ]
@@ -522,7 +527,7 @@ class ComprehensiveEvaluator:
             num_repetitions=self.num_repetitions
         )
 
-        eval_output_dir = os.path.join(output_dir, f"comprehensive_eval_{timestamp}")
+        eval_output_dir = os.path.join(output_dir, f"impr_type_eval_{timestamp}")
         os.makedirs(eval_output_dir, exist_ok=True)
 
         self._print_header(experiments)
@@ -883,6 +888,16 @@ class ComprehensiveEvaluator:
 
         speedup = baseline_iters / llm_iters if baseline_iters and llm_iters else None
 
+        # Extract trajectory data for proximity plots
+        baseline_trajectory = None
+        llm_trajectory = None
+        if hasattr(baseline_result, 'to_dict'):
+            baseline_dict = baseline_result.to_dict()
+            baseline_trajectory = baseline_dict.get('iterations', [])
+        if hasattr(llm_result, 'to_dict'):
+            llm_dict = llm_result.to_dict()
+            llm_trajectory = llm_dict.get('iterations', [])
+
         return SingleRunResult(
             run_id=len(simulation_cache),  # Approximate run ID
             baseline_iterations=baseline_iters,
@@ -891,7 +906,9 @@ class ComprehensiveEvaluator:
             baseline_found_solution=baseline_iters is not None,
             llm_found_solution=llm_iters is not None,
             llm_accuracy=llm_iters is not None,  # Simplified accuracy check
-            convergence_quality=None  # Would need to compute from final metrics
+            convergence_quality=None,  # Would need to compute from final metrics
+            baseline_trajectory=baseline_trajectory,
+            llm_trajectory=llm_trajectory
         )
 
     def _run_resource_searches(

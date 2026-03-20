@@ -204,7 +204,7 @@ Examples:
     print("\nGenerating reports...")
     report_data = report.to_dict()
 
-    eval_dir = os.path.join(args.output_dir, f"comprehensive_eval_{report.timestamp}")
+    eval_dir = os.path.join(args.output_dir, f"impr_type_eval_{report.timestamp}")
     reporter = ComprehensiveResultsReporter(eval_dir)
     reporter.generate_full_report(report_data)
 

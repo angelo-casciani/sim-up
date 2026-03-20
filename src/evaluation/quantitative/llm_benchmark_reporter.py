@@ -5,6 +5,7 @@ Generates reports from LLM benchmark results in multiple formats:
 - JSON: Full structured data
 - CSV: Spreadsheet-friendly export
 - Markdown: Human-readable summary with rankings
+- Figures: Publication-quality visualizations
 """
 
 import json
@@ -16,6 +17,7 @@ from evaluation.quantitative.llm_benchmark_runner import (
     LLMBenchmarkReport,
     ModelBenchmarkResult
 )
+from evaluation.quantitative.llm_benchmark_visualizer import LLMBenchmarkVisualizer
 
 
 class LLMBenchmarkReporter:
@@ -40,8 +42,59 @@ class LLMBenchmarkReporter:
         self._generate_csv(report, eval_dir)
         self._generate_markdown(report, eval_dir)
 
+        # Generate visualizations
+        self._generate_figures(report, eval_dir)
+
         print(f"\nReports saved to: {eval_dir}")
         return eval_dir
+
+    def _generate_figures(self, report: LLMBenchmarkReport, output_dir: str):
+        """Generate publication-quality visualizations."""
+        figures_dir = os.path.join(output_dir, "figures")
+        os.makedirs(figures_dir, exist_ok=True)
+
+        try:
+            visualizer = LLMBenchmarkVisualizer(figures_dir)
+            report_dict = report.to_dict()
+            figures = []
+
+            # Generate all plots
+            fig = visualizer.plot_convergence_trajectory(report_dict)
+            if fig:
+                figures.append(fig)
+
+            fig = visualizer.plot_score_progression(report_dict)
+            if fig:
+                figures.append(fig)
+
+            fig = visualizer.plot_proposals_comparison(report_dict)
+            if fig:
+                figures.append(fig)
+
+            fig = visualizer.plot_time_comparison(report_dict)
+            if fig:
+                figures.append(fig)
+
+            fig = visualizer.plot_speed_vs_impact(report_dict)
+            if fig:
+                figures.append(fig)
+
+            fig = visualizer.plot_success_rate(report_dict)
+            if fig:
+                figures.append(fig)
+
+            # Improvement analysis plots
+            fig = visualizer.plot_improvement_by_type(report_dict)
+            if fig:
+                figures.append(fig)
+
+            fig = visualizer.plot_best_improvement_comparison(report_dict)
+            if fig:
+                figures.append(fig)
+
+            print(f"  - Figures: {len(figures)} charts in figures/")
+        except Exception as e:
+            print(f"  - Figures: Failed to generate ({e})")
 
     def _generate_json(self, report: LLMBenchmarkReport, output_dir: str):
         """Generate full results JSON."""
@@ -60,11 +113,14 @@ class LLMBenchmarkReporter:
             "run_id",
             "status",
             "time_to_first_improvement",
+            "proposals_to_first_improvement",
             "iterations_to_first_improvement",
             "averaged_score",
             "des_score",
             "abs_score",
             "total_time",
+            "total_proposals",
+            "total_iterations",
             "first_improvement_hypothesis",
             "error_message"
         ]
@@ -79,11 +135,14 @@ class LLMBenchmarkReporter:
                     str(run.run_id),
                     run.status,
                     self._format_float(run.time_to_first_improvement),
+                    str(run.proposals_to_first_improvement) if run.proposals_to_first_improvement is not None else "",
                     str(run.iterations_to_first_improvement) if run.iterations_to_first_improvement is not None else "",
                     self._format_float(run.averaged_score),
                     self._format_float(run.des_score),
                     self._format_float(run.abs_score),
                     self._format_float(run.total_time),
+                    str(run.total_proposals) if run.total_proposals else "",
+                    str(run.total_iterations) if run.total_iterations else "",
                     self._csv_escape(run.first_improvement_hypothesis or ""),
                     self._csv_escape(run.error_message or "")
                 ]
@@ -109,17 +168,22 @@ class LLMBenchmarkReporter:
             "",
             "## Summary Table",
             "",
-            "| Model | Success Rate | Avg Time (s) | Avg Iterations | Avg Score |",
-            "|-------|--------------|--------------|----------------|-----------|",
+            "| Model | Success Rate | Avg Time (s) | Avg Proposals | Avg Score |",
+            "|-------|--------------|--------------|---------------|-----------|",
         ]
 
         for result in report.results:
             success_rate = f"{result.success_rate*100:.0f}%"
             avg_time = self._format_stat(result.time_to_improvement_mean, result.time_to_improvement_std, 1)
-            avg_iter = self._format_stat(result.iterations_to_improvement_mean, result.iterations_to_improvement_std, 2)
+            # Use proposals if available, otherwise fall back to iterations
+            avg_proposals = self._format_stat(
+                result.proposals_to_improvement_mean or result.iterations_to_improvement_mean,
+                result.proposals_to_improvement_std or result.iterations_to_improvement_std,
+                2
+            )
             avg_score = self._format_stat(result.averaged_score_mean, result.averaged_score_std, 4)
 
-            lines.append(f"| {result.model_name} | {success_rate} | {avg_time} | {avg_iter} | {avg_score} |")
+            lines.append(f"| {result.model_name} | {success_rate} | {avg_time} | {avg_proposals} | {avg_score} |")
 
         # Rankings section
         lines.extend([
@@ -147,22 +211,27 @@ class LLMBenchmarkReporter:
         if not report.speed_ranking:
             lines.append("| - | No successful runs | - |")
 
-        # Iteration ranking
+        # Proposals ranking
         lines.extend([
             "",
-            "### Iteration Ranking (Iterations to First Improvement)",
+            "### Proposals Ranking (# Proposals to First Improvement)",
             "",
-            "| Rank | Model | Avg Iterations |",
-            "|------|-------|----------------|",
+            "| Rank | Model | Avg # Proposals |",
+            "|------|-------|-----------------|",
         ])
 
-        for i, model_name in enumerate(report.iteration_ranking, 1):
+        proposals_ranking = getattr(report, 'proposals_ranking', []) or report.iteration_ranking
+        for i, model_name in enumerate(proposals_ranking, 1):
             result = next((r for r in report.results if r.model_name == model_name), None)
             if result:
-                iter_str = self._format_stat(result.iterations_to_improvement_mean, result.iterations_to_improvement_std, 2)
-                lines.append(f"| {i} | {model_name} | {iter_str} |")
+                proposals_str = self._format_stat(
+                    result.proposals_to_improvement_mean or result.iterations_to_improvement_mean,
+                    result.proposals_to_improvement_std or result.iterations_to_improvement_std,
+                    2
+                )
+                lines.append(f"| {i} | {model_name} | {proposals_str} |")
 
-        if not report.iteration_ranking:
+        if not proposals_ranking:
             lines.append("| - | No successful runs | - |")
 
         # Impact ranking
@@ -205,23 +274,24 @@ class LLMBenchmarkReporter:
 
             if result.runs:
                 lines.extend([
-                    "| Run | Status | Time (s) | Iterations | Score |",
-                    "|-----|--------|----------|------------|-------|",
+                    "| Run | Status | Time (s) | # Proposals | Score |",
+                    "|-----|--------|----------|-------------|-------|",
                 ])
 
                 for run in result.runs:
                     time_str = f"{run.time_to_first_improvement:.1f}" if run.time_to_first_improvement else "-"
-                    iter_str = str(run.iterations_to_first_improvement) if run.iterations_to_first_improvement else "-"
+                    proposals_str = str(run.proposals_to_first_improvement or run.iterations_to_first_improvement) if (run.proposals_to_first_improvement or run.iterations_to_first_improvement) else "-"
                     score_str = f"{run.averaged_score:.4f}" if run.averaged_score else "-"
-                    lines.append(f"| {run.run_id} | {run.status} | {time_str} | {iter_str} | {score_str} |")
+                    lines.append(f"| {run.run_id} | {run.status} | {time_str} | {proposals_str} | {score_str} |")
 
                 lines.append("")
 
-                # Add iteration details for each run
+                # Add proposal details for each run
                 for run in result.runs:
-                    if run.iterations:
+                    all_proposals = getattr(run, 'all_proposals', []) or run.iterations
+                    if all_proposals:
                         lines.extend([
-                            f"#### Run {run.run_id} - Iteration Details",
+                            f"#### Run {run.run_id} - Proposal Details",
                             "",
                         ])
 
@@ -236,20 +306,17 @@ class LLMBenchmarkReporter:
                             ])
 
                         lines.extend([
-                            "| Iter | Type | Hypothesis | Valid? | DES Cycle% | DES Thru% | ABS Cycle% | ABS Thru% | Score | Time (s) |",
-                            "|------|------|------------|--------|------------|-----------|------------|-----------|-------|----------|",
+                            "| # | Type | Hypothesis | Rejected? | Valid? | Score |",
+                            "|---|------|------------|-----------|--------|-------|",
                         ])
 
-                        for it in run.iterations:
-                            valid_str = "Yes" if it.is_improvement else "No"
-                            hyp_short = (it.hypothesis_description[:40] + "...") if len(it.hypothesis_description) > 40 else it.hypothesis_description
-                            des_cycle = f"{it.des_cycle_time_change:.1f}" if it.des_cycle_time_change is not None else "-"
-                            des_thru = f"{it.des_throughput_change:.1f}" if it.des_throughput_change is not None else "-"
-                            abs_cycle = f"{it.abs_cycle_time_change:.1f}" if it.abs_cycle_time_change is not None else "-"
-                            abs_thru = f"{it.abs_throughput_change:.1f}" if it.abs_throughput_change is not None else "-"
-                            score = f"{it.averaged_score:.4f}" if it.averaged_score is not None else "-"
-                            time_s = f"{it.iteration_time:.1f}" if it.iteration_time else "-"
-                            lines.append(f"| {it.iteration_num} | {it.hypothesis_type} | {hyp_short} | {valid_str} | {des_cycle} | {des_thru} | {abs_cycle} | {abs_thru} | {score} | {time_s} |")
+                        for prop in all_proposals:
+                            prop_num = getattr(prop, 'proposal_num', None) or getattr(prop, 'iteration_num', 0)
+                            rejected = "Yes" if getattr(prop, 'rejected_before_simulation', False) else "No"
+                            valid_str = "Yes" if prop.is_improvement else "No"
+                            hyp_short = (prop.hypothesis_description[:40] + "...") if len(prop.hypothesis_description) > 40 else prop.hypothesis_description
+                            score = f"{prop.averaged_score:.4f}" if prop.averaged_score is not None else "-"
+                            lines.append(f"| {prop_num} | {prop.hypothesis_type} | {hyp_short} | {rejected} | {valid_str} | {score} |")
 
                         lines.append("")
 

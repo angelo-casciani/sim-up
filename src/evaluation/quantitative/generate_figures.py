@@ -13,10 +13,9 @@ Figures include:
 6. Results table visualization
 """
 
-import os
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
@@ -77,7 +76,7 @@ class PaperVisualizer:
         experiments = []
 
         # Find all evaluation directories
-        for eval_dir in sorted(results_path.glob("comprehensive_eval_*")):
+        for eval_dir in sorted(results_path.glob("impr_type_eval_*")):
             report_path = eval_dir / "evaluation_report.json"
             if report_path.exists():
                 with open(report_path, 'r') as f:
@@ -714,6 +713,188 @@ class PaperVisualizer:
         print(f"Generated: {latex_path}")
         return str(latex_path)
 
+    def _compute_proximity(
+        self,
+        trajectory: List[Dict],
+        improvement_type: str,
+        fault_info: Dict
+    ) -> List[float]:
+        """
+        Compute proximity to solution for each iteration.
+
+        Proximity = how close the current proposal is to the optimal solution,
+        measured relative to the starting fault state.
+
+        Returns values from 0 (at fault state) to 1 (at optimal solution).
+        """
+        proximities = []
+
+        for step in trajectory:
+            if improvement_type == "resource_allocation":
+                # Proximity based on resource count
+                # fault_count=1, optimal=original_count
+                fault_count = 1
+                optimal_count = fault_info.get("optimal_count", fault_info.get("target_count", 10))
+                current = step.get("resource_count", step.get("proposed_count", 1))
+                if optimal_count > fault_count:
+                    proximity = (current - fault_count) / (optimal_count - fault_count)
+                else:
+                    proximity = 1.0 if current == optimal_count else 0.0
+
+            elif improvement_type == "calendar_adjustment":
+                # Proximity based on hours added
+                # fault = reduced hours, optimal = original hours restored
+                fault_hours = fault_info.get("fault_hours", 2)
+                optimal_hours = fault_info.get("optimal_hours", 8)
+                current = step.get("hours_extended", step.get("proposed_hours", fault_hours))
+                if optimal_hours > fault_hours:
+                    proximity = (current - fault_hours) / (optimal_hours - fault_hours)
+                else:
+                    proximity = 1.0 if current == optimal_hours else 0.0
+
+            elif improvement_type == "role_redesign":
+                # Proximity based on shift fraction
+                # fault = 0% shift (overloaded), optimal = target shift fraction (e.g., 50%)
+                optimal_fraction = fault_info.get("optimal_fraction", 0.5)
+                current = step.get("shift_fraction", step.get("proposed_shift", 0))
+                if optimal_fraction > 0:
+                    proximity = min(current / optimal_fraction, 1.0)
+                else:
+                    proximity = 1.0
+            else:
+                proximity = 0.0
+
+            proximities.append(max(0, min(1, proximity)))  # Clamp to [0, 1]
+
+        return proximities
+
+    def plot_proximity_trajectory(
+        self,
+        experiments: List[Dict],
+        save_name: str = "fig4_proximity_trajectory"
+    ) -> str:
+        """
+        Figure 4: Proximity to solution trajectory by improvement type.
+
+        Shows how Grid and Framework approaches converge to the optimal solution
+        over iterations, averaged across all experiments of each type.
+
+        X-axis: # iterations
+        Y-axis: Proximity to solution (0 = fault state, 1 = optimal)
+        """
+        # Group experiments by improvement type
+        by_type = {}
+        for e in experiments:
+            imp_type = e.get("improvement_type", "unknown")
+            runs = e.get("runs", [])
+
+            if not runs:
+                continue
+
+            if imp_type not in by_type:
+                by_type[imp_type] = {"grid_trajectories": [], "llm_trajectories": [], "fault_info": {}}
+
+            # Extract fault info for proximity calculation
+            if imp_type == "resource_allocation":
+                by_type[imp_type]["fault_info"] = {
+                    "optimal_count": 10,  # Default, will be overwritten if available
+                }
+            elif imp_type == "calendar_adjustment":
+                by_type[imp_type]["fault_info"] = {
+                    "fault_hours": 2,
+                    "optimal_hours": 8,
+                }
+            elif imp_type == "role_redesign":
+                by_type[imp_type]["fault_info"] = {
+                    "optimal_fraction": 0.5,
+                }
+
+            for run in runs:
+                baseline_traj = run.get("baseline_trajectory", [])
+                llm_traj = run.get("llm_trajectory", [])
+
+                if baseline_traj:
+                    # Update fault_info based on trajectory data if available
+                    if imp_type == "resource_allocation" and baseline_traj:
+                        # Try to infer optimal_count from the last successful iteration
+                        for step in reversed(baseline_traj):
+                            if step.get("is_solution"):
+                                by_type[imp_type]["fault_info"]["optimal_count"] = step.get("resource_count", 10)
+                                break
+
+                    proximities = self._compute_proximity(
+                        baseline_traj, imp_type, by_type[imp_type]["fault_info"]
+                    )
+                    by_type[imp_type]["grid_trajectories"].append(proximities)
+
+                if llm_traj:
+                    proximities = self._compute_proximity(
+                        llm_traj, imp_type, by_type[imp_type]["fault_info"]
+                    )
+                    by_type[imp_type]["llm_trajectories"].append(proximities)
+
+        if not by_type:
+            print("No trajectory data available for proximity plot")
+            return ""
+
+        # Create one subplot per improvement type
+        num_types = len(by_type)
+        if num_types == 0:
+            print("No valid improvement types with trajectory data")
+            return ""
+
+        fig, axes = plt.subplots(1, num_types, figsize=(5 * num_types, 5), squeeze=False)
+        axes = axes.flatten()
+
+        for idx, (imp_type, data) in enumerate(sorted(by_type.items())):
+            ax = axes[idx]
+
+            grid_trajs = data["grid_trajectories"]
+            llm_trajs = data["llm_trajectories"]
+
+            # Average grid trajectories (pad shorter ones with their final value)
+            if grid_trajs:
+                max_len_grid = max(len(t) for t in grid_trajs)
+                padded_grid = []
+                for t in grid_trajs:
+                    padded = t + [t[-1]] * (max_len_grid - len(t)) if t else [0] * max_len_grid
+                    padded_grid.append(padded)
+                avg_grid = np.mean(padded_grid, axis=0)
+                x_grid = range(1, len(avg_grid) + 1)
+                ax.plot(x_grid, avg_grid, 'o-', color=self.colors['grid'],
+                       linewidth=2, markersize=6, label='Grid')
+
+            # Average LLM trajectories
+            if llm_trajs:
+                max_len_llm = max(len(t) for t in llm_trajs)
+                padded_llm = []
+                for t in llm_trajs:
+                    padded = t + [t[-1]] * (max_len_llm - len(t)) if t else [0] * max_len_llm
+                    padded_llm.append(padded)
+                avg_llm = np.mean(padded_llm, axis=0)
+                x_llm = range(1, len(avg_llm) + 1)
+                ax.plot(x_llm, avg_llm, 's-', color=self.colors['llm'],
+                       linewidth=2, markersize=6, label='Framework')
+
+            # Mark solution threshold
+            ax.axhline(y=1.0, color='green', linestyle='--', alpha=0.5, label='Solution')
+
+            ax.set_xlabel('# Iterations')
+            ax.set_ylabel('Proximity to Solution')
+            ax.set_title(imp_type.replace("_", " ").title())
+            ax.set_ylim(-0.05, 1.15)
+            ax.legend(loc='lower right')
+            ax.grid(True, alpha=0.3)
+
+        plt.suptitle('Convergence to Solution by Improvement Type', fontsize=13, fontweight='bold')
+        plt.tight_layout()
+        fig_path = self.figures_dir / f"{save_name}.png"
+        plt.savefig(fig_path)
+        plt.close()
+
+        print(f"Generated: {fig_path}")
+        return str(fig_path)
+
     def generate_all_figures(self, results_dir: str) -> List[str]:
         """
         Generate all figures.
@@ -754,6 +935,11 @@ class PaperVisualizer:
             figures.append(fig)
 
         fig = self.plot_combined_summary(experiments)
+        if fig:
+            figures.append(fig)
+
+        # Generate proximity trajectory plots (if trajectory data available)
+        fig = self.plot_proximity_trajectory(experiments)
         if fig:
             figures.append(fig)
 

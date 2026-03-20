@@ -479,6 +479,7 @@ The LLM Benchmark Evaluation tests multiple LLM models on the full `ImprovementV
 
 | Provider | Models | Size Category |
 |----------|--------|---------------|
+| OpenAI | gpt-4.1 | Large (Previous Gen) |
 | OpenAI | gpt-5 | Large |
 | OpenAI | gpt-5-mini | Medium |
 | OpenAI | gpt-5-nano | Small |
@@ -487,25 +488,42 @@ The LLM Benchmark Evaluation tests multiple LLM models on the full `ImprovementV
 | Anthropic | anthropic--claude-4.5-sonnet | Medium |
 | Anthropic | anthropic--claude-4.5-haiku | Small |
 | Mistral | mistralai--mistral-large-instruct | Large |
-| Mistral | mistralai--mistral-medium-instruct | Medium |
 | Mistral | mistralai--mistral-small-instruct | Small |
 
-**Total: 10 models** across 3 providers, covering large/medium/small tiers plus reasoning models.
+**Total: 11 models** across 3 providers, covering large/medium/small tiers plus reasoning models.
 
-### 7.3 Evaluation Logs
+### 7.3 Log Selection for LLM Benchmark
 
-For comprehensive research evaluation, the benchmark uses validated logs from different domains:
+For a reasonable journal paper evaluation, we recommend **3-4 logs** across different domains and sizes.
 
-| Log | Domain | Rows | Cases | Activities | Resources | Status |
-|-----|--------|------|-------|------------|-----------|--------|
-| **LoanApp.csv** | Financial | 7.5K | 997 | 12 | 19 | Primary benchmark |
-| **BPIC_2012W.csv** | Banking (BPIC) | 51K | 8,030 | 6 | 62 | BPIC benchmark |
-| p2p.csv | Procurement | 7.9K | 550 | 21 | 27 | Validation |
+#### 7.3.1 Recommended Logs
 
-**Note on BPIC logs:**
-- BPIC_2012W and BPIC_2017W are standard BPI Challenge logs used in process mining research
-- BPIC_2017W (230K rows) is significantly larger and may require extended runtime for SIMOD discovery
-- Both logs have proper column structure (`case_id`, `activity_name`, `resource`, `start_timestamp`, `end_timestamp`)
+| Log | Domain | Rows | Cases | Recommended | Rationale |
+|-----|--------|------|-------|-------------|-----------|
+| **LoanApp.csv** | Financial | 7.5K | 997 | **Primary** | Fast SIMOD (~10 min), clean Role-NNNNNN pattern, well-tested |
+| **p2p.csv** | Procurement | 7.9K | 550 | **Secondary** | Fast SIMOD, named resources, different domain |
+| **BPIC_2012W.csv** | Banking | 51K | 8,030 | **BPIC Benchmark** | Standard BPI Challenge log, medium size (~20 min SIMOD) |
+| **Production.csv** | Manufacturing | 2.4K | ~200 | Optional | Very fast, manufacturing domain |
+
+#### 7.3.2 Excluded Logs (with reasons)
+
+| Log | Rows | Reason for Exclusion |
+|-----|------|---------------------|
+| **BPIC_2017W.csv** | 230K | **AgentSimulator timeout** - Too large for ABS within reasonable time |
+| **bpic_2012.csv** | 262K | Too large - combined A/O/W subprocess log |
+| **cvs_pharmacy.csv** | 85K | Has `resourceId` column - SIMOD discovers UUIDs |
+| **Confidential_*.csv** | 38-77K | Has `resourceId` column - SIMOD discovers UUIDs |
+| **bpic_2013I.csv** | 65K | Each person unique - no multi-resource roles |
+
+#### 7.3.3 Journal Paper Evaluation Matrix
+
+For a comprehensive journal paper, we recommend:
+
+| Evaluation Tier | Logs | Models | Repetitions | Est. Runtime |
+|-----------------|------|--------|-------------|--------------|
+| **Quick validation** | LoanApp | 3 (GPT-5, Claude Opus, o3) | 1 | ~3-4 hours |
+| **Standard evaluation** | LoanApp, p2p | 5 models | 3 | ~20-30 hours |
+| **Full benchmark** | LoanApp, p2p, BPIC_2012W | All 10 models | 3 | ~50-80 hours |
 
 ### 7.4 Metrics
 
@@ -514,6 +532,7 @@ For comprehensive research evaluation, the benchmark uses validated logs from di
 | **Time to first improvement** | Wall-clock seconds until first validated improvement |
 | **Iterations to first improvement** | Number of hypothesis iterations until success |
 | **Averaged validation score** | `(S_DES + S_ABS) / 2` where `S = delta_throughput - delta_cycle_time` |
+| **Distance to threshold** | `max(0, 0.01 - averaged_score)` - 0 when 1% improvement achieved |
 | **Success rate** | Percentage of runs that found a validated improvement |
 
 ### 7.5 Per-Iteration Tracking
@@ -524,15 +543,36 @@ For each iteration, the benchmark captures:
 |-------|-------------|
 | `hypothesis_description` | Text description of the proposed improvement |
 | `hypothesis_type` | Type: `resource_allocation`, `calendar_adjustment`, or `role_redesign` |
-| `is_improvement` | Whether this iteration was validated as an improvement |
+| `is_improvement` | Whether this iteration was validated as an improvement (score >= 1%) |
 | `des_cycle_time_change` | % change in DES cycle time vs baseline |
 | `des_throughput_change` | % change in DES throughput vs baseline |
 | `abs_cycle_time_change` | % change in ABS cycle time vs baseline |
 | `abs_throughput_change` | % change in ABS throughput vs baseline |
 | `averaged_score` | Combined validation score |
+| `distance_to_threshold` | Distance to 1% improvement threshold (for convergence plots) |
 | `iteration_time` | Wall-clock time for this iteration (seconds) |
+| `cumulative_time` | Total time from start including baseline discovery |
 
-### 7.6 Usage
+### 7.6 Visualizations
+
+The benchmark automatically generates publication-quality figures:
+
+| Figure | Description | Purpose |
+|--------|-------------|---------|
+| **convergence_trajectory.png** | Distance to 1% threshold vs iterations | Shows how quickly each model approaches validation |
+| **score_progression.png** | Averaged score vs iterations | Shows improvement trajectory per model |
+| **iterations_comparison.png** | Bar chart of iterations to first improvement | Compare speed across models |
+| **time_comparison.png** | Bar chart of time to first improvement | Compare wall-clock speed |
+| **impact_comparison.png** | Bar chart of averaged validation score | Compare improvement quality |
+| **speed_vs_impact.png** | Scatter: iterations vs score | Trade-off visualization |
+| **success_rate.png** | Bar chart of success rate | Model reliability comparison |
+| **improvement_magnitude_box.png** | Box plot of improvement magnitudes | Distribution of improvement quality per model |
+| **improvement_by_type.png** | Grouped bar by hypothesis type | Which improvement types each model excels at |
+| **best_improvement_comparison.png** | Bar chart of best improvement found | Maximum improvement potential per model |
+
+All figures are saved in both PNG (300 DPI) and PDF formats for publication.
+
+### 7.7 Usage
 
 ```bash
 # Run benchmark with default settings (all 10 models)
@@ -540,10 +580,10 @@ python src/evaluation/quantitative/run_llm_benchmark.py --log LoanApp.csv
 
 # Run with specific models
 python src/evaluation/quantitative/run_llm_benchmark.py \
-    --models gpt-4.1 anthropic--claude-4.5-sonnet --log LoanApp.csv
+    --models gpt-5 anthropic--claude-4.5-sonnet o3 --log LoanApp.csv
 
 # Run with multiple repetitions for statistical significance
-python src/evaluation/quantitative/run_llm_benchmark.py --log LoanApp.csv --repetitions 5
+python src/evaluation/quantitative/run_llm_benchmark.py --log LoanApp.csv --repetitions 3
 
 # Run on BPIC benchmark log
 python src/evaluation/quantitative/run_llm_benchmark.py --log BPIC_2012W.csv --max-iterations 10
@@ -552,7 +592,7 @@ python src/evaluation/quantitative/run_llm_benchmark.py --log BPIC_2012W.csv --m
 python src/evaluation/quantitative/run_llm_benchmark.py --log LoanApp.csv --dry-run
 ```
 
-### 7.7 Configuration Options
+### 7.8 Configuration Options
 
 | Argument | Default | Description |
 |----------|---------|-------------|
@@ -566,16 +606,24 @@ python src/evaluation/quantitative/run_llm_benchmark.py --log LoanApp.csv --dry-
 | `--abs-runs` | `5` | Number of ABS (AgentSimulator) runs |
 | `--dry-run` | - | Print configuration without running |
 
-### 7.8 Output Structure
+### 7.9 Output Structure
 
 ```
 output/llm_benchmark_YYYYMMDD_HHMMSS/
-├── benchmark_results.json      # Full structured results
+├── benchmark_results.json      # Full structured results with per-iteration data
 ├── benchmark_results.csv       # Spreadsheet export
-└── benchmark_report.md         # Summary with rankings
+├── benchmark_report.md         # Summary with rankings
+└── figures/                    # Publication-quality visualizations
+    ├── convergence_trajectory.png/pdf
+    ├── score_progression.png/pdf
+    ├── iterations_comparison.png/pdf
+    ├── time_comparison.png/pdf
+    ├── impact_comparison.png/pdf
+    ├── speed_vs_impact.png/pdf
+    └── success_rate.png/pdf
 ```
 
-### 7.9 Report Contents
+### 7.10 Report Contents
 
 The benchmark report includes:
 
@@ -584,30 +632,40 @@ The benchmark report includes:
 3. **Iteration Ranking**: Models sorted by iterations to first improvement (ascending)
 4. **Impact Ranking**: Models sorted by averaged validation score (descending)
 5. **Detailed Results**: Per-model breakdown with individual run data
-6. **Iteration Details**: Per-iteration hypothesis, KPI impacts, and timing
+6. **Iteration Details**: Per-iteration hypothesis, KPI impacts, distance to threshold, and timing
+7. **Convergence Figures**: Visual comparison of model performance
 
-### 7.10 Research Paper Evaluation Setup
+### 7.11 Research Paper Evaluation Setup
 
 For a comprehensive research paper evaluation:
 
 ```bash
-# Run all 10 models on LoanApp with 3 repetitions
+# Quick validation (recommended first)
+python src/evaluation/quantitative/run_llm_benchmark.py \
+    --log LoanApp.csv --models gpt-5 anthropic--claude-4.5-opus o3 --max-iterations 5
+
+# Standard evaluation on two logs
 python src/evaluation/quantitative/run_llm_benchmark.py \
     --log LoanApp.csv --repetitions 3 --max-iterations 10
 
-# Run all 10 models on BPIC_2012W benchmark
+python src/evaluation/quantitative/run_llm_benchmark.py \
+    --log p2p.csv --repetitions 3 --max-iterations 10
+
+# Full benchmark with BPIC log
 python src/evaluation/quantitative/run_llm_benchmark.py \
     --log BPIC_2012W.csv --repetitions 3 --max-iterations 10
 ```
 
 **Expected runtime estimates:**
 - LoanApp (small): ~15-20 min baseline + ~5 min/iteration × 10 iterations × 10 models × 3 reps = ~30-40 hours
+- p2p (small): Similar to LoanApp, ~30-40 hours
 - BPIC_2012W (medium): ~20-30 min baseline + ~8 min/iteration × 10 iterations × 10 models × 3 reps = ~50-70 hours
 
 **Statistical reporting:**
 - Results reported as Mean ± Standard Deviation across repetitions
 - Rankings based on mean performance
 - Per-iteration analysis shows improvement trajectory
+- Convergence plots show distance to 1% threshold over iterations
 
 ---
 
@@ -887,7 +945,7 @@ poetry run python src/evaluation/quantitative/run_comprehensive_evaluation.py \
 ### Output Structure
 
 ```
-output/comprehensive_eval_YYYYMMDD_HHMMSS/
+output/impr_type_eval_YYYYMMDD_HHMMSS/
 ├── evaluation_report.json          # Full results for all experiments
 ├── E1.1/                           # Per-experiment directory
 │   ├── result.json                 # Aggregated result for this experiment
@@ -939,6 +997,7 @@ src/evaluation/quantitative/
 │ # LLM Benchmark Evaluation
 ├── llm_benchmark_runner.py             # Multi-model benchmark runner
 ├── llm_benchmark_reporter.py           # Benchmark report generation
+├── llm_benchmark_visualizer.py         # Publication-quality charts
 └── run_llm_benchmark.py                # LLM benchmark CLI
 ```
 

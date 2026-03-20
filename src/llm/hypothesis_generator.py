@@ -53,7 +53,16 @@ class HypothesisGenerator:
             ],
             extra_body={"max_completion_tokens": self.max_tokens}
         )
-        return response.choices[0].message.content
+        # Debug: check if content is None
+        content = response.choices[0].message.content
+        if content is None:
+            # Try to get more info about the response
+            print(f"[DEBUG] Response object: {response}")
+            print(f"[DEBUG] Message object: {response.choices[0].message}")
+            # Some reasoning models put content in 'reasoning_content' or similar
+            if hasattr(response.choices[0].message, 'reasoning_content'):
+                content = response.choices[0].message.reasoning_content
+        return content or ""
 
     def _call_amazon_bedrock(self, system_prompt: str, user_prompt: str) -> str:
         """Call Amazon Bedrock Converse API for Anthropic models."""

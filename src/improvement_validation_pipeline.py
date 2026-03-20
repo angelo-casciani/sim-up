@@ -575,7 +575,8 @@ class ImprovementValidationAgent:
                     "des_validation": des_validation,
                     "abs_validation": abs_validation,
                     "improvement": improvement_result,
-                    "execution_time": iteration_time
+                    "execution_time": iteration_time,
+                    "rejected_proposals": screening_attempts  # Track pre-simulation rejected proposals
                 })
 
                 attempt_history.append({

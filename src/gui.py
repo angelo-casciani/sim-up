@@ -24,7 +24,6 @@ SUPPORTED_LLMS = [
     "anthropic--claude-4.5-sonnet",
     "anthropic--claude-4.5-haiku",
     "mistralai--mistral-small-instruct",
-    "mistralai--mistral-medium-instruct",
     "mistralai--mistral-large-instruct",
 ]
 

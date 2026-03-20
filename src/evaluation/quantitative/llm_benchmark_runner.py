@@ -33,14 +33,15 @@ class LLMBenchmarkConfig:
 
 
 @dataclass
-class IterationResult:
-    """Result of a single iteration within a run."""
-    iteration_num: int
+class ProposalResult:
+    """Result of a single proposal within a run (includes rejected proposals)."""
+    proposal_num: int
     hypothesis_description: str
     hypothesis_type: str  # e.g., "resource_allocation", "calendar_adjustment", "role_redesign"
     is_improvement: bool
+    rejected_before_simulation: bool = False  # True if rejected by strategic screening
 
-    # KPI impacts vs baseline (percentage change)
+    # KPI impacts vs baseline (percentage change) - None if rejected before simulation
     des_cycle_time_change: Optional[float] = None
     des_throughput_change: Optional[float] = None
     des_waiting_time_change: Optional[float] = None
@@ -48,20 +49,27 @@ class IterationResult:
     abs_throughput_change: Optional[float] = None
     abs_waiting_time_change: Optional[float] = None
 
-    # Validation scores
+    # Validation scores - 0.0 if rejected before simulation
     des_score: Optional[float] = None
     abs_score: Optional[float] = None
     averaged_score: Optional[float] = None
 
+    # Distance to 1% improvement threshold (0 when achieved, positive when below)
+    # Used for convergence visualization
+    distance_to_threshold: Optional[float] = None
+
     # Timing
-    iteration_time: float = 0.0
+    proposal_time: float = 0.0
+    cumulative_time: float = 0.0  # Time from start including baseline
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "iteration_num": self.iteration_num,
+            "proposal_num": self.proposal_num,
+            "iteration_num": self.proposal_num,  # Backward compatibility
             "hypothesis_description": self.hypothesis_description,
             "hypothesis_type": self.hypothesis_type,
             "is_improvement": self.is_improvement,
+            "rejected_before_simulation": self.rejected_before_simulation,
             "kpi_impact": {
                 "des": {
                     "cycle_time_change_pct": self.des_cycle_time_change,
@@ -75,10 +83,17 @@ class IterationResult:
                     "waiting_time_change_pct": self.abs_waiting_time_change,
                     "score": self.abs_score
                 },
-                "averaged_score": self.averaged_score
+                "averaged_score": self.averaged_score,
+                "distance_to_threshold": self.distance_to_threshold
             },
-            "iteration_time": self.iteration_time
+            "proposal_time": self.proposal_time,
+            "iteration_time": self.proposal_time,  # Backward compatibility
+            "cumulative_time": self.cumulative_time
         }
+
+
+# Backward compatibility alias
+IterationResult = ProposalResult
 
 
 @dataclass
@@ -90,9 +105,11 @@ class SingleModelRun:
 
     # Speed metrics
     time_to_first_improvement: Optional[float] = None  # seconds
-    iterations_to_first_improvement: Optional[int] = None
+    iterations_to_first_improvement: Optional[int] = None  # Legacy: simulated iterations only
+    proposals_to_first_improvement: Optional[int] = None  # New: includes rejected proposals
     total_time: float = 0.0
-    total_iterations: int = 0
+    total_iterations: int = 0  # Legacy: simulated iterations only
+    total_proposals: int = 0   # New: includes rejected proposals
 
     # Impact metrics (from first successful improvement)
     averaged_score: Optional[float] = None  # (des_score + abs_score) / 2
@@ -103,8 +120,11 @@ class SingleModelRun:
     first_improvement_hypothesis: Optional[str] = None
     error_message: Optional[str] = None
 
-    # Detailed iteration history
-    iterations: List[IterationResult] = field(default_factory=list)
+    # Detailed iteration history (simulated only, for backward compatibility)
+    iterations: List[ProposalResult] = field(default_factory=list)
+
+    # All proposals including rejected ones (for visualizations)
+    all_proposals: List[ProposalResult] = field(default_factory=list)
 
     # Baseline KPIs for reference
     baseline_kpis: Optional[Dict[str, Any]] = None
@@ -116,15 +136,18 @@ class SingleModelRun:
             "status": self.status,
             "time_to_first_improvement": self.time_to_first_improvement,
             "iterations_to_first_improvement": self.iterations_to_first_improvement,
+            "proposals_to_first_improvement": self.proposals_to_first_improvement,
             "total_time": self.total_time,
             "total_iterations": self.total_iterations,
+            "total_proposals": self.total_proposals,
             "averaged_score": self.averaged_score,
             "des_score": self.des_score,
             "abs_score": self.abs_score,
             "first_improvement_hypothesis": self.first_improvement_hypothesis,
             "error_message": self.error_message,
             "baseline_kpis": self.baseline_kpis,
-            "iterations": [it.to_dict() for it in self.iterations]
+            "iterations": [it.to_dict() for it in self.iterations],
+            "all_proposals": [p.to_dict() for p in self.all_proposals]
         }
 
 
@@ -140,8 +163,10 @@ class ModelBenchmarkResult:
     # Speed statistics (mean/std) - only from successful runs
     time_to_improvement_mean: Optional[float] = None
     time_to_improvement_std: Optional[float] = None
-    iterations_to_improvement_mean: Optional[float] = None
+    iterations_to_improvement_mean: Optional[float] = None  # Legacy: simulated iterations only
     iterations_to_improvement_std: Optional[float] = None
+    proposals_to_improvement_mean: Optional[float] = None   # New: includes rejected proposals
+    proposals_to_improvement_std: Optional[float] = None
 
     # Impact statistics
     averaged_score_mean: Optional[float] = None
@@ -165,6 +190,8 @@ class ModelBenchmarkResult:
             "time_to_improvement_std": self.time_to_improvement_std,
             "iterations_to_improvement_mean": self.iterations_to_improvement_mean,
             "iterations_to_improvement_std": self.iterations_to_improvement_std,
+            "proposals_to_improvement_mean": self.proposals_to_improvement_mean,
+            "proposals_to_improvement_std": self.proposals_to_improvement_std,
             "averaged_score_mean": self.averaged_score_mean,
             "averaged_score_std": self.averaged_score_std,
             "runs": [r.to_dict() for r in self.runs]
@@ -178,6 +205,7 @@ class LLMBenchmarkReport:
     event_log: str
     num_repetitions: int
     max_iterations: int
+    max_proposals: int = 0  # Max proposals across all runs (for visualization x-axis)
 
     # Per-model results
     results: List[ModelBenchmarkResult] = field(default_factory=list)
@@ -185,6 +213,7 @@ class LLMBenchmarkReport:
     # Rankings (model names sorted by metric)
     speed_ranking: List[str] = field(default_factory=list)
     iteration_ranking: List[str] = field(default_factory=list)
+    proposals_ranking: List[str] = field(default_factory=list)  # New: by proposals
     impact_ranking: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -193,10 +222,12 @@ class LLMBenchmarkReport:
             "event_log": self.event_log,
             "num_repetitions": self.num_repetitions,
             "max_iterations": self.max_iterations,
+            "max_proposals": self.max_proposals,
             "results": [r.to_dict() for r in self.results],
             "rankings": {
                 "speed": self.speed_ranking,
                 "iterations": self.iteration_ranking,
+                "proposals": self.proposals_ranking,
                 "impact": self.impact_ranking
             }
         }
@@ -214,6 +245,7 @@ class LLMBenchmarkRunner:
 
     DEFAULT_MODELS = [
         # OpenAI
+        "gpt-4.1",
         "gpt-5",
         "gpt-5-mini",
         "gpt-5-nano",
@@ -224,7 +256,6 @@ class LLMBenchmarkRunner:
         "anthropic--claude-4.5-haiku",
         # Mistral
         "mistralai--mistral-small-instruct",
-        "mistralai--mistral-medium-instruct",
         "mistralai--mistral-large-instruct"
     ]
 
@@ -352,13 +383,19 @@ class LLMBenchmarkRunner:
                 baseline_kpis = entry.get("metrics", {})
                 break
 
-        # Process all iterations
+        # Process all iterations and proposals
         baseline_time = agent.execution_times.get('step_1_baseline_discovery', 0)
         cumulative_time = baseline_time
 
-        iterations_list = []
+        # Improvement threshold (1%)
+        IMPROVEMENT_THRESHOLD = 0.01
+
+        iterations_list = []  # Only simulated proposals (backward compatible)
+        all_proposals_list = []  # All proposals including rejected ones
+        proposal_counter = 0  # Track total proposals
         first_improvement = None
         first_improvement_iteration = None
+        first_improvement_proposal = None
         first_improvement_time = None
         hypothesis_description = None
         first_improvement_entry = None
@@ -370,6 +407,26 @@ class LLMBenchmarkRunner:
                 iteration_time = entry.get("execution_time", 0)
                 cumulative_time += iteration_time
 
+                # First, add any rejected proposals from strategic screening
+                rejected_proposals = entry.get("rejected_proposals", [])
+                for rejected in rejected_proposals:
+                    proposal_counter += 1
+                    rejected_hyp = rejected.get("hypothesis", {})
+                    rejected_result = ProposalResult(
+                        proposal_num=proposal_counter,
+                        hypothesis_description=rejected_hyp.get("description", ""),
+                        hypothesis_type=rejected_hyp.get("type", "unknown"),
+                        is_improvement=False,
+                        rejected_before_simulation=True,
+                        averaged_score=0.0,  # Rejected = 0.0
+                        distance_to_threshold=IMPROVEMENT_THRESHOLD,  # Max distance
+                        proposal_time=0.0,  # Minimal time for rejection
+                        cumulative_time=cumulative_time
+                    )
+                    all_proposals_list.append(rejected_result)
+
+                # Then add the simulated proposal
+                proposal_counter += 1
                 hypothesis = entry.get("hypothesis", {})
                 improvement = entry.get("improvement", {})
                 des_impact = entry.get("des_impact_vs_baseline", {})
@@ -377,12 +434,20 @@ class LLMBenchmarkRunner:
                 des_validation = entry.get("des_validation", {})
                 abs_validation = entry.get("abs_validation", {})
 
-                # Create iteration result
-                iter_result = IterationResult(
-                    iteration_num=iteration_num,
+                # Get averaged score and compute distance to threshold
+                avg_score = improvement.get("averaged_score")
+                distance_to_threshold = None
+                if avg_score is not None:
+                    # Distance is 0 when threshold achieved, positive when below
+                    distance_to_threshold = max(0, IMPROVEMENT_THRESHOLD - avg_score)
+
+                # Create proposal result
+                proposal_result = ProposalResult(
+                    proposal_num=proposal_counter,
                     hypothesis_description=hypothesis.get("description", ""),
                     hypothesis_type=hypothesis.get("type", "unknown"),
                     is_improvement=improvement.get("is_improvement", False),
+                    rejected_before_simulation=False,
                     # DES KPI changes
                     des_cycle_time_change=des_impact.get("cycle_time"),
                     des_throughput_change=des_impact.get("throughput"),
@@ -394,20 +459,25 @@ class LLMBenchmarkRunner:
                     # Scores
                     des_score=des_validation.get("score") if des_validation else None,
                     abs_score=abs_validation.get("score") if abs_validation else None,
-                    averaged_score=improvement.get("averaged_score"),
-                    iteration_time=iteration_time
+                    averaged_score=avg_score,
+                    distance_to_threshold=distance_to_threshold,
+                    proposal_time=iteration_time,
+                    cumulative_time=cumulative_time
                 )
-                iterations_list.append(iter_result)
+                iterations_list.append(proposal_result)  # Backward compatible
+                all_proposals_list.append(proposal_result)
 
                 # Track first improvement
                 if improvement.get("is_improvement") and first_improvement is None:
                     first_improvement = improvement
                     first_improvement_iteration = iteration_num
+                    first_improvement_proposal = proposal_counter
                     first_improvement_time = cumulative_time
                     hypothesis_description = hypothesis.get("description")
                     first_improvement_entry = entry
 
         total_iterations = len(iterations_list)
+        total_proposals = len(all_proposals_list)
 
         if first_improvement is None:
             return SingleModelRun(
@@ -416,7 +486,9 @@ class LLMBenchmarkRunner:
                 status="no_improvement",
                 total_time=agent.execution_times.get('total_pipeline', result_holder.get("total_time", 0)),
                 total_iterations=total_iterations,
+                total_proposals=total_proposals,
                 iterations=iterations_list,
+                all_proposals=all_proposals_list,
                 baseline_kpis=baseline_kpis
             )
 
@@ -433,13 +505,16 @@ class LLMBenchmarkRunner:
             status="success",
             time_to_first_improvement=first_improvement_time,
             iterations_to_first_improvement=first_improvement_iteration,
+            proposals_to_first_improvement=first_improvement_proposal,
             total_time=agent.execution_times.get('total_pipeline', result_holder.get("total_time", 0)),
             total_iterations=total_iterations,
+            total_proposals=total_proposals,
             averaged_score=averaged_score,
             des_score=des_score,
             abs_score=abs_score,
             first_improvement_hypothesis=hypothesis_description,
             iterations=iterations_list,
+            all_proposals=all_proposals_list,
             baseline_kpis=baseline_kpis
         )
 
@@ -475,11 +550,17 @@ class LLMBenchmarkRunner:
                 result.time_to_improvement_mean = statistics.mean(times)
                 result.time_to_improvement_std = statistics.stdev(times) if len(times) > 1 else 0.0
 
-            # Iteration statistics
+            # Iteration statistics (legacy: simulated only)
             iterations = [r.iterations_to_first_improvement for r in successful_runs if r.iterations_to_first_improvement is not None]
             if iterations:
                 result.iterations_to_improvement_mean = statistics.mean(iterations)
                 result.iterations_to_improvement_std = statistics.stdev(iterations) if len(iterations) > 1 else 0.0
+
+            # Proposals statistics (new: includes rejected)
+            proposals = [r.proposals_to_first_improvement for r in successful_runs if r.proposals_to_first_improvement is not None]
+            if proposals:
+                result.proposals_to_improvement_mean = statistics.mean(proposals)
+                result.proposals_to_improvement_std = statistics.stdev(proposals) if len(proposals) > 1 else 0.0
 
             # Score statistics
             scores = [r.averaged_score for r in successful_runs if r.averaged_score is not None]
@@ -495,11 +576,19 @@ class LLMBenchmarkRunner:
         results: List[ModelBenchmarkResult]
     ) -> LLMBenchmarkReport:
         """Create final report with rankings."""
+        # Calculate max proposals across all runs
+        max_proposals = 0
+        for model_result in results:
+            for run in model_result.runs:
+                if run.total_proposals > max_proposals:
+                    max_proposals = run.total_proposals
+
         report = LLMBenchmarkReport(
             timestamp=timestamp,
             event_log=self.config.event_log,
             num_repetitions=self.config.repetitions,
             max_iterations=self.config.max_iterations,
+            max_proposals=max_proposals,
             results=results
         )
 
@@ -513,12 +602,19 @@ class LLMBenchmarkRunner:
         )
         report.speed_ranking = [r.model_name for r in speed_sorted]
 
-        # Iteration ranking (ascending - fewer iterations is better)
+        # Iteration ranking (ascending - fewer iterations is better) - legacy
         iter_sorted = sorted(
             [r for r in successful_results if r.iterations_to_improvement_mean is not None],
             key=lambda r: r.iterations_to_improvement_mean
         )
         report.iteration_ranking = [r.model_name for r in iter_sorted]
+
+        # Proposals ranking (ascending - fewer proposals is better)
+        proposals_sorted = sorted(
+            [r for r in successful_results if r.proposals_to_improvement_mean is not None],
+            key=lambda r: r.proposals_to_improvement_mean
+        )
+        report.proposals_ranking = [r.model_name for r in proposals_sorted]
 
         # Impact ranking (descending - higher score is better)
         impact_sorted = sorted(
