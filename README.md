@@ -112,7 +112,7 @@ Simulators may not perfectly match absolute real-world values. Comparing improve
 
 The pipeline focuses on actionable interventions:
 
-1. **role_redesign** (preferred when workload imbalance exists)
+1. **shift_responsibility** (preferred when workload imbalance exists)
 2. **resource_allocation**
 3. **calendar_adjustment**
 
@@ -120,7 +120,7 @@ Note: `activity_durations` is disabled as it identifies WHERE to improve but not
 
 ### Role Compatibility
 
-Role redesign proposals (shifting responsibilities between roles) are validated for compatibility. A shift is **rejected** if:
+Shift responsibility proposals (shifting responsibilities between roles) are validated for compatibility. A shift is **rejected** if:
 
 - The source or destination is an external actor (e.g., Applicant, Customer)
 - The roles have no overlapping tasks in the `role_task_mapping`

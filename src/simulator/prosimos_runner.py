@@ -6,7 +6,7 @@ from typing import Dict, Optional
 from simulator.metrics_extractor import MetricsExtractor
 from utils.column_utils import (
     normalize_role_label,
-    parse_role_redesign_target,
+    parse_shift_responsibility_target,
     resolve_shift_fraction,
     find_resources_matching_role,
     extract_resource_role,
@@ -87,8 +87,8 @@ class ProsimosRunner:
             # Only allow types supported by AgentSimulator and LLM
             if param_type == 'resources':
                 self._modify_resources(modified_params, target, change_type, value)
-            elif param_type == 'role_redesign':
-                self._modify_role_redesign(modified_params, target, change_type, value, change)
+            elif param_type == 'shift_responsibility':
+                self._modify_shift_responsibility(modified_params, target, change_type, value, change)
             elif param_type == 'activity_durations':
                 self._modify_durations(modified_params, target, value)
             elif param_type == 'calendar':
@@ -260,15 +260,15 @@ class ProsimosRunner:
                 if tasks_updated > 0:
                     print(f"    + Added {len(created_resource_ids)} new resources to {tasks_updated} task distributions")
 
-    def _modify_role_redesign(self, params: Dict, target: str, change_type: str, value: int, change_payload: Dict):
+    def _modify_shift_responsibility(self, params: Dict, target: str, change_type: str, value: int, change_payload: Dict):
         """Create/reshape roles to model specialization without only adding generic capacity."""
-        print(f"  [DEBUG] _modify_role_redesign called: target='{target}', change_type='{change_type}'")
+        print(f"  [DEBUG] _modify_shift_responsibility called: target='{target}', change_type='{change_type}'")
 
         if 'resource_profiles' not in params or not target:
-            print(f"  [!] _modify_role_redesign: missing resource_profiles or target")
+            print(f"  [!] _modify_shift_responsibility: missing resource_profiles or target")
             return
 
-        source_role, destination_role = parse_role_redesign_target(target)
+        source_role, destination_role = parse_shift_responsibility_target(target)
         print(f"  [DEBUG] Parsed roles: source='{source_role}', destination='{destination_role}'")
 
         resource_profiles = params.get('resource_profiles', [])
@@ -280,7 +280,7 @@ class ProsimosRunner:
                 break
 
         if not matched_profile:
-            print(f"  [!] _modify_role_redesign: could not find profile for source '{source_role}'")
+            print(f"  [!] _modify_shift_responsibility: could not find profile for source '{source_role}'")
             return
 
         if 'shift_responsibility' in str(change_type) and destination_role:

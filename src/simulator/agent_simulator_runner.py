@@ -13,7 +13,7 @@ from simulator.metrics_extractor import MetricsExtractor
 from utils.column_utils import (
     find_column,
     normalize_role_label,
-    parse_role_redesign_target,
+    parse_shift_responsibility_target,
     resolve_shift_fraction,
 )
 
@@ -301,8 +301,8 @@ class AgentSimulatorRunner:
                 )
             elif param_type == 'resources':
                 df = self._apply_resource_modifications(df, specific_changes, case_col, resource_col)
-            elif param_type == 'role_redesign':
-                df = self._apply_role_redesign_modifications(df, specific_changes, case_col, activity_col, resource_col)
+            elif param_type == 'shift_responsibility':
+                df = self._apply_shift_responsibility_modifications(df, specific_changes, case_col, activity_col, resource_col)
             elif param_type == 'calendar':
                 df = self._apply_calendar_modifications(df, specific_changes, start_ts_col, end_ts_col)
 
@@ -490,7 +490,7 @@ class AgentSimulatorRunner:
 
         return df
 
-    def _apply_role_redesign_modifications(
+    def _apply_shift_responsibility_modifications(
         self,
         df: pd.DataFrame,
         changes: list,
@@ -498,7 +498,7 @@ class AgentSimulatorRunner:
         activity_col: str,
         resource_col: str
     ) -> pd.DataFrame:
-        """Apply role redesign by shifting workload between resources at activity level.
+        """Apply shift responsibility by shifting workload between resources at activity level.
 
         For shift_responsibility: events are reassigned at the ACTIVITY level, not case level.
         This is critical for ABS because it learns patterns per activity-resource combination.
@@ -514,7 +514,7 @@ class AgentSimulatorRunner:
         df = df.copy()
 
         for change in changes:
-            source_target, destination_target = parse_role_redesign_target(change.get('target', ''))
+            source_target, destination_target = parse_shift_responsibility_target(change.get('target', ''))
             target = source_target
             change_type = str(change.get('change', ''))
             # Read value from the correct key; use it to derive shift fraction
@@ -575,7 +575,7 @@ class AgentSimulatorRunner:
                 if activity_col in df.columns:
                     # Activity-based shift: for each activity the source performs, shift a
                     # fraction of those events to the destination. This ensures ABS learns
-                    # the correct activity-resource patterns after the role redesign.
+                    # the correct activity-resource patterns after the shift responsibility.
                     activities_by_source = df.loc[resource_mask, activity_col].unique()
                     total_shifted = 0
 

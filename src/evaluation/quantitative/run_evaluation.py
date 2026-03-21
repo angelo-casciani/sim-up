@@ -36,7 +36,7 @@ RECOMMENDED_LOGS = [
     # Calendar Adjustment additional logs
     "env_permit.csv",                   # Government - org:group based
     "helpdesk.csv",                     # IT Support - Value N resources
-    # Role Redesign logs
+    # Shift Responsibility logs
     "p2p.csv",                          # Procurement - overlapping named resources
     "bpi_challenge_2013_incidents.csv", # IT Support - explicit org:role column
     "BPIC_2012W.csv",                   # Banking - activity-based overlap

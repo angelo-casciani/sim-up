@@ -789,7 +789,7 @@ class ImprovementValidationAgent:
             "calendars": sorted(calendars),
             "gateways": sorted(gateways),
             "role_task_mapping": role_task_mapping,
-            "role_redesign_hints": self._build_role_redesign_hints(baseline_metrics, baseline_abs_metrics)
+            "shift_responsibility_hints": self._build_shift_responsibility_hints(baseline_metrics, baseline_abs_metrics)
         }
 
     def _simulate_baseline(self, baseline_model: Dict, log_path: str, baseline_metrics: Dict = None):
@@ -934,7 +934,7 @@ class ImprovementValidationAgent:
 
         With selective simulator launch:
         - resources / calendar  → DES only (ABS is None)
-        - role_redesign         → ABS only (DES is None)
+        - shift_responsibility         → ABS only (DES is None)
         - anything else         → Both simulators (fallback)
 
         Validation uses formula: delta_throughput - delta_cycle_time/2 > 0.02
@@ -972,7 +972,7 @@ class ImprovementValidationAgent:
                 score = des_validation.get('score', 0)
                 summary_parts.append(f"DES did not improve (score={score:.4f} <= 0.02)")
 
-        elif param_type == 'role_redesign':
+        elif param_type == 'shift_responsibility':
             # ABS only - DES was skipped
             overall = bool(abs_validation.get('is_improvement')) and not utilization_veto
             # Plausibility ceiling: >95% cycle-time reduction is likely artifact
@@ -1188,8 +1188,8 @@ class ImprovementValidationAgent:
 
         return aggregated
 
-    def _build_role_redesign_hints(self, baseline_metrics: Dict = None, baseline_abs_metrics: Dict = None) -> str:
-        """Build concise role redesign hints from baseline (and ABS when available)."""
+    def _build_shift_responsibility_hints(self, baseline_metrics: Dict = None, baseline_abs_metrics: Dict = None) -> str:
+        """Build concise shift responsibility hints from baseline (and ABS when available)."""
         role_utils = {}
 
         baseline_resources = (baseline_metrics or {}).get("resource_utilization", {})
@@ -1219,7 +1219,7 @@ class ImprovementValidationAgent:
         return (
             f"Overloaded candidates: {', '.join(over)}. "
             f"Underutilized candidates: {', '.join(under)}. "
-            "Prefer role redesign: create specialist role or shift responsibilities from overloaded to underutilized roles before adding headcount."
+            "Prefer shift responsibility: create specialist role or shift responsibilities from overloaded to underutilized roles before adding headcount."
         )
 
     @staticmethod
@@ -1277,7 +1277,7 @@ class ImprovementValidationAgent:
         specific_changes = changes.get("specific_changes", [])
         expected = (hypothesis or {}).get("expected_impact", {})
 
-        if parameter_type not in {"resources", "role_redesign", "activity_durations", "calendar"}:
+        if parameter_type not in {"resources", "shift_responsibility", "activity_durations", "calendar"}:
             return False, f"unsupported parameter_type '{parameter_type}'"
 
         if not isinstance(specific_changes, list) or len(specific_changes) != 1:
@@ -1331,9 +1331,9 @@ class ImprovementValidationAgent:
                     if target not in resources:
                         return False, f"calendar target '{target}' is not in known targets"
 
-        if parameter_type == "role_redesign":
+        if parameter_type == "shift_responsibility":
             if change_name not in {"shift_responsibility", "create_specialist_role"}:
-                return False, "role redesign must be shift_responsibility/create_specialist_role"
+                return False, "shift responsibility must be shift_responsibility/create_specialist_role"
             util = (baseline_metrics or {}).get("resource_utilization", {}) or {}
             overloaded = {str(r) for r, u in util.items() if float(u) >= 0.8}
             underutilized = {str(r) for r, u in util.items() if float(u) <= 0.25}
@@ -1341,9 +1341,9 @@ class ImprovementValidationAgent:
             if "→" in target:
                 source, destination = [s.strip().replace("_profile", "") for s in target.split("→", 1)]
                 if overloaded and source not in overloaded:
-                    return False, f"role redesign source '{source}' is not overloaded"
+                    return False, f"shift responsibility source '{source}' is not overloaded"
                 if underutilized and destination not in underutilized:
-                    return False, f"role redesign destination '{destination}' is not underutilized"
+                    return False, f"shift responsibility destination '{destination}' is not underutilized"
 
         return True, "accepted"
 

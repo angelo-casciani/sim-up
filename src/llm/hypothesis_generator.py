@@ -161,7 +161,7 @@ class HypothesisGenerator:
 Your task is to generate actionable, predictive hypotheses to improve process performance.
 
 Validation oracle by change type (CRITICAL — use this to set realistic expected_impact):
-- role_redesign (parameter_type=role_redesign): validated by ABS (AgentSimulator) ONLY.
+- shift_responsibility (parameter_type=shift_responsibility): validated by ABS (AgentSimulator) ONLY.
   ABS explicitly models agent handover and routing behaviour. DES only checks throughput does not hard-fail.
   Main KPIs to improve: cycle_time (primary). ABS waiting_time is always 0 by design.
 - resource_allocation (parameter_type=resources): validated by DES (Prosimos) ONLY.
@@ -171,9 +171,9 @@ Validation oracle by change type (CRITICAL — use this to set realistic expecte
   Extends working hours for resources, reducing waiting times and improving throughput.
   Main KPIs to improve: waiting_time (primary), cycle_time, throughput.
 
-    ROLE SEMANTICS (CRITICAL for role_redesign):
+    ROLE SEMANTICS (CRITICAL for shift_responsibility):
     - Each role/resource profile can ONLY perform specific activities based on their domain expertise.
-    - When proposing role_redesign (shift_responsibility), you MUST consider role compatibility:
+    - When proposing shift_responsibility (shift_responsibility), you MUST consider role compatibility:
       * Appraisers: Can ONLY do appraisal-related tasks (property valuation, assessment). Cannot be replaced by Applicants.
       * Loan Officers: Handle loan decisions, approvals, customer interactions related to loans.
       * Clerks: Handle administrative tasks, document processing, data entry.
@@ -187,7 +187,7 @@ Validation oracle by change type (CRITICAL — use this to set realistic expecte
     Proposal strategy:
     - Propose ONE change only (single specific change entry).
         - Use only this safe intervention palette (STRICT PRIORITY ORDER):
-            1. role_redesign (shift_responsibility or create_specialist_role) — **MANDATORY FIRST CHOICE** when overloaded + underutilized roles coexist
+            1. shift_responsibility (shift_responsibility or create_specialist_role) — **MANDATORY FIRST CHOICE** when overloaded + underutilized roles coexist
               This is the LOWEST COST option: redistributes existing workforce without hiring.
               IMPORTANT: Only shift between roles with overlapping or compatible task assignments.
               Example valid shifts: clerk -> clerk, loan officer -> Senior Officer (similar domain)
@@ -206,13 +206,13 @@ Validation oracle by change type (CRITICAL — use this to set realistic expecte
     - Prefer changes that improve at least two KPIs among: cycle_time, throughput, waiting_time.
 
 Canonical taxonomy mapping (must be respected exactly):
-- improvement_type=role_redesign       <-> changes.parameter_type=role_redesign
+- improvement_type=shift_responsibility       <-> changes.parameter_type=shift_responsibility
 - improvement_type=resource_allocation  <-> changes.parameter_type=resources
 - improvement_type=calendar_adjustment  <-> changes.parameter_type=calendar
 
 For each hypothesis, provide:
 - Clear description of the improvement
-- Type: role_redesign, resource_allocation, or calendar_adjustment
+- Type: shift_responsibility, resource_allocation, or calendar_adjustment
 - Specific changes to simulation parameters
 - Expected impact on metrics
 
@@ -227,10 +227,10 @@ Strict output rules:
 Return a JSON object with the following structure:
 {
   "description": "Clear description of the improvement",
-    "improvement_type": "role_redesign|resource_allocation|calendar_adjustment",
+    "improvement_type": "shift_responsibility|resource_allocation|calendar_adjustment",
   "rationale": "Why this improvement would help",
   "changes": {
-        "parameter_type": "role_redesign|resources|calendar",
+        "parameter_type": "shift_responsibility|resources|calendar",
     "specific_changes": [
       {
                 "target": "role_name|Resource_1|all",
@@ -265,7 +265,7 @@ BASELINE METRICS:
             activities = ", ".join(target_hints.get("activities", []))
             calendars = ", ".join(target_hints.get("calendars", []))
             gateways = ", ".join(target_hints.get("gateways", []))
-            role_redesign_hints = target_hints.get("role_redesign_hints", "")
+            shift_responsibility_hints = target_hints.get("shift_responsibility_hints", "")
             prompt += "KNOWN TARGETS (use these exact names if you reference them):\n"
             if resources:
                 prompt += f"- Resources: {resources}\n"
@@ -275,8 +275,8 @@ BASELINE METRICS:
                 prompt += f"- Calendars: {calendars}\n"
             if gateways:
                 prompt += f"- Gateways: {gateways}\n"
-            if role_redesign_hints:
-                prompt += f"- Role redesign guidance: {role_redesign_hints}\n"
+            if shift_responsibility_hints:
+                prompt += f"- Shift responsibility guidance: {shift_responsibility_hints}\n"
             # Include role-task mapping if available
             role_task_mapping = target_hints.get("role_task_mapping", {})
             if role_task_mapping:
@@ -293,18 +293,18 @@ BASELINE METRICS:
         disallowed_types = strategy_hints.get("disallowed_parameter_types", [])
         high_priority_targets = strategy_hints.get("high_priority_targets", [])
         _oracle_map = {
-            "role_redesign": "ABS primary (DES throughput safety)",
+            "shift_responsibility": "ABS primary (DES throughput safety)",
             "resources": "DES only",
         }
         prompt += "ITERATION STRATEGY CONSTRAINTS (must follow):\n"
         if allowed_types:
             prompt += f"- Allowed parameter_type values this iteration: {', '.join(allowed_types)}\n"
-            # Enforce role_redesign priority when it's first in the list
-            if allowed_types[0] == "role_redesign":
+            # Enforce shift_responsibility priority when it's first in the list
+            if allowed_types[0] == "shift_responsibility":
                 prompt += (
-                    "- **MANDATORY**: You MUST use role_redesign as your parameter_type. "
-                    "Role redesign is the LOWEST COST option for the organization (no hiring needed). "
-                    "Only use resource_allocation or calendar_adjustment if role_redesign has already been tried and failed.\n"
+                    "- **MANDATORY**: You MUST use shift_responsibility as your parameter_type. "
+                    "Shift responsibility is the LOWEST COST option for the organization (no hiring needed). "
+                    "Only use resource_allocation or calendar_adjustment if shift_responsibility has already been tried and failed.\n"
                 )
             oracle_notes = [f"{t} -> {_oracle_map.get(t, 'OR')}" for t in allowed_types]
             prompt += f"- Validation oracle for each allowed type: {'; '.join(oracle_notes)}\n"
@@ -343,20 +343,20 @@ BASELINE METRICS:
         
         prompt += """
 Focus on (PRIORITY ORDER - follow strictly):
-1. **FIRST PRIORITY - role_redesign**: When overloaded + underutilized roles coexist, you MUST use role_redesign.
+1. **FIRST PRIORITY - shift_responsibility**: When overloaded + underutilized roles coexist, you MUST use shift_responsibility.
    This is the LOWEST COST intervention (redistributes existing workforce, no new hires needed).
    CRITICAL: Only shift between roles with COMPATIBLE task assignments. Check the role-task mapping!
    - Valid: shift between Clerks, between Loan Officers, or between roles sharing activities
    - INVALID: Appraiser -> Applicant (Applicant cannot do appraisals), AML Investigator -> Clerk (different expertise)
-2. **SECOND PRIORITY - resource_allocation**: If role_redesign is not viable or already tried, add resources to bottlenecks.
-3. **LAST RESORT - calendar_adjustment**: Only extend working hours if role_redesign AND resource_allocation are not viable.
+2. **SECOND PRIORITY - resource_allocation**: If shift_responsibility is not viable or already tried, add resources to bottlenecks.
+3. **LAST RESORT - calendar_adjustment**: Only extend working hours if shift_responsibility AND resource_allocation are not viable.
 
     Safety rules:
     - Use meaningful deltas (+1 to +2 resources for additions, +1 to +4 hours for calendar).
     - Avoid any change likely to worsen cycle time or waiting time.
     - Prefer improvements that help at least two of: cycle_time, throughput, waiting_time.
-    - **MANDATORY**: If role_redesign is in the allowed types, you MUST propose role_redesign (lowest organizational cost).
-    - For role_redesign: VERIFY role compatibility before proposing. External actors (Applicant) cannot perform internal staff tasks.
+    - **MANDATORY**: If shift_responsibility is in the allowed types, you MUST propose shift_responsibility (lowest organizational cost).
+    - For shift_responsibility: VERIFY role compatibility before proposing. External actors (Applicant) cannot perform internal staff tasks.
     - If prior attempts fail repeatedly, switch intervention type among allowed types only.
     - Do not use placeholders like "Activity_with_highest_waiting_time"; choose from the known targets.
 
@@ -389,7 +389,7 @@ Return ONLY the JSON object, no additional text."""
         changes = hypothesis.get("changes", {})
         parameter_type = changes.get("parameter_type")
         specific_changes = changes.get("specific_changes", [])
-        if parameter_type not in {"resources", "role_redesign", "calendar"}:
+        if parameter_type not in {"resources", "shift_responsibility", "calendar"}:
             return False
         if not isinstance(specific_changes, list) or len(specific_changes) != 1:
             return False
@@ -464,13 +464,13 @@ Return ONLY the JSON object, no additional text."""
         mappable_overloaded = [r for r in overloaded if r in resource_norms]
         mappable_underutilized = [r for r in underutilized if r in resource_norms]
 
-        # Priority order: role_redesign > resources > calendar
-        # role_redesign is preferred when workload can be rebalanced
+        # Priority order: shift_responsibility > resources > calendar
+        # shift_responsibility is preferred when workload can be rebalanced
         # resources is next choice for adding capacity to bottlenecks
         # calendar is last resort for extending working hours
         allowed = []
         if mappable_overloaded and mappable_underutilized:
-            allowed.append("role_redesign")
+            allowed.append("shift_responsibility")
         if overloaded:
             allowed.append("resources")  # Resource allocation is second priority
             allowed.append("calendar")   # Calendar adjustment is last resort
@@ -496,7 +496,7 @@ Return ONLY the JSON object, no additional text."""
             if failed_recent.count(repeated) >= 2 and repeated in allowed and len(allowed) > 1:
                 allowed = [t for t in allowed if t != repeated] + [repeated]
 
-        # High priority targets: overloaded first (for resource additions), then underutilized (for role redesign destination)
+        # High priority targets: overloaded first (for resource additions), then underutilized (for shift responsibility destination)
         # For resource additions, we should ONLY target overloaded resources
         high_priority_targets = mappable_overloaded + mappable_underutilized
         if not high_priority_targets:
@@ -609,7 +609,7 @@ Return ONLY the JSON object, no additional text."""
         fallback_description = (fallback_description or "").strip()
         fallback_rationale = (fallback_rationale or "").strip()
 
-        if parameter_type == "role_redesign":
+        if parameter_type == "shift_responsibility":
             if "→" in str(target):
                 src, dst = [part.strip() for part in str(target).split("→", 1)]
             else:
@@ -668,12 +668,12 @@ Return ONLY the JSON object, no additional text."""
                     return candidate
             return None
 
-        if parameter_type == "role_redesign":
+        if parameter_type == "shift_responsibility":
             recently_tried = strategy_hints.get("recently_tried", [])
             role_task_mapping = target_hints.get("role_task_mapping", {})
 
             def _rd_entry(src, dst):
-                return f"role_redesign:{src} → {dst}"
+                return f"shift_responsibility:{src} → {dst}"
 
             def _is_external_actor(role_name: str) -> bool:
                 """Check if a role represents an external actor who cannot perform internal tasks."""
@@ -763,7 +763,7 @@ Return ONLY the JSON object, no additional text."""
             target = f"{from_role} → {to_role}"
             change = preferred_change if preferred_change in {"shift_responsibility", "create_specialist_role"} else "shift_responsibility"
             value = 1
-            return target, change, value, "role_redesign"
+            return target, change, value, "shift_responsibility"
 
         if parameter_type == "calendar":
             # Calendar adjustment: extend working hours for overloaded resources

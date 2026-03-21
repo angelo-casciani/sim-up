@@ -41,7 +41,7 @@ Logs with a `resourceId` column cause SIMOD to discover UUIDs instead of the `re
 Reduced from 24 to **15 experiments** using only validated logs:
 - Resource Allocation: 5 experiments (LoanApp.csv only)
 - Calendar Adjustment: 5 experiments (LoanApp, p2p, helpdesk, env_permit)
-- Role Redesign: 5 experiments (LoanApp, p2p)
+- Shift Responsibility: 5 experiments (LoanApp, p2p)
 
 ### v1.2 (March 13, 2026) - Fair Comparison Fixes
 
@@ -52,11 +52,11 @@ Reduced from 24 to **15 experiments** using only validated logs:
    - **Fix:** Unified solution detection criteria - both now use tolerance-based cycle_time comparison
    - **Additional fix (v1.2.1):** Simulation variance caused no solutions with tight 2% tolerance. Now uses **30% tolerance** for resource allocation due to high simulation variance.
 
-2. **Role Redesign: Immediate convergence at iteration 1 (1:1 speedup)**
+2. **Shift Responsibility: Immediate convergence at iteration 1 (1:1 speedup)**
    - **Root cause:** First shift option (10%) was already "good enough" to pass 5% tolerance
    - **Fix:**
      - Increased search granularity: 20 options (5% to 100% in 5% steps) instead of 8 options (10% to 80%)
-     - Tolerance set to 5% for role redesign
+     - Tolerance set to 5% for shift responsibility
      - Reduced fault severity from 80% to 50% shift, placing optimal fix in the middle of search space
 
 3. **Calendar Adjustment: Works correctly (reference implementation)**
@@ -69,8 +69,8 @@ Reduced from 24 to **15 experiments** using only validated logs:
 | Component | Before | After |
 |-----------|--------|-------|
 | `resource_llm_search.py` line 192-193 | `is_solution = (proposed_count == optimal_count)` | `is_solution = self._is_within_tolerance(cycle_time, optimal_cycle_time)` |
-| `role_redesign_grid_search.py` | 8 options (10%-80%), 5% tolerance | 20 options (5%-100%), 5% tolerance |
-| `role_redesign_llm_search.py` | 8 options, 5% tolerance, max 5 iterations | 20 options, 5% tolerance, max 20 iterations |
+| `shift_responsibility_grid_search.py` | 8 options (10%-80%), 5% tolerance | 20 options (5%-100%), 5% tolerance |
+| `shift_responsibility_llm_search.py` | 8 options, 5% tolerance, max 5 iterations | 20 options, 5% tolerance, max 20 iterations |
 | `quantitative_evaluation_runner.py` | 80% fault shift, single tolerance | 50% fault shift, per-type tolerances |
 
 ### Tolerance Settings
@@ -79,9 +79,9 @@ Reduced from 24 to **15 experiments** using only validated logs:
 |------------------|-----------|-----------|
 | Resource Allocation | 30% | High simulation variance due to resource count changes |
 | Calendar Adjustment | 5% | Moderate variance, original setting worked well |
-| Role Redesign | 1% | Tight tolerance required - 5% tolerance caused immediate convergence at iteration 1 |
+| Shift Responsibility | 1% | Tight tolerance required - 5% tolerance caused immediate convergence at iteration 1 |
 
-**Note:** Role redesign required reducing tolerance from 5% to 1% because even small shifts (5%) were bringing cycle time within 5% of optimal, causing both Grid and LLM to find solutions at iteration 1 (no speedup advantage).
+**Note:** shift responsibility required reducing tolerance from 5% to 1% because even small shifts (5%) were bringing cycle time within 5% of optimal, causing both Grid and LLM to find solutions at iteration 1 (no speedup advantage).
 
 ---
 
@@ -91,7 +91,7 @@ This document outlines a comprehensive evaluation framework to assess the effect
 
 1. **Resource Allocation** - Adding resources to bottleneck roles
 2. **Calendar Adjustment** - Extending working hours for constrained resources
-3. **Role Redesign** - Redistributing workload between roles
+3. **Shift Responsibility** - Redistributing workload between roles
 
 A fourth scenario—**Mixed/Cross-type**—where the LLM freely chooses among all three improvement types is deferred to future work due to the difficulty of establishing a fair grid search baseline.
 
@@ -155,7 +155,7 @@ This dual-simulator approach provides robustness: an improvement must show posit
 |------|-----------|-------------------|---------------------|-----------|
 | **Resource Allocation** | `resources` | DES (Prosimos) | ABS (throughput check) | DES captures queue dynamics; ABS confirms no routing degradation |
 | **Calendar Adjustment** | `calendar` | DES (Prosimos) | N/A (DES-only) | DES captures availability effects; ABS doesn't support calendar changes |
-| **Role Redesign** | `role_redesign` | ABS (AgentSimulator) | DES (throughput check) | ABS captures handoff behavior; DES confirms no capacity degradation |
+| **Shift Responsibility** | `shift_responsibility` | ABS (AgentSimulator) | DES (throughput check) | ABS captures handoff behavior; DES confirms no capacity degradation |
 
 **Combined Validation Score:**
 
@@ -165,7 +165,7 @@ S_final = (S_DES + S_ABS) / 2
 Accepted if: S_final > threshold AND S_DES > 0 AND S_ABS > 0
 ```
 
-For Role Redesign improvements:
+For Shift Responsibility improvements:
 ```
 S_final = S_ABS (primary) with S_DES >= 0 (safety check)
 Accepted if: S_ABS > threshold AND S_DES >= -0.05 (no significant throughput loss)
@@ -189,10 +189,10 @@ This ensures improvements are validated by both simulators, preventing acceptanc
 | Calendar Fault Injection | ✅ Implemented | `src/evaluation/quantitative/calendar_fault_injector.py` |
 | Calendar Grid Search | ✅ Implemented | `src/evaluation/quantitative/calendar_grid_search.py` |
 | Calendar LLM Search | ✅ Implemented | `src/evaluation/quantitative/calendar_llm_search.py` |
-| **Role Redesign** | | |
-| Role Redesign Fault Injection | ✅ Implemented | `src/evaluation/quantitative/role_redesign_fault_injector.py` |
-| Role Redesign Heuristic Baseline | ✅ Implemented | `src/evaluation/quantitative/role_redesign_heuristic_search.py` |
-| Role Redesign LLM Search | ✅ Implemented | `src/evaluation/quantitative/role_redesign_llm_search.py` |
+| **Shift Responsibility** | | |
+| Shift Responsibility Fault Injection | ✅ Implemented | `src/evaluation/quantitative/shift_responsibility_fault_injector.py` |
+| Shift Responsibility Heuristic Baseline | ✅ Implemented | `src/evaluation/quantitative/shift_responsibility_heuristic_search.py` |
+| Shift Responsibility LLM Search | ✅ Implemented | `src/evaluation/quantitative/shift_responsibility_llm_search.py` |
 | **Comprehensive Evaluation** | | |
 | Comprehensive Evaluation Runner | ✅ Implemented | `src/evaluation/quantitative/comprehensive_evaluation_runner.py` |
 | Comprehensive Results Reporter | ✅ Implemented | `src/evaluation/quantitative/comprehensive_results_reporter.py` |
@@ -259,7 +259,7 @@ throughput >= 0.95 × baseline_throughput
 |------------------|-------------|-----------|
 | Resource Allocation | waiting_time | Adding resources directly reduces queue time |
 | Calendar Adjustment | waiting_time | Extended hours reduce overnight queuing |
-| Role Redesign | cycle_time | Rebalancing reduces handoff delays |
+| Shift Responsibility | cycle_time | Rebalancing reduces handoff delays |
 
 **Default tolerance threshold:** 5% improvement over faulty model
 
@@ -318,7 +318,7 @@ To evaluate solution quality beyond KPI convergence, we track the **cost level**
 
 | Cost Level | Intervention Type | Description | Example |
 |------------|-------------------|-------------|---------|
-| **1 (Low)** | Role Redesign | Redistribute existing workforce | Shift tasks from Clerk to Loan Officer |
+| **1 (Low)** | Shift Responsibility | Redistribute existing workforce | Shift tasks from Clerk to Loan Officer |
 | **2 (Medium)** | Calendar Extension | Increase working hours (overtime) | Extend AML Investigator hours by 2h |
 | **3 (High)** | Resource Addition | Hire new staff | Add 2 AML Investigators |
 
@@ -394,11 +394,11 @@ Same as Resource Allocation:
 
 ---
 
-## 6. Evaluation Type 3: Role Redesign
+## 6. Evaluation Type 3: Shift Responsibility
 
 ### 6.1 Complexity
 
-Role redesign has a **combinatorial search space**:
+shift responsibility has a **combinatorial search space**:
 - N source roles × (N-1) target roles × M shift percentages
 - For LoanApp with 6 roles and 5 shift levels: 6 × 5 × 5 = 150 combinations
 
@@ -463,7 +463,7 @@ Same as other evaluation types, plus:
 | p2p.csv | Karel de Groot (95%) | Fjodor Kowalski (20%) | TBD after discovery |
 | env_permit.csv | TBD | TBD | Uses `org:group` for role identification |
 
-**Note:** Role redesign requires roles with **overlapping activities** (both can perform the same tasks). Not all logs support this—verification needed during implementation.
+**Note:** shift responsibility requires roles with **overlapping activities** (both can perform the same tasks). Not all logs support this—verification needed during implementation.
 
 ---
 
@@ -542,7 +542,7 @@ For each iteration, the benchmark captures:
 | Field | Description |
 |-------|-------------|
 | `hypothesis_description` | Text description of the proposed improvement |
-| `hypothesis_type` | Type: `resource_allocation`, `calendar_adjustment`, or `role_redesign` |
+| `hypothesis_type` | Type: `resource_allocation`, `calendar_adjustment`, or `shift_responsibility` |
 | `is_improvement` | Whether this iteration was validated as an improvement (score >= 1%) |
 | `des_cycle_time_change` | % change in DES cycle time vs baseline |
 | `des_throughput_change` | % change in DES throughput vs baseline |
@@ -675,7 +675,7 @@ python src/evaluation/quantitative/run_llm_benchmark.py \
 
 In a **mixed** scenario, the LLM is not told which improvement type to use. Given a degraded model, it must:
 1. Diagnose the problem (bottleneck identification)
-2. Choose the best intervention type (Resource, Calendar, or Role Redesign)
+2. Choose the best intervention type (Resource, Calendar, or Shift Responsibility)
 3. Propose specific parameters
 
 ### 8.2 Why Deferred
@@ -714,11 +714,11 @@ When implemented, mixed evaluation would test:
 | **ABS simulation runs** | 5-10 | Parallel to DES for consistent validation |
 | **Resource tolerance** | 30% | Higher tolerance to account for simulation variance |
 | **Calendar tolerance** | 5% | Moderate tolerance, original working value |
-| **Role redesign tolerance** | 1% | Tight tolerance to prevent trivial convergence (v1.2.2) |
+| **shift responsibility tolerance** | 1% | Tight tolerance to prevent trivial convergence (v1.2.2) |
 
 **Note on LLM Non-Determinism:** Even with temperature=0.0, LLMs exhibit non-deterministic behavior due to factors like floating-point precision and batching. Running 5 independent repetitions allows us to report results as **Mean ± Standard Deviation**, providing statistical validity.
 
-**Note on Per-Type Tolerances (v1.2.2):** Different improvement types exhibit different levels of simulation variance. Resource allocation has the highest variance because adding/removing resources significantly changes the simulation dynamics. Role redesign requires very tight tolerance (1%) because even small shifts can significantly improve KPIs, causing trivial solutions with 5% tolerance.
+**Note on Per-Type Tolerances (v1.2.2):** Different improvement types exhibit different levels of simulation variance. Resource allocation has the highest variance because adding/removing resources significantly changes the simulation dynamics. shift responsibility requires very tight tolerance (1%) because even small shifts can significantly improve KPIs, causing trivial solutions with 5% tolerance.
 
 ### 9.2 Experimental Matrix
 
@@ -750,7 +750,7 @@ When implemented, mixed evaluation would test:
 
 **Note on fragmented calendars:** SIMOD discovers fragmented calendars (multiple periods per day). The fault injector reduces ALL periods proportionally to achieve target reduction.
 
-#### Role Redesign (E3.1 - E3.5)
+#### Shift Responsibility (E3.1 - E3.5)
 
 | ID | Log | Domain | Overloaded Role | Target Role | Shared Activities |
 |----|-----|--------|-----------------|-------------|-------------------|
@@ -760,7 +760,7 @@ When implemented, mixed evaluation would test:
 | E3.4 | p2p.csv | Procurement | Francois de Perrier | Karel de Groot | Quotation/order activities |
 | E3.5 | p2p.csv | Procurement | Pedro Alvares | Karalda Nimwada | Invoice activities |
 
-**Validation criteria:** Role redesign requires overlapping activities between roles. p2p.csv has two distinct activity groups with clear overlaps.
+**Validation criteria:** shift responsibility requires overlapping activities between roles. p2p.csv has two distinct activity groups with clear overlaps.
 
 #### Excluded Logs (with reasons)
 
@@ -847,10 +847,10 @@ For each experiment, we report:
 - [x] Calendar LLM search
 - [x] Integration with comprehensive evaluation runner
 
-### Phase 3: Role Redesign ✅ Complete
-- [x] Role redesign fault injector (create workload imbalance)
+### Phase 3: Shift Responsibility ✅ Complete
+- [x] shift responsibility fault injector (create workload imbalance)
 - [x] Heuristic baseline (highest-util → lowest-util)
-- [x] Role redesign LLM search
+- [x] shift responsibility LLM search
 - [x] Role pair accuracy metrics
 
 ### Phase 4: Comprehensive Evaluation ✅ Complete
@@ -916,9 +916,9 @@ poetry run python src/evaluation/quantitative/run_comprehensive_evaluation.py \
 poetry run python src/evaluation/quantitative/run_comprehensive_evaluation.py \
     --logs-dir data/logs --type calendar_adjustment
 
-# Run only role redesign experiments
+# Run only shift responsibility experiments
 poetry run python src/evaluation/quantitative/run_comprehensive_evaluation.py \
-    --logs-dir data/logs --type role_redesign
+    --logs-dir data/logs --type shift_responsibility
 
 # Dry run to validate configuration
 poetry run python src/evaluation/quantitative/run_comprehensive_evaluation.py \
@@ -980,10 +980,10 @@ src/evaluation/quantitative/
 ├── calendar_grid_search.py             # Systematic hours grid search
 ├── calendar_llm_search.py              # LLM-guided calendar search
 │
-│ # Role Redesign
-├── role_redesign_fault_injector.py     # Workload imbalance fault injection
-├── role_redesign_heuristic_search.py   # Heuristic baseline (util-based)
-├── role_redesign_llm_search.py         # LLM-guided role redesign search
+│ # Shift Responsibility
+├── shift_responsibility_fault_injector.py     # Workload imbalance fault injection
+├── shift_responsibility_heuristic_search.py   # Heuristic baseline (util-based)
+├── shift_responsibility_llm_search.py         # LLM-guided shift responsibility search
 │
 │ # Comprehensive Evaluation
 ├── comprehensive_evaluation_runner.py  # Main orchestrator for all types
@@ -1089,8 +1089,8 @@ If `resourceId` is present, the log likely won't work for this evaluation framew
 
 | Log | Domain | Resources | Pattern | Has resourceId? | Suitable For |
 |-----|--------|-----------|---------|-----------------|--------------|
-| LoanApp.csv | Financial | 19 | Role-NNNNNN | **No** | Resource, Calendar, Role Redesign |
-| p2p.csv | Procurement | ~27 | Named individuals | **No** | Calendar, Role Redesign |
+| LoanApp.csv | Financial | 19 | Role-NNNNNN | **No** | Resource, Calendar, Shift Responsibility |
+| p2p.csv | Procurement | ~27 | Named individuals | **No** | Calendar, Shift Responsibility |
 | helpdesk.csv | IT Support | ~20 | Value N | **No** | Calendar only |
 | env_permit.csv | Government | ~30 | ResourceNN | **No** | Calendar only |
 

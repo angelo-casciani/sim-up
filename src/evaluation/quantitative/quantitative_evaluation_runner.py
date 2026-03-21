@@ -4,7 +4,7 @@ Comprehensive Evaluation Runner for All Improvement Types.
 Orchestrates the full evaluation pipeline across all three improvement types:
 1. Resource Allocation - Adding resources to bottleneck roles
 2. Calendar Adjustment - Extending working hours for constrained resources
-3. Role Redesign - Redistributing workload between roles
+3. Shift Responsibility - Redistributing workload between roles
 
 Key Features:
 - Supports 5 repetitions per experiment with mean ± std reporting
@@ -38,13 +38,13 @@ from evaluation.quantitative.calendar_fault_injector import CalendarFaultInjecto
 from evaluation.quantitative.calendar_grid_search import CalendarGridSearch, CalendarGridSearchHistory
 from evaluation.quantitative.calendar_llm_search import CalendarLLMSearch, CalendarLLMSearchHistory
 
-# Role redesign components (new)
-from evaluation.quantitative.role_redesign_fault_injector import RoleRedesignFaultInjector
-from evaluation.quantitative.role_redesign_grid_search import (
-    RoleRedesignGridSearch, RoleRedesignGridSearchHistory
+# Shift responsibility components
+from evaluation.quantitative.shift_responsibility_fault_injector import ShiftResponsibilityFaultInjector
+from evaluation.quantitative.shift_responsibility_grid_search import (
+    ShiftResponsibilityGridSearch, ShiftResponsibilityGridSearchHistory
 )
-from evaluation.quantitative.role_redesign_llm_search import (
-    RoleRedesignLLMSearch, RoleRedesignLLMHistory
+from evaluation.quantitative.shift_responsibility_llm_search import (
+    ShiftResponsibilityLLMSearch, ShiftResponsibilityLLMHistory
 )
 
 
@@ -52,12 +52,12 @@ class ImprovementType(Enum):
     """Types of process improvements to evaluate."""
     RESOURCE_ALLOCATION = "resource_allocation"
     CALENDAR_ADJUSTMENT = "calendar_adjustment"
-    ROLE_REDESIGN = "role_redesign"
+    SHIFT_RESPONSIBILITY = "shift_responsibility"
 
 
 class InterventionCost(Enum):
     """Cost levels for intervention types (lower is better)."""
-    LOW = 1       # Role Redesign - redistribute existing workforce
+    LOW = 1       # Shift Responsibility - redistribute existing workforce
     MEDIUM = 2    # Calendar Extension - increase working hours (overtime)
     HIGH = 3      # Resource Addition - hire new staff
 
@@ -239,7 +239,7 @@ class ComprehensiveEvaluator:
 
     # Default experiment configurations for comprehensive BPM research paper evaluation
     # VALIDATED: Only logs with pattern-based roles (2+ resources per role) are used
-    # for resource allocation. Calendar and role redesign use different criteria.
+    # for resource allocation. Calendar and shift responsibility use different criteria.
     #
     # Validated logs for RESOURCE ALLOCATION:
     #   - LoanApp.csv: Clerk(8), Loan Officer(4), AML Investigator(2), Appraiser(2), Senior Officer(2)
@@ -350,26 +350,26 @@ class ComprehensiveEvaluator:
             intervention_cost=InterventionCost.MEDIUM
         ),
 
-        # ==================== ROLE REDESIGN (E3.1 - E3.5) ====================
-        # 5 experiments using logs WITHOUT resourceId column (SIMOD-compatible)
-        # Role redesign requires overlapping activities between resources
+        # ==================== SHIFT RESPONSIBILITY (E3.1 - E3.5) ====================
+        # 5 experiments using logs WITH overlapping activities between resources
+        # Shift responsibility requires resources that can perform the same activities
         #
-        # LoanApp.csv - Financial domain (2 experiments)
-        # Multiple roles handle document processing tasks
+        # helpdesk.csv - IT support domain (2 experiments)
+        # 22 resources (Value 1-22) with overlapping activities across support tiers
         ExperimentConfig(
             experiment_id="E3.1",
-            log_name="LoanApp.csv",
-            improvement_type=ImprovementType.ROLE_REDESIGN,
-            fault_description="Overload Clerk role (50% shift)",
-            ground_truth="Shift ~50% back to Loan Officer",
+            log_name="helpdesk.csv",
+            improvement_type=ImprovementType.SHIFT_RESPONSIBILITY,
+            fault_description="Overload Value 1 resource (50% shift)",
+            ground_truth="Shift ~50% to other support resources",
             intervention_cost=InterventionCost.LOW
         ),
         ExperimentConfig(
             experiment_id="E3.2",
-            log_name="LoanApp.csv",
-            improvement_type=ImprovementType.ROLE_REDESIGN,
-            fault_description="Overload AML Investigator role",
-            ground_truth="Shift to Senior Officer",
+            log_name="helpdesk.csv",
+            improvement_type=ImprovementType.SHIFT_RESPONSIBILITY,
+            fault_description="Overload Value 2 resource",
+            ground_truth="Shift to Value 3 or other resources",
             intervention_cost=InterventionCost.LOW
         ),
         # p2p.csv - Procurement domain (3 experiments)
@@ -378,7 +378,7 @@ class ComprehensiveEvaluator:
         ExperimentConfig(
             experiment_id="E3.3",
             log_name="p2p.csv",
-            improvement_type=ImprovementType.ROLE_REDESIGN,
+            improvement_type=ImprovementType.SHIFT_RESPONSIBILITY,
             fault_description="Overload Karel de Groot",
             ground_truth="Shift to Magdalena Predutta",
             intervention_cost=InterventionCost.LOW
@@ -386,7 +386,7 @@ class ComprehensiveEvaluator:
         ExperimentConfig(
             experiment_id="E3.4",
             log_name="p2p.csv",
-            improvement_type=ImprovementType.ROLE_REDESIGN,
+            improvement_type=ImprovementType.SHIFT_RESPONSIBILITY,
             fault_description="Overload Francois de Perrier",
             ground_truth="Shift to Karel de Groot",
             intervention_cost=InterventionCost.LOW
@@ -395,7 +395,7 @@ class ComprehensiveEvaluator:
         ExperimentConfig(
             experiment_id="E3.5",
             log_name="p2p.csv",
-            improvement_type=ImprovementType.ROLE_REDESIGN,
+            improvement_type=ImprovementType.SHIFT_RESPONSIBILITY,
             fault_description="Overload Pedro Alvares",
             ground_truth="Shift to Karalda Nimwada",
             intervention_cost=InterventionCost.LOW
@@ -411,7 +411,7 @@ class ComprehensiveEvaluator:
         tolerance_pct: float = 2.0,
         resource_tolerance_pct: float = 30.0,  # Higher tolerance for resource (more variance)
         calendar_tolerance_pct: float = 5.0,   # Calendar has moderate variance
-        role_tolerance_pct: float = 5.0,        # Within 5% of optimal (symmetric, above or below)
+        shift_tolerance_pct: float = 5.0,        # Within 5% of optimal (symmetric, above or below)
         des_runs: int = 5,
         abs_runs: int = 5,
         use_dual_validation: bool = True,
@@ -428,7 +428,7 @@ class ComprehensiveEvaluator:
             tolerance_pct: Default KPI tolerance for convergence (default: 2%)
             resource_tolerance_pct: Tolerance for resource allocation (default: 30% due to high variance)
             calendar_tolerance_pct: Tolerance for calendar adjustment (default: 5%)
-            role_tolerance_pct: Tolerance for role redesign (default: 5% - symmetric above/below optimal)
+            shift_tolerance_pct: Tolerance for shift responsibility (default: 5% - symmetric above/below optimal)
             des_runs: Number of DES (Prosimos) runs to average per simulation
             abs_runs: Number of ABS (AgentSimulator) runs per simulation
             use_dual_validation: Whether to validate with both DES and ABS
@@ -441,7 +441,7 @@ class ComprehensiveEvaluator:
         self.tolerance_pct = tolerance_pct
         self.resource_tolerance_pct = resource_tolerance_pct
         self.calendar_tolerance_pct = calendar_tolerance_pct
-        self.role_tolerance_pct = role_tolerance_pct
+        self.shift_tolerance_pct = shift_tolerance_pct
         self.des_runs = des_runs
         self.abs_runs = abs_runs
         self.use_dual_validation = use_dual_validation
@@ -462,7 +462,7 @@ class ComprehensiveEvaluator:
         self.calendar_fault_injector = CalendarFaultInjector(fault_hours_reduction=6.0)
         # Use 50% shift to create workload imbalance that requires ~50% correction
         # This places the optimal fix in the middle of the search space (not trivially at 5% or 10%)
-        self.role_fault_injector = RoleRedesignFaultInjector(fault_shift_fraction=0.5)
+        self.shift_fault_injector = ShiftResponsibilityFaultInjector(fault_shift_fraction=0.5)
 
     def _parse_target_role_from_config(self, config: ExperimentConfig) -> str:
         """
@@ -484,7 +484,7 @@ class ComprehensiveEvaluator:
         """
         desc = config.fault_description
 
-        # Handle "Overload X role" or "Overload X" format (role redesign)
+        # Handle "Overload X role" or "Overload X" format (shift responsibility)
         if desc.startswith("Overload "):
             role = desc.replace("Overload ", "").strip()
             # Remove trailing "role" and any parenthetical info
@@ -598,9 +598,9 @@ class ComprehensiveEvaluator:
         print(f"    [OK] SIMOD metrics cycle_time: {simod_metrics.get('avg_cycle_time', 0):.2f}s")
 
         # Step 1.5: Simulate baseline with appropriate simulator
-        # For role_redesign: use ABS (AgentSimulator) as primary
+        # For shift_responsibility: use ABS (AgentSimulator) as primary
         # For resource/calendar: use DES (Prosimos) as primary
-        if config.improvement_type == ImprovementType.ROLE_REDESIGN:
+        if config.improvement_type == ImprovementType.SHIFT_RESPONSIBILITY:
             print(f"\n  Simulating baseline model with AgentSimulator (ABS)...")
             baseline_metrics = self._simulate_baseline_abs(log_path, work_dir, simod_metrics)
         else:
@@ -685,9 +685,9 @@ class ComprehensiveEvaluator:
         simod_metrics: Dict
     ) -> Dict:
         """
-        Simulate the baseline model with AgentSimulator (ABS) for role redesign.
+        Simulate the baseline model with AgentSimulator (ABS) for shift responsibility.
 
-        For role redesign evaluation, ABS is the primary simulator because it better
+        For shift responsibility evaluation, ABS is the primary simulator because it better
         captures role-based behavior and workload distribution.
         """
         baseline_dir = os.path.join(work_dir, "baseline_simulation_abs")
@@ -776,13 +776,13 @@ class ComprehensiveEvaluator:
 
             optimal_metrics = self._simulate_model(model, {}, work_dir, baseline_metrics, log_path, experiment_type="calendar")
 
-        elif config.improvement_type == ImprovementType.ROLE_REDESIGN:
-            # For role redesign, target is the overloaded role
+        elif config.improvement_type == ImprovementType.SHIFT_RESPONSIBILITY:
+            # For shift responsibility, target is the overloaded role
             # We need to find a suitable target role to shift work to
             high_role = target  # The role we're overloading (from config)
 
             # Find a role that shares activities with the overloaded role
-            low_role, shared_activities = self.role_fault_injector.find_target_role_for_overload(
+            low_role, shared_activities = self.shift_fault_injector.find_target_role_for_overload(
                 model, high_role
             )
             if low_role is None:
@@ -791,11 +791,11 @@ class ComprehensiveEvaluator:
             print(f"    Shifting work from '{low_role}' to '{high_role}' to create bottleneck")
 
             # Shift work TO the high_role to overload it
-            faulty_model, fault_info = self.role_fault_injector.inject_fault(
+            faulty_model, fault_info = self.shift_fault_injector.inject_fault(
                 model, source_role=low_role, target_role=high_role, shift_fraction=0.8
             )
 
-            optimal_metrics = self._simulate_model(model, {}, work_dir, baseline_metrics, log_path, experiment_type="role_redesign")
+            optimal_metrics = self._simulate_model(model, {}, work_dir, baseline_metrics, log_path, experiment_type="shift_responsibility")
 
         else:
             raise ValueError(f"Unknown improvement type: {config.improvement_type}")
@@ -804,7 +804,7 @@ class ComprehensiveEvaluator:
         exp_type_map = {
             ImprovementType.RESOURCE_ALLOCATION: "resource",
             ImprovementType.CALENDAR_ADJUSTMENT: "calendar",
-            ImprovementType.ROLE_REDESIGN: "role_redesign",
+            ImprovementType.SHIFT_RESPONSIBILITY: "shift_responsibility",
         }
         exp_type = exp_type_map.get(config.improvement_type)
 
@@ -846,7 +846,7 @@ class ComprehensiveEvaluator:
         exp_type_map = {
             ImprovementType.RESOURCE_ALLOCATION: "resource",
             ImprovementType.CALENDAR_ADJUSTMENT: "calendar",
-            ImprovementType.ROLE_REDESIGN: "role_redesign",
+            ImprovementType.SHIFT_RESPONSIBILITY: "shift_responsibility",
         }
         exp_type = exp_type_map.get(config.improvement_type)
 
@@ -874,10 +874,11 @@ class ComprehensiveEvaluator:
                 faulty_model, fault_info, optimal_metrics,
                 fault_info.get("faulty_metrics", {}), cached_simulate, work_dir
             )
-        elif config.improvement_type == ImprovementType.ROLE_REDESIGN:
-            baseline_result, llm_result = self._run_role_redesign_searches(
+        elif config.improvement_type == ImprovementType.SHIFT_RESPONSIBILITY:
+            baseline_result, llm_result = self._run_shift_responsibility_searches(
                 faulty_model, fault_info, optimal_metrics,
-                fault_info.get("faulty_metrics", {}), cached_simulate, work_dir
+                fault_info.get("faulty_metrics", {}), cached_simulate, work_dir,
+                original_model=model
             )
         else:
             raise ValueError(f"Unknown improvement type: {config.improvement_type}")
@@ -982,45 +983,76 @@ class ComprehensiveEvaluator:
 
         return grid_result, llm_result
 
-    def _run_role_redesign_searches(
-        self, faulty_model, fault_info, optimal_metrics, faulty_metrics, simulate_fn, work_dir
+    def _run_shift_responsibility_searches(
+        self, faulty_model, fault_info, optimal_metrics, faulty_metrics, simulate_fn, work_dir,
+        original_model: Dict = None
     ):
-        """Run role redesign searches."""
+        """Run shift responsibility searches.
+
+        The new approach enumerates compatible role pairs instead of shift percentages:
+        - Grid Search: tries all (source, target) pairs with overlapping activities
+        - LLM Search: proposes pairs based on utilization analysis
+
+        Args:
+            faulty_model: Model with injected workload imbalance
+            fault_info: Information about the injected fault
+            optimal_metrics: Target metrics to match
+            faulty_metrics: Current faulty metrics
+            simulate_fn: Cached simulation function
+            work_dir: Working directory
+            original_model: Original model (for finding all compatible pairs)
+        """
         from_role = fault_info.get("source_role")  # The overloaded role
         to_role = fault_info.get("target_role")    # The underloaded role
 
         optimal_cycle_time = optimal_metrics.get("avg_cycle_time", 0)
 
-        # Grid search iterations = position of expected fix in 5% step grid
-        # Fault shift fraction tells us approximately where the fix should be
-        if self.skip_grid_search:
-            # Expected fix is approximately the same as the fault shift fraction
-            # Grid options: 5%, 10%, 15%... so position = shift_fraction / 0.05
-            fault_shift = fault_info.get("shift_fraction", 0.5)
-            theoretical_iterations = int(fault_shift / 0.05)  # e.g., 0.8 / 0.05 = 16
-            theoretical_iterations = max(1, min(theoretical_iterations, 20))  # Clamp to 1-20
+        # Use faulty_model if original not provided
+        model_for_pairs = original_model if original_model else faulty_model
 
-            grid_result = RoleRedesignGridSearchHistory(
-                from_role=from_role,
-                to_role=to_role,
+        # Grid search baseline: use unique resources count (not N×(N-1) pairs)
+        # This represents trying each resource as a potential overload source
+        if self.skip_grid_search:
+            # Count unique resources for realistic baseline
+            grid_search_temp = ShiftResponsibilityGridSearch(tolerance_pct=self.shift_tolerance_pct)
+            all_pairs = grid_search_temp._find_compatible_pairs(model_for_pairs)
+
+            # Count unique resources (roles) involved in any pair
+            unique_roles = set()
+            for p in all_pairs:
+                unique_roles.add(p[0])
+                unique_roles.add(p[1])
+
+            # Use unique resources count as baseline (more realistic than all pairs)
+            theoretical_iterations = len(unique_roles)
+            theoretical_iterations = max(1, theoretical_iterations)
+
+            grid_result = ShiftResponsibilityGridSearchHistory(
+                target_from_role=from_role,
+                target_to_role=to_role,
                 target_cycle_time=optimal_cycle_time,
+                all_compatible_pairs=[(p[0], p[1]) for p in all_pairs],
                 solution_found_at=theoretical_iterations
             )
-            print(f"    [SKIP] Grid search - theoretical iterations: {theoretical_iterations} (based on {fault_shift:.0%} fault)")
+            print(f"    [SKIP] Grid search - theoretical iterations: {theoretical_iterations} (unique resources)")
         else:
-            grid_search = RoleRedesignGridSearch(tolerance_pct=self.role_tolerance_pct)
+            grid_search = ShiftResponsibilityGridSearch(tolerance_pct=self.shift_tolerance_pct)
             grid_result = grid_search.search(
                 faulty_model, from_role, to_role,
-                optimal_metrics, faulty_metrics, simulate_fn, work_dir
+                optimal_metrics, faulty_metrics, simulate_fn, work_dir,
+                model=model_for_pairs
             )
 
-        llm_search = RoleRedesignLLMSearch(
+        # LLM search uses same role pair space
+        num_pairs = len(grid_result.all_compatible_pairs) if hasattr(grid_result, 'all_compatible_pairs') else 10
+        llm_search = ShiftResponsibilityLLMSearch(
             model_name=self.model_name, temperature=self.temperature,
-            max_iterations=10, tolerance_pct=self.role_tolerance_pct
+            max_iterations=num_pairs, tolerance_pct=self.shift_tolerance_pct
         )
         llm_result = llm_search.search(
             faulty_model, from_role, to_role,
-            optimal_metrics, faulty_metrics, simulate_fn, work_dir
+            optimal_metrics, faulty_metrics, simulate_fn, work_dir,
+            model=model_for_pairs
         )
 
         return grid_result, llm_result
@@ -1124,9 +1156,9 @@ class ComprehensiveEvaluator:
                 abs_current_throughput = abs_averaged.get("avg_throughput", 0)
                 abs_current_cycle_time = abs_averaged.get("avg_cycle_time", 0)
 
-                # Store ABS metrics directly for role redesign searches
+                # Store ABS metrics directly for shift responsibility searches
                 result["abs_throughput"] = abs_current_throughput
-                result["abs_cycle_time"] = abs_current_cycle_time  # Primary KPI for role redesign
+                result["abs_cycle_time"] = abs_current_cycle_time  # Primary KPI for shift responsibility
 
                 if abs_baseline_throughput > 0:
                     # For throughput, higher is better
@@ -1232,7 +1264,7 @@ class ComprehensiveEvaluator:
         print(f"ABS runs per simulation: {self.abs_runs}")
         print(f"Dual-simulator validation: {'Enabled' if self.use_dual_validation else 'Disabled'}")
         print(f"Skip grid search: {'Yes (using theoretical iterations)' if self.skip_grid_search else 'No'}")
-        print(f"Tolerance by type: Resource={self.resource_tolerance_pct}%, Calendar={self.calendar_tolerance_pct}%, Role={self.role_tolerance_pct}%")
+        print(f"Tolerance by type: Resource={self.resource_tolerance_pct}%, Calendar={self.calendar_tolerance_pct}%, Shift={self.shift_tolerance_pct}%")
         print(f"\nExperiments to run:")
         for config in experiments:
             print(f"  {config.experiment_id}: {config.improvement_type.value} - {config.log_name}")

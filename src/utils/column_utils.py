@@ -74,8 +74,8 @@ def normalize_role_label(label: Optional[str]) -> str:
     return role
 
 
-def parse_role_redesign_target(target: Optional[str]) -> Tuple[str, str]:
-    """Parse role-redesign target into (source, destination) labels.
+def parse_shift_responsibility_target(target: Optional[str]) -> Tuple[str, str]:
+    """Parse shift-responsibility target into (source, destination) labels.
 
     Args:
         target: Target string, possibly containing arrow separator

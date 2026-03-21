@@ -3,7 +3,7 @@
 # This module implements the comprehensive evaluation framework for:
 # 1. Resource Allocation - Adding resources to bottleneck roles
 # 2. Calendar Adjustment - Extending working hours for constrained resources
-# 3. Role Redesign - Redistributing workload between roles
+# 3. Shift Responsibility - Redistributing workload between roles
 
 # Global random seed for reproducibility and fair benchmarking.
 # Using the same seed ensures that identical simulation inputs
@@ -22,13 +22,13 @@ from evaluation.quantitative.calendar_fault_injector import CalendarFaultInjecto
 from evaluation.quantitative.calendar_grid_search import CalendarGridSearch, CalendarGridSearchHistory
 from evaluation.quantitative.calendar_llm_search import CalendarLLMSearch, CalendarLLMSearchHistory
 
-# Role Redesign components
-from evaluation.quantitative.role_redesign_fault_injector import RoleRedesignFaultInjector
-from evaluation.quantitative.role_redesign_grid_search import (
-    RoleRedesignGridSearch, RoleRedesignGridSearchHistory
+# Shift Responsibility components
+from evaluation.quantitative.shift_responsibility_fault_injector import ShiftResponsibilityFaultInjector
+from evaluation.quantitative.shift_responsibility_grid_search import (
+    ShiftResponsibilityGridSearch, ShiftResponsibilityGridSearchHistory
 )
-from evaluation.quantitative.role_redesign_llm_search import (
-    RoleRedesignLLMSearch, RoleRedesignLLMHistory
+from evaluation.quantitative.shift_responsibility_llm_search import (
+    ShiftResponsibilityLLMSearch, ShiftResponsibilityLLMHistory
 )
 
 # Comprehensive evaluation
@@ -69,12 +69,12 @@ __all__ = [
     "CalendarLLMSearch",
     "CalendarLLMSearchHistory",
 
-    # Role Redesign
-    "RoleRedesignFaultInjector",
-    "RoleRedesignGridSearch",
-    "RoleRedesignGridSearchHistory",
-    "RoleRedesignLLMSearch",
-    "RoleRedesignLLMHistory",
+    # Shift Responsibility
+    "ShiftResponsibilityFaultInjector",
+    "ShiftResponsibilityGridSearch",
+    "ShiftResponsibilityGridSearchHistory",
+    "ShiftResponsibilityLLMSearch",
+    "ShiftResponsibilityLLMHistory",
 
     # Comprehensive Evaluation
     "ComprehensiveEvaluator",

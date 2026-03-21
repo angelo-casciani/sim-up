@@ -58,7 +58,7 @@ class PaperVisualizer:
             'llm': '#0072B2',       # Blue for LLM
             'speedup': '#009E73',   # Green for positive results
             'calendar': '#E69F00',  # Orange for calendar adjustment
-            'role': '#56B4E9',      # Light blue for role redesign
+            'role': '#56B4E9',      # Light blue for shift responsibility
             'resource': '#CC79A7',  # Pink for resource allocation
         }
 
@@ -241,7 +241,7 @@ class PaperVisualizer:
         # Create legend with improvement type colors
         legend_elements = [
             mpatches.Patch(color=self.colors['calendar'], label='Calendar Adjustment'),
-            mpatches.Patch(color=self.colors['role'], label='Role Redesign'),
+            mpatches.Patch(color=self.colors['role'], label='Shift Responsibility'),
             mpatches.Patch(color=self.colors['resource'], label='Resource Allocation'),
         ]
         ax.legend(handles=legend_elements, loc='upper right')
@@ -664,7 +664,7 @@ class PaperVisualizer:
         lines = [
             r"\begin{table}[htbp]",
             r"\centering",
-            r"\caption{Comparative Evaluation: Grid Search vs. LLM Pipeline}",
+            r"\caption{Comparative Evaluation: Grid Search vs. LLM Framework.}",
             r"\label{tab:results}",
             r"\begin{tabular}{lcccc}",
             r"\toprule",
@@ -722,14 +722,20 @@ class PaperVisualizer:
         """
         Compute proximity to solution for each iteration.
 
-        Proximity = how close the current proposal is to the optimal solution,
-        measured relative to the starting fault state.
+        If is_solution=True, proximity is 1.0 (solution found).
+        Otherwise, proximity is computed based on distance from fault state
+        to optimal value.
 
         Returns values from 0 (at fault state) to 1 (at optimal solution).
         """
         proximities = []
 
         for step in trajectory:
+            # If this step found a solution, proximity is 1.0
+            if step.get("is_solution", False):
+                proximities.append(1.0)
+                continue
+
             if improvement_type == "resource_allocation":
                 # Proximity based on resource count
                 # fault_count=1, optimal=original_count
@@ -752,7 +758,7 @@ class PaperVisualizer:
                 else:
                     proximity = 1.0 if current == optimal_hours else 0.0
 
-            elif improvement_type == "role_redesign":
+            elif improvement_type == "shift_responsibility":
                 # Proximity based on shift fraction
                 # fault = 0% shift (overloaded), optimal = target shift fraction (e.g., 50%)
                 optimal_fraction = fault_info.get("optimal_fraction", 0.5)
@@ -804,7 +810,7 @@ class PaperVisualizer:
                     "fault_hours": 2,
                     "optimal_hours": 8,
                 }
-            elif imp_type == "role_redesign":
+            elif imp_type == "shift_responsibility":
                 by_type[imp_type]["fault_info"] = {
                     "optimal_fraction": 0.5,
                 }

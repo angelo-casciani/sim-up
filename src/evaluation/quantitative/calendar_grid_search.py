@@ -124,14 +124,11 @@ class CalendarGridSearch:
             max_search_range=effective_max
         )
 
-        optimal_cycle = optimal_metrics.get("avg_cycle_time", 0)
-        optimal_waiting = optimal_metrics.get("avg_waiting_time", 0)
-
         print(f"\n[Calendar Grid Search] Starting systematic search for {target_calendar}")
         print(f"  Target optimal hours to add: {optimal_hours_to_add:.1f}")
         print(f"  Current faulty hours/day: {faulty_hours:.1f}")
         print(f"  Search range: {self.min_hours:.1f}h to {effective_max:.1f}h (step: {self.step_hours}h)")
-        print(f"  Target waiting_time: {optimal_waiting:.2f}s (tolerance: {self.tolerance_pct}%)")
+        print(f"  Solution criterion: must reach >= {optimal_hours_to_add:.1f}h (ground truth)")
 
         hours = self.min_hours
         iteration = 0
@@ -158,8 +155,8 @@ class CalendarGridSearch:
             waiting_time = metrics.get("avg_waiting_time", float("inf"))
             throughput = metrics.get("avg_throughput", 0)
 
-            # Check if waiting_time is within tolerance of optimal
-            is_solution = self._is_within_tolerance(waiting_time, optimal_waiting)
+            # Solution criterion: must reach the ground truth hours (not just KPI tolerance)
+            is_solution = hours >= optimal_hours_to_add
 
             result = CalendarGridSearchResult(
                 iteration=iteration,

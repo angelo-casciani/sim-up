@@ -148,7 +148,7 @@ class ComprehensiveResultsReporter:
             "",
             "| Cost Level | Description | Experiments |",
             "|------------|-------------|-------------|",
-            "| 1 (Low) | Role Redesign - redistribute existing workforce | Role redesign experiments |",
+            "| 1 (Low) | Shift Responsibility - redistribute existing workforce | Shift responsibility experiments |",
             "| 2 (Medium) | Calendar Extension - increase working hours | Calendar adjustment experiments |",
             "| 3 (High) | Resource Addition - hire new staff | Resource allocation experiments |",
             "",

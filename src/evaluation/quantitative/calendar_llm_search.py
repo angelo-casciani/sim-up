@@ -144,12 +144,10 @@ class CalendarLLMSearch:
             model_name=self.model_name
         )
 
-        optimal_waiting = optimal_metrics.get("avg_waiting_time", 0)
-
         print(f"\n[Calendar LLM Search] Starting guided search for {target_calendar}")
         print(f"  Model: {self.model_name}")
         print(f"  Current faulty hours/day: {faulty_hours:.1f}")
-        print(f"  Target waiting_time: {optimal_waiting:.2f}s (tolerance: {self.tolerance_pct}%)")
+        print(f"  Solution criterion: must reach >= {optimal_hours_to_add:.1f}h (ground truth)")
         print(f"  Current (faulty) waiting_time: {faulty_metrics.get('avg_waiting_time', 0):.2f}s")
 
         current_metrics = faulty_metrics
@@ -190,8 +188,8 @@ class CalendarLLMSearch:
             waiting_time = metrics.get("avg_waiting_time", float("inf"))
             throughput = metrics.get("avg_throughput", 0)
 
-            # Check if waiting_time is within tolerance of optimal
-            is_solution = self._is_within_tolerance(waiting_time, optimal_waiting)
+            # Solution criterion: must reach the ground truth hours (not just KPI tolerance)
+            is_solution = proposed_hours >= optimal_hours_to_add
 
             result = CalendarLLMSearchResult(
                 iteration=iteration,

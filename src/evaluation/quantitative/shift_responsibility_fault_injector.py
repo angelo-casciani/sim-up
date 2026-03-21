@@ -1,5 +1,5 @@
 """
-Role Redesign Fault Injector for Quantitative Evaluation.
+Shift Responsibility Fault Injector for Quantitative Evaluation.
 
 This module injects known faults into simulation models by creating workload imbalances.
 The goal is to create M_fault from M_opt (the optimal/discovered model) and measure
@@ -10,9 +10,9 @@ Fault Injection Strategy:
 - Modify task_resource_distribution to concentrate work on one role (creating overload)
 - Ground truth: LLM should propose shifting responsibility back to the underloaded role
 
-Role Redesign Search Space (Combinatorial):
-- N source roles × (N-1) target roles × M shift percentages
-- For LoanApp with 6 roles and 5 shift levels: 6 × 5 × 5 = 150 combinations
+Shift Responsibility Search Space (Combinatorial):
+- N source roles × (N-1) target roles with overlapping activities
+- For LoanApp with 6 roles: up to 30 compatible role pairs
 """
 
 import copy
@@ -21,12 +21,12 @@ from typing import Dict, Tuple, List, Optional, Set
 from collections import defaultdict
 
 
-class RoleRedesignFaultInjector:
+class ShiftResponsibilityFaultInjector:
     """Inject role workload imbalance faults into simulation models for controlled experiments."""
 
     def __init__(self, fault_shift_fraction: float = 0.5):
         """
-        Initialize role redesign fault injector.
+        Initialize shift responsibility fault injector.
 
         Args:
             fault_shift_fraction: Fraction of work to shift to overload a role (0.0-1.0)

@@ -37,7 +37,7 @@ class ProposalResult:
     """Result of a single proposal within a run (includes rejected proposals)."""
     proposal_num: int
     hypothesis_description: str
-    hypothesis_type: str  # e.g., "resource_allocation", "calendar_adjustment", "role_redesign"
+    hypothesis_type: str  # e.g., "resource_allocation", "calendar_adjustment", "shift_responsibility"
     is_improvement: bool
     rejected_before_simulation: bool = False  # True if rejected by strategic screening
 

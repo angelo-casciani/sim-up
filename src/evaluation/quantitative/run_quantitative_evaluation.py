@@ -5,7 +5,7 @@ Run Comprehensive Evaluation
 Entry point for running the full evaluation framework across all improvement types:
 1. Resource Allocation
 2. Calendar Adjustment
-3. Role Redesign
+3. Shift Responsibility
 
 Usage:
     python run_comprehensive_evaluation.py --logs-dir data/logs --output-dir output
@@ -104,7 +104,7 @@ Examples:
 
     parser.add_argument(
         "--type", "-t",
-        choices=["all", "resource_allocation", "calendar_adjustment", "role_redesign"],
+        choices=["all", "resource_allocation", "calendar_adjustment", "shift_responsibility"],
         default="all",
         help="Improvement type to evaluate (default: all)"
     )
@@ -149,7 +149,7 @@ Examples:
         type_map = {
             "resource_allocation": ImprovementType.RESOURCE_ALLOCATION,
             "calendar_adjustment": ImprovementType.CALENDAR_ADJUSTMENT,
-            "role_redesign": ImprovementType.ROLE_REDESIGN
+            "shift_responsibility": ImprovementType.SHIFT_RESPONSIBILITY
         }
         target_type = type_map[args.type]
         experiments = [

@@ -486,7 +486,7 @@ class LLMBenchmarkVisualizer:
         """
         Plot grouped bar chart showing improvement magnitude by hypothesis type per model.
 
-        Shows which improvement types (resource/calendar/role_redesign) each model
+        Shows which improvement types (resource/calendar/shift_responsibility) each model
         excels at proposing.
 
         Args:
@@ -504,7 +504,7 @@ class LLMBenchmarkVisualizer:
         type_colors = {
             'resource_allocation': '#0072B2',  # Blue
             'calendar_adjustment': '#E69F00',  # Orange
-            'role_redesign': '#009E73',        # Green
+            'shift_responsibility': '#009E73',        # Green
         }
 
         # Collect scores by model and type (excluding unknown)
@@ -537,7 +537,7 @@ class LLMBenchmarkVisualizer:
             return ""
 
         # Sort types for consistent ordering (exclude unknown)
-        type_order = ['resource_allocation', 'calendar_adjustment', 'role_redesign']
+        type_order = ['resource_allocation', 'calendar_adjustment', 'shift_responsibility']
         types = [t for t in type_order if t in all_types]
         types.extend([t for t in all_types if t not in type_order and t != 'unknown'])
 

@@ -59,10 +59,6 @@ class LLMBenchmarkReporter:
             figures = []
 
             # Generate all plots
-            fig = visualizer.plot_convergence_trajectory(report_dict)
-            if fig:
-                figures.append(fig)
-
             fig = visualizer.plot_score_progression(report_dict)
             if fig:
                 figures.append(fig)
