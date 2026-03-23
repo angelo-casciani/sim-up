@@ -134,6 +134,12 @@ Examples:
         help="Print configuration without running evaluation"
     )
 
+    parser.add_argument(
+        "--experiments", "-e",
+        nargs="+",
+        help="Specific experiment IDs to run (e.g., E1.1 E1.2 E2.1)"
+    )
+
     args = parser.parse_args()
 
     # Validate paths
@@ -145,7 +151,19 @@ Examples:
 
     # Filter experiments by type if specified
     experiments = None
-    if args.type != "all":
+    if args.experiments:
+        # Filter by specific experiment IDs
+        exp_ids = set(args.experiments)
+        experiments = [
+            exp for exp in ComprehensiveEvaluator.DEFAULT_EXPERIMENTS
+            if exp.experiment_id in exp_ids
+        ]
+        if not experiments:
+            print(f"Error: No experiments found matching IDs: {args.experiments}")
+            print(f"Available: {[e.experiment_id for e in ComprehensiveEvaluator.DEFAULT_EXPERIMENTS]}")
+            sys.exit(1)
+        print(f"\nFiltered to {len(experiments)} specific experiments: {[e.experiment_id for e in experiments]}")
+    elif args.type != "all":
         type_map = {
             "resource_allocation": ImprovementType.RESOURCE_ALLOCATION,
             "calendar_adjustment": ImprovementType.CALENDAR_ADJUSTMENT,

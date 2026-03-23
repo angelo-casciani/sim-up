@@ -18,11 +18,15 @@ from pathlib import Path
 from typing import Dict, List
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from matplotlib.ticker import MaxNLocator
 import numpy as np
 
 
 class PaperVisualizer:
     """Generate charts for research paper."""
+
+    # Custom ordering: Calendar Adjustment first, then alphabetical
+    TYPE_ORDER = ['calendar_adjustment', 'resource_allocation', 'shift_responsibility']
 
     def __init__(self, output_dir: str):
         """
@@ -61,6 +65,21 @@ class PaperVisualizer:
             'role': '#56B4E9',      # Light blue for shift responsibility
             'resource': '#CC79A7',  # Pink for resource allocation
         }
+
+    def _sort_types(self, types: List[str]) -> List[str]:
+        """Sort improvement types: Calendar Adjustment first, then alphabetical."""
+        def sort_key(t):
+            try:
+                return (self.TYPE_ORDER.index(t), t)
+            except ValueError:
+                return (len(self.TYPE_ORDER), t)  # Unknown types go last, alphabetically
+        return sorted(types, key=sort_key)
+
+    def _format_type_label(self, imp_type: str) -> str:
+        """Format improvement type for display labels."""
+        if imp_type == "calendar_adjustment":
+            return "Calendar\nUpdate"
+        return imp_type.replace("_", "\n").title()
 
     def load_results(self, results_dir: str) -> List[Dict]:
         """
@@ -127,10 +146,10 @@ class PaperVisualizer:
             by_type[imp_type]["grid"].append(e["baseline_iterations"]["mean"])
             by_type[imp_type]["llm"].append(e["llm_iterations"]["mean"])
 
-        types = list(by_type.keys())
+        types = self._sort_types(list(by_type.keys()))
         grid_iters = [np.mean(by_type[t]["grid"]) for t in types]
         llm_iters = [np.mean(by_type[t]["llm"]) for t in types]
-        labels = [t.replace("_", "\n").title() for t in types]
+        labels = [self._format_type_label(t) for t in types]
 
         fig, ax = plt.subplots(figsize=(10, 5))
 
@@ -203,10 +222,10 @@ class PaperVisualizer:
             by_type[imp_type]["grid"].append(e["baseline_iterations"]["mean"])
             by_type[imp_type]["llm"].append(e["llm_iterations"]["mean"])
 
-        types = list(by_type.keys())
+        types = self._sort_types(list(by_type.keys()))
         # Compute speedup as sum(grid) / sum(llm) for each type
         speedups = [sum(by_type[t]["grid"]) / sum(by_type[t]["llm"]) for t in types]
-        labels = [t.replace("_", "\n").title() for t in types]
+        labels = [self._format_type_label(t) for t in types]
 
         fig, ax = plt.subplots(figsize=(8, 5))
 
@@ -217,7 +236,7 @@ class PaperVisualizer:
         for t in types:
             if "calendar" in t:
                 bar_colors.append(self.colors['calendar'])
-            elif "role" in t:
+            elif "shift" in t or "responsibility" in t:
                 bar_colors.append(self.colors['role'])
             else:
                 bar_colors.append(self.colors['resource'])
@@ -238,13 +257,13 @@ class PaperVisualizer:
         ax.set_xticklabels(labels)
         ax.set_ylim(0, max(speedups) + 1.5)
 
-        # Create legend with improvement type colors
+        # Create legend with improvement type colors - position inside plot, upper left to avoid covering bars
         legend_elements = [
-            mpatches.Patch(color=self.colors['calendar'], label='Calendar Adjustment'),
+            mpatches.Patch(color=self.colors['calendar'], label='Calendar Update'),
             mpatches.Patch(color=self.colors['role'], label='Shift Responsibility'),
             mpatches.Patch(color=self.colors['resource'], label='Resource Allocation'),
         ]
-        ax.legend(handles=legend_elements, loc='upper right')
+        ax.legend(handles=legend_elements, loc='upper left')
 
         plt.tight_layout()
         fig_path = self.figures_dir / f"{save_name}.png"
@@ -287,10 +306,10 @@ class PaperVisualizer:
             by_type[imp_type]["grid"].append(e.get("baseline_iterations", {}).get("mean", 0) or 0)
             by_type[imp_type]["llm"].append(e.get("llm_iterations", {}).get("mean", 0) or 0)
 
-        types = list(by_type.keys())
+        types = self._sort_types(list(by_type.keys()))
         grid_iters = [np.mean(by_type[t]["grid"]) for t in types]
         llm_iters = [np.mean(by_type[t]["llm"]) for t in types]
-        labels = [t.replace("_", "\n").title() for t in types]
+        labels = [self._format_type_label(t) for t in types]
 
         x = np.arange(len(types))
         width = 0.35
@@ -311,25 +330,24 @@ class PaperVisualizer:
         # Right: Aggregate speedup by type (using sum/sum for accurate calculation)
         ax2 = axes[1]
 
-        # Group by improvement type - reuse the by_type from left panel
-        types = list(by_type.keys())
+        # Group by improvement type - reuse the sorted types from left panel
         # Compute speedup as sum(grid) / sum(llm) for each type
         speedups = [sum(by_type[t]["grid"]) / sum(by_type[t]["llm"]) if sum(by_type[t]["llm"]) > 0 else 0 for t in types]
 
         # Add overall
         total_grid = sum(sum(by_type[t]["grid"]) for t in types)
         total_llm = sum(sum(by_type[t]["llm"]) for t in types)
-        types.append("Overall")
+        types_with_overall = types + ["Overall"]
         speedups.append(total_grid / total_llm if total_llm > 0 else 0)
 
         # Prettify type names
-        type_labels = [t.replace("_", "\n").title() for t in types]
+        type_labels = [self._format_type_label(t) for t in types_with_overall]
 
         bar_colors = []
-        for t in types:
+        for t in types_with_overall:
             if "calendar" in t.lower():
                 bar_colors.append(self.colors['calendar'])
-            elif "role" in t.lower():
+            elif "shift" in t.lower() or "responsibility" in t.lower():
                 bar_colors.append(self.colors['role'])
             elif "resource" in t.lower():
                 bar_colors.append(self.colors['resource'])
@@ -584,17 +602,18 @@ class PaperVisualizer:
         headers = ['Evaluation Type', 'N', 'Avg Grid', 'Avg LLM', 'Speedup', 'Success Rate']
         data = []
 
-        for imp_type in sorted(by_type.keys()):
+        for imp_type in self._sort_types(list(by_type.keys())):
             vals = by_type[imp_type]
             n = len(vals["grid"]) if vals["grid"] else len(vals["success"])
             avg_grid = np.mean(vals["grid"]) if vals["grid"] else None
             avg_llm = np.mean(vals["llm"]) if vals["llm"] else None
             # Compute speedup as sum(grid) / sum(llm)
             speedup = sum(vals["grid"]) / sum(vals["llm"]) if vals["llm"] and sum(vals["llm"]) > 0 else None
-            success_rate = np.mean([1 if s >= 0.8 else 0 for s in vals["success"]]) if vals["success"] else 0
+            # Use actual success rate (average of per-experiment success rates)
+            success_rate = np.mean(vals["success"]) if vals["success"] else 0
 
             data.append([
-                imp_type.replace("_", " ").title(),
+                "Calendar Update" if imp_type == "calendar_adjustment" else imp_type.replace("_", " ").title(),
                 str(n),
                 f'{avg_grid:.1f}' if avg_grid else 'N/A',
                 f'{avg_llm:.1f}' if avg_llm else 'N/A',
@@ -642,9 +661,10 @@ class PaperVisualizer:
 
     def generate_latex_table(self, experiments: List[Dict]) -> str:
         """Generate LaTeX table for paper with aggregates by evaluation type."""
+        # Include ALL experiments with baseline data (not just successful LLM ones)
+        # This ensures success rate reflects actual performance
         valid_exps = [e for e in experiments
-                      if e.get("baseline_iterations", {}).get("mean") is not None
-                      and e.get("llm_iterations", {}).get("mean") is not None]
+                      if e.get("baseline_iterations", {}).get("mean") is not None]
 
         # Group by improvement type
         by_type = {}
@@ -672,14 +692,15 @@ class PaperVisualizer:
             r"\midrule",
         ]
 
-        for imp_type in sorted(by_type.keys()):
+        for imp_type in self._sort_types(list(by_type.keys())):
             vals = by_type[imp_type]
-            type_name = imp_type.replace("_", " ").title()
+            type_name = "Calendar Update" if imp_type == "calendar_adjustment" else imp_type.replace("_", " ").title()
             avg_grid = np.mean(vals["grid"]) if vals["grid"] else None
             avg_llm = np.mean(vals["llm"]) if vals["llm"] else None
             # Compute speedup as sum(grid) / sum(llm)
             speedup = sum(vals["grid"]) / sum(vals["llm"]) if vals["llm"] and sum(vals["llm"]) > 0 else None
-            success_rate = np.mean([1 if s >= 0.8 else 0 for s in vals["success"]]) if vals["success"] else 0
+            # Use actual success rate (average of per-experiment success rates)
+            success_rate = np.mean(vals["success"]) if vals["success"] else 0
 
             grid_str = f'{avg_grid:.1f}' if avg_grid else 'N/A'
             llm_str = f'{avg_llm:.1f}' if avg_llm else 'N/A'
@@ -849,10 +870,14 @@ class PaperVisualizer:
             print("No valid improvement types with trajectory data")
             return ""
 
+        # Sort types for consistent ordering
+        sorted_types = self._sort_types(list(by_type.keys()))
+
         fig, axes = plt.subplots(1, num_types, figsize=(5 * num_types, 5), squeeze=False)
         axes = axes.flatten()
 
-        for idx, (imp_type, data) in enumerate(sorted(by_type.items())):
+        for idx, imp_type in enumerate(sorted_types):
+            data = by_type[imp_type]
             ax = axes[idx]
 
             grid_trajs = data["grid_trajectories"]
@@ -866,8 +891,10 @@ class PaperVisualizer:
                     padded = t + [t[-1]] * (max_len_grid - len(t)) if t else [0] * max_len_grid
                     padded_grid.append(padded)
                 avg_grid = np.mean(padded_grid, axis=0)
-                x_grid = range(1, len(avg_grid) + 1)
-                ax.plot(x_grid, avg_grid, 'o-', color=self.colors['grid'],
+                # Start from origin (0, 0)
+                x_grid = [0] + list(range(1, len(avg_grid) + 1))
+                y_grid = [0] + list(avg_grid)
+                ax.plot(x_grid, y_grid, 'o-', color=self.colors['grid'],
                        linewidth=2, markersize=6, label='Grid')
 
             # Average LLM trajectories
@@ -878,8 +905,10 @@ class PaperVisualizer:
                     padded = t + [t[-1]] * (max_len_llm - len(t)) if t else [0] * max_len_llm
                     padded_llm.append(padded)
                 avg_llm = np.mean(padded_llm, axis=0)
-                x_llm = range(1, len(avg_llm) + 1)
-                ax.plot(x_llm, avg_llm, 's-', color=self.colors['llm'],
+                # Start from origin (0, 0)
+                x_llm = [0] + list(range(1, len(avg_llm) + 1))
+                y_llm = [0] + list(avg_llm)
+                ax.plot(x_llm, y_llm, 's-', color=self.colors['llm'],
                        linewidth=2, markersize=6, label='Framework')
 
             # Mark solution threshold
@@ -887,8 +916,11 @@ class PaperVisualizer:
 
             ax.set_xlabel('# Iterations')
             ax.set_ylabel('Proximity to Solution')
-            ax.set_title(imp_type.replace("_", " ").title())
+            # Format title: "calendar_adjustment" -> "Calendar Update", others use standard title case
+            title = "Calendar Update" if imp_type == "calendar_adjustment" else imp_type.replace("_", " ").title()
+            ax.set_title(title)
             ax.set_ylim(-0.05, 1.15)
+            ax.xaxis.set_major_locator(MaxNLocator(integer=True))  # Force integer x-axis ticks
             ax.legend(loc='lower right')
             ax.grid(True, alpha=0.3)
 

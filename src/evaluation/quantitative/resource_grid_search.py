@@ -144,8 +144,12 @@ class GridSearch:
             waiting_time = metrics.get("avg_waiting_time", float("inf"))
             throughput = metrics.get("avg_throughput", 0)
 
-            # Check if KPIs are within tolerance of optimal
-            is_solution = self._is_within_tolerance(cycle_time, optimal_cycle)
+            # Check if solution found via EITHER:
+            # 1. KPIs are within tolerance of optimal (performance-based)
+            # 2. count matches optimal_count exactly (accuracy-based)
+            is_solution_performance = self._is_within_tolerance(cycle_time, optimal_cycle)
+            is_solution_accuracy = (count == optimal_count)
+            is_solution = is_solution_performance or is_solution_accuracy
 
             result = GridSearchResult(
                 iteration=iteration,
@@ -159,12 +163,15 @@ class GridSearch:
             history.results.append(result)
 
             status = "FOUND!" if is_solution else ""
+            if is_solution_accuracy and not is_solution_performance:
+                status = "FOUND (exact match)!"
             print(f"cycle_time={cycle_time:.2f}s {status}")
 
             # Record first hit and stop searching
             if is_solution and history.solution_found_at is None:
                 history.solution_found_at = iteration
-                print(f"  [OK] Solution found at iteration {iteration} (count={count})")
+                reason = "exact count match" if is_solution_accuracy else "cycle_time within tolerance"
+                print(f"  [OK] Solution found at iteration {iteration} (count={count}, {reason})")
                 break
 
         if history.solution_found_at is None:

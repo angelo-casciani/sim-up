@@ -176,7 +176,7 @@ class LLMBenchmarkVisualizer:
         ax.set_xlabel('# Proposal', fontsize=self.fontsize['axis_label'])
         ax.set_ylabel('Averaged Validation Score', fontsize=self.fontsize['axis_label'])
         ax.set_title(f'LLM Score Progression{self._get_title_suffix()}\n'
-                     f'Averaged Validation Score per Proposal (higher is better)',
+                     f'Averaged Validation Score per Proposal',
                      fontsize=self.fontsize['title'], fontweight='bold')
 
         max_proposals = report.get("max_proposals", report.get("max_iterations", 5))
