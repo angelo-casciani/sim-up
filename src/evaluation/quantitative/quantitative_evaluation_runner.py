@@ -351,30 +351,28 @@ class ComprehensiveEvaluator:
         ),
 
         # ==================== SHIFT RESPONSIBILITY (E3.1 - E3.5) ====================
-        # 5 experiments using logs WITH overlapping activities between resources
+        # 5 experiments using p2p.csv - proven to work with AgentSimulator
         # Shift responsibility requires resources that can perform the same activities
+        # p2p.csv has 27 named resources with overlapping activities in procurement domain
         #
-        # helpdesk.csv - IT support domain (2 experiments)
-        # 22 resources (Value 1-22) with overlapping activities across support tiers
+        # Group 1: Kim, Immanuel, Elvira share quotation/requisition activities
         ExperimentConfig(
             experiment_id="E3.1",
-            log_name="helpdesk.csv",
+            log_name="p2p.csv",
             improvement_type=ImprovementType.SHIFT_RESPONSIBILITY,
-            fault_description="Overload Value 1 resource (50% shift)",
-            ground_truth="Shift ~50% to other support resources",
+            fault_description="Overload Kim Passa",
+            ground_truth="Shift to Immanuel Karagianni",
             intervention_cost=InterventionCost.LOW
         ),
         ExperimentConfig(
             experiment_id="E3.2",
-            log_name="helpdesk.csv",
+            log_name="p2p.csv",
             improvement_type=ImprovementType.SHIFT_RESPONSIBILITY,
-            fault_description="Overload Value 2 resource",
-            ground_truth="Shift to Value 3 or other resources",
+            fault_description="Overload Elvira Lores",
+            ground_truth="Shift to Christian Francois",
             intervention_cost=InterventionCost.LOW
         ),
-        # p2p.csv - Procurement domain (3 experiments)
-        # Named individuals with overlapping activities
-        # Group 1: Karel, Magdalena, Francois share quotation/order activities
+        # Group 2: Karel, Magdalena, Francois share quotation/order activities
         ExperimentConfig(
             experiment_id="E3.3",
             log_name="p2p.csv",
@@ -391,7 +389,7 @@ class ComprehensiveEvaluator:
             ground_truth="Shift to Karel de Groot",
             intervention_cost=InterventionCost.LOW
         ),
-        # Group 2: Pedro, Karalda share invoice activities
+        # Group 3: Pedro, Karalda share invoice activities
         ExperimentConfig(
             experiment_id="E3.5",
             log_name="p2p.csv",
@@ -790,9 +788,10 @@ class ComprehensiveEvaluator:
 
             print(f"    Shifting work from '{low_role}' to '{high_role}' to create bottleneck")
 
-            # Shift work TO the high_role to overload it
+            # Shift work TO high_role (source_role) FROM low_role (target_role) to overload high_role
+            # inject_fault params: source_role = role to OVERLOAD, target_role = role to shift work FROM
             faulty_model, fault_info = self.shift_fault_injector.inject_fault(
-                model, source_role=low_role, target_role=high_role, shift_fraction=0.8
+                model, source_role=high_role, target_role=low_role, shift_fraction=0.8
             )
 
             optimal_metrics = self._simulate_model(model, {}, work_dir, baseline_metrics, log_path, experiment_type="shift_responsibility")

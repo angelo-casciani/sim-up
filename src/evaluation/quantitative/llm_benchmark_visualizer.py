@@ -21,14 +21,16 @@ class LLMBenchmarkVisualizer:
     # Validation threshold (1% improvement required)
     IMPROVEMENT_THRESHOLD = 0.01
 
-    def __init__(self, output_dir: str):
+    def __init__(self, output_dir: str, log_name: str = None):
         """
         Initialize visualizer.
 
         Args:
             output_dir: Directory to save generated charts
+            log_name: Name of the event log (for figure titles)
         """
         self.output_dir = output_dir
+        self.log_name = log_name
         os.makedirs(output_dir, exist_ok=True)
 
         # Style settings
@@ -71,6 +73,12 @@ class LLMBenchmarkVisualizer:
         if model_name in self.model_colors:
             return self.model_colors[model_name]
         return self.fallback_colors[index % len(self.fallback_colors)]
+
+    def _get_title_suffix(self) -> str:
+        """Get log name suffix for titles."""
+        if self.log_name:
+            return f" ({self.log_name})"
+        return ""
 
     def plot_score_progression(
         self,
@@ -167,13 +175,15 @@ class LLMBenchmarkVisualizer:
         # Formatting
         ax.set_xlabel('# Proposal', fontsize=self.fontsize['axis_label'])
         ax.set_ylabel('Averaged Validation Score', fontsize=self.fontsize['axis_label'])
-        ax.set_title(f'LLM Score Progression\n'
+        ax.set_title(f'LLM Score Progression{self._get_title_suffix()}\n'
                      f'Averaged Validation Score per Proposal (higher is better)',
                      fontsize=self.fontsize['title'], fontweight='bold')
 
         max_proposals = report.get("max_proposals", report.get("max_iterations", 5))
         ax.set_xlim(0.5, max_proposals + 0.5)
-        ax.set_xticks(range(1, max_proposals + 1))
+        # Show ticks at 1, 5, 10, 15, ... intervals
+        ticks = [1] + [i for i in range(5, max_proposals + 1, 5)]
+        ax.set_xticks(ticks)
 
         ax.tick_params(axis='both', labelsize=self.fontsize['tick'])
         ax.legend(loc='lower right', fontsize=self.fontsize['legend'],
@@ -235,15 +245,12 @@ class LLMBenchmarkVisualizer:
             return ""
 
         x = np.arange(len(model_names))
-        bars = ax.bar(x, proposals_means, color=colors, yerr=proposals_stds,
-                      capsize=5, error_kw={'linewidth': 2})
+        bars = ax.bar(x, proposals_means, color=colors)
 
         # Add value labels
-        for bar, mean, std in zip(bars, proposals_means, proposals_stds):
+        for bar, mean in zip(bars, proposals_means):
             height = bar.get_height()
             label = f'{mean:.1f}'
-            if std > 0:
-                label += f'\n(+/-{std:.1f})'
             ax.annotate(label,
                         xy=(bar.get_x() + bar.get_width() / 2, height),
                         xytext=(0, 5), textcoords="offset points",
@@ -253,8 +260,8 @@ class LLMBenchmarkVisualizer:
 
         # Formatting
         ax.set_xlabel('Model', fontsize=self.fontsize['axis_label'])
-        ax.set_ylabel('# Proposals to First Improvement', fontsize=self.fontsize['axis_label'])
-        ax.set_title('Proposals to First Validated Improvement',
+        ax.set_ylabel('Avg # Proposals to First Improvement', fontsize=self.fontsize['axis_label'])
+        ax.set_title(f'Avg # Proposals to First Validated Improvement{self._get_title_suffix()}',
                      fontsize=self.fontsize['title'], fontweight='bold')
         ax.set_xticks(x)
         ax.set_xticklabels(model_names, rotation=45, ha='right',
@@ -314,15 +321,12 @@ class LLMBenchmarkVisualizer:
             return ""
 
         x = np.arange(len(model_names))
-        bars = ax.bar(x, time_means, color=colors, yerr=time_stds,
-                      capsize=5, error_kw={'linewidth': 2})
+        bars = ax.bar(x, time_means, color=colors)
 
         # Add value labels
-        for bar, mean, std in zip(bars, time_means, time_stds):
+        for bar, mean in zip(bars, time_means):
             height = bar.get_height()
             label = f'{mean:.1f}m'
-            if std > 0:
-                label += f'\n(+/-{std:.1f})'
             ax.annotate(label,
                         xy=(bar.get_x() + bar.get_width() / 2, height),
                         xytext=(0, 5), textcoords="offset points",
@@ -332,8 +336,8 @@ class LLMBenchmarkVisualizer:
 
         # Formatting
         ax.set_xlabel('Model', fontsize=self.fontsize['axis_label'])
-        ax.set_ylabel('Time to First Improvement (minutes)', fontsize=self.fontsize['axis_label'])
-        ax.set_title('Time to First Validated Improvement',
+        ax.set_ylabel('Avg Time to First Improvement (minutes)', fontsize=self.fontsize['axis_label'])
+        ax.set_title(f'Avg Time to First Validated Improvement{self._get_title_suffix()}',
                      fontsize=self.fontsize['title'], fontweight='bold')
         ax.set_xticks(x)
         ax.set_xticklabels(model_names, rotation=45, ha='right',
@@ -369,38 +373,57 @@ class LLMBenchmarkVisualizer:
         if not results:
             return ""
 
-        fig, ax = plt.subplots(figsize=(12, 8))
+        fig, ax = plt.subplots(figsize=(14, 9))
 
+        # Collect data points first
+        points = []
         for i, model_result in enumerate(results):
             model_name = model_result.get("model_name", f"Model {i}")
-            # Use proposals_to_improvement if available, otherwise fall back to iterations
             proposals = model_result.get("proposals_to_improvement_mean") or model_result.get("iterations_to_improvement_mean")
             score = model_result.get("averaged_score_mean")
 
             if proposals is not None and score is not None:
                 color = self._get_model_color(model_name, i)
+                points.append((proposals, score * 100, model_name, color))
 
-                ax.scatter(proposals, score * 100, s=200, c=[color],
-                          edgecolors='black', linewidths=1.5, zorder=5)
-                ax.annotate(model_name,  # Use full model name
-                           xy=(proposals, score * 100),
-                           xytext=(8, 8), textcoords='offset points',
-                           fontsize=self.fontsize['annotation'],
-                           fontweight='bold')
+        if not points:
+            plt.close()
+            return ""
 
-        # Add threshold line
-        ax.axhline(y=1.0, color='green', linestyle='--', linewidth=2,
-                   alpha=0.7, label='1% Threshold')
+        # Calculate axis limits with padding for labels
+        x_vals = [p[0] for p in points]
+        y_vals = [p[1] for p in points]
+        x_min, x_max = min(x_vals), max(x_vals)
+        y_min, y_max = min(y_vals), max(y_vals)
+        x_padding = (x_max - x_min) * 0.25 if x_max > x_min else 5
+        y_padding = (y_max - y_min) * 0.25 if y_max > y_min else 1
 
-        # Formatting (removed "Ideal" annotation)
-        ax.set_xlabel('# Proposals to First Improvement',
+        # Plot points
+        for proposals, score, model_name, color in points:
+            ax.scatter(proposals, score, s=200, c=[color],
+                      edgecolors='black', linewidths=1.5, zorder=5)
+
+        # Add labels to the right of each point
+        for proposals, score, model_name, color in points:
+            ax.annotate(model_name,
+                       xy=(proposals, score),
+                       xytext=(10, 0), textcoords='offset points',
+                       fontsize=self.fontsize['annotation'],
+                       fontweight='bold',
+                       ha='left', va='center')
+
+        # Set axis limits with padding
+        ax.set_xlim(max(0, x_min - x_padding), x_max + x_padding)
+        ax.set_ylim(max(0, y_min - y_padding), y_max + y_padding)
+
+        # Formatting
+        ax.set_xlabel('Avg # Proposals to First Improvement',
                      fontsize=self.fontsize['axis_label'])
-        ax.set_ylabel('Averaged Validation Score %',
+        ax.set_ylabel('Avg Impact Score (%)',
                      fontsize=self.fontsize['axis_label'])
-        ax.set_title('Speed vs Impact Trade-off',
+        ax.set_title(f'# Proposals vs Impact Trade-off{self._get_title_suffix()}',
                      fontsize=self.fontsize['title'], fontweight='bold')
         ax.tick_params(axis='both', labelsize=self.fontsize['tick'])
-        ax.legend(loc='lower right', fontsize=self.fontsize['legend'])
         ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
@@ -461,7 +484,7 @@ class LLMBenchmarkVisualizer:
         # Formatting
         ax.set_xlabel('Model', fontsize=self.fontsize['axis_label'])
         ax.set_ylabel('Success Rate (%)', fontsize=self.fontsize['axis_label'])
-        ax.set_title('Success Rate: Finding Validated Improvement',
+        ax.set_title(f'Success Rate: Finding Validated Improvement{self._get_title_suffix()}',
                      fontsize=self.fontsize['title'], fontweight='bold')
         ax.set_xticks(x)
         ax.set_xticklabels(model_names, rotation=45, ha='right',
@@ -575,7 +598,7 @@ class LLMBenchmarkVisualizer:
         # Formatting
         ax.set_xlabel('Model', fontsize=self.fontsize['axis_label'])
         ax.set_ylabel('Avg Improvement Magnitude (%)', fontsize=self.fontsize['axis_label'])
-        ax.set_title('Improvement Magnitude by Hypothesis Type\n'
+        ax.set_title(f'Improvement Magnitude by Hypothesis Type{self._get_title_suffix()}\n'
                      '(Which improvement types does each model propose effectively?)',
                      fontsize=self.fontsize['title'], fontweight='bold')
         ax.set_xticks(x)
@@ -676,7 +699,7 @@ class LLMBenchmarkVisualizer:
         # Formatting
         ax.set_xlabel('Model', fontsize=self.fontsize['axis_label'])
         ax.set_ylabel('Best Improvement Magnitude (%)', fontsize=self.fontsize['axis_label'])
-        ax.set_title('Best Validated Improvement per Model',
+        ax.set_title(f'Best Validated Improvement per Model{self._get_title_suffix()}',
                      fontsize=self.fontsize['title'], fontweight='bold')
         ax.set_xticks(x)
         ax.set_xticklabels(model_names, rotation=45, ha='right',
@@ -684,6 +707,88 @@ class LLMBenchmarkVisualizer:
         ax.tick_params(axis='y', labelsize=self.fontsize['tick'])
         ax.legend(loc='upper right', fontsize=self.fontsize['legend'])
         ax.set_ylim(0, max(best_scores) * 1.3 if best_scores else 10)
+
+        plt.tight_layout()
+
+        fig_path = os.path.join(self.output_dir, f"{save_name}.png")
+        plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"  Saved: {fig_path}")
+        return fig_path
+
+    def plot_avg_improvement_comparison(
+        self,
+        report: Dict,
+        save_name: str = "avg_improvement_comparison"
+    ) -> str:
+        """
+        Plot bar chart comparing the AVERAGE improvement found by each model.
+
+        Shows the mean improvement magnitude achieved by each model across all
+        validated improvements.
+
+        Args:
+            report: Benchmark report dictionary
+            save_name: Output filename
+
+        Returns:
+            Path to saved figure
+        """
+        results = report.get("results", [])
+        if not results:
+            return ""
+
+        fig, ax = plt.subplots(figsize=(14, 7))
+
+        model_names = []
+        avg_scores = []
+        colors = []
+
+        for i, model_result in enumerate(results):
+            model_name = model_result.get("model_name", f"Model {i}")
+            # Use averaged_score_mean which is already computed
+            avg_score = model_result.get("averaged_score_mean")
+
+            if avg_score is not None:
+                model_names.append(model_name)
+                avg_scores.append(avg_score * 100)  # Convert to percentage
+                colors.append(self._get_model_color(model_name, i))
+
+        if not model_names:
+            print("No improvements to plot")
+            plt.close()
+            return ""
+
+        x = np.arange(len(model_names))
+        bars = ax.bar(x, avg_scores, color=colors)
+
+        # Add value labels
+        for bar, score in zip(bars, avg_scores):
+            height = bar.get_height()
+            label = f'{score:.2f}%'
+            ax.annotate(label,
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 5), textcoords="offset points",
+                        ha='center', va='bottom',
+                        fontsize=self.fontsize['annotation'],
+                        fontweight='bold')
+
+        # Add 1% threshold line
+        ax.axhline(y=1.0, color='green', linestyle='--', linewidth=2,
+                   alpha=0.7, label='1% Threshold')
+
+        # Formatting
+        ax.set_xlabel('Model', fontsize=self.fontsize['axis_label'])
+        ax.set_ylabel('Avg Improvement Magnitude (%)', fontsize=self.fontsize['axis_label'])
+        ax.set_title(f'Average Validated Improvement per Model{self._get_title_suffix()}',
+                     fontsize=self.fontsize['title'], fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(model_names, rotation=45, ha='right',
+                          fontsize=self.fontsize['tick'])
+        ax.tick_params(axis='y', labelsize=self.fontsize['tick'])
+        ax.legend(loc='upper right', fontsize=self.fontsize['legend'])
+        ax.set_ylim(0, max(avg_scores) * 1.3 if avg_scores else 10)
 
         plt.tight_layout()
 
@@ -709,6 +814,12 @@ class LLMBenchmarkVisualizer:
         """
         with open(report_path, 'r') as f:
             report = json.load(f)
+
+        # Extract log name from report if not already set
+        if not self.log_name:
+            event_log = report.get("event_log", "")
+            if event_log:
+                self.log_name = os.path.basename(event_log)
 
         figures = []
 
@@ -743,8 +854,13 @@ class LLMBenchmarkVisualizer:
         if fig_path:
             figures.append(fig_path)
 
-        # Best improvement comparison (replaces impact_comparison)
+        # Best improvement comparison
         fig_path = self.plot_best_improvement_comparison(report)
+        if fig_path:
+            figures.append(fig_path)
+
+        # Average improvement comparison
+        fig_path = self.plot_avg_improvement_comparison(report)
         if fig_path:
             figures.append(fig_path)
 

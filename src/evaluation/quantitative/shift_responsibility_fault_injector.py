@@ -46,6 +46,21 @@ class ShiftResponsibilityFaultInjector:
         name = re.sub(r'-\d+$', '', name)
         return name.strip()
 
+    def _get_task_resource_distribution(self, model: Dict) -> List[Dict]:
+        """
+        Get task_resource_distribution from model, handling both wrapped and unwrapped formats.
+
+        SIMOD outputs raw JSON with task_resource_distribution at root level,
+        but simod_discoverer wraps it in {'prosimos_params': {...}}.
+        This handles both cases.
+        """
+        # Try wrapped format first (from simod_discoverer)
+        task_dist = model.get("prosimos_params", {}).get("task_resource_distribution", [])
+        if task_dist:
+            return task_dist
+        # Fallback to raw format (direct SIMOD output)
+        return model.get("task_resource_distribution", [])
+
     def _get_resource_activities(self, model: Dict) -> Dict[str, Set[str]]:
         """
         Get the set of activities each resource can perform.
@@ -53,7 +68,7 @@ class ShiftResponsibilityFaultInjector:
         Returns dict: resource_id -> set of activity names
         """
         resource_activities = defaultdict(set)
-        task_distributions = model.get("prosimos_params", {}).get("task_resource_distribution", [])
+        task_distributions = self._get_task_resource_distribution(model)
 
         for task in task_distributions:
             task_id = task.get("task_id", "")
@@ -231,7 +246,7 @@ class ShiftResponsibilityFaultInjector:
             shift_fraction = self.fault_shift_fraction
 
         faulty_model = copy.deepcopy(model)
-        task_distributions = faulty_model.get("prosimos_params", {}).get("task_resource_distribution", [])
+        task_distributions = self._get_task_resource_distribution(faulty_model)
 
         # Find shared activities if not provided
         if shared_activities is None:
@@ -360,7 +375,7 @@ class ShiftResponsibilityFaultInjector:
             Modified model with rebalanced workload
         """
         modified_model = copy.deepcopy(model)
-        task_distributions = modified_model.get("prosimos_params", {}).get("task_resource_distribution", [])
+        task_distributions = self._get_task_resource_distribution(modified_model)
 
         # Find shared activities
         role_activities = self._get_role_activities(model)
