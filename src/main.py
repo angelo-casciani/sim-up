@@ -13,8 +13,8 @@ def parse_arguments():
     parser = ArgumentParser(description="Test Process Improvement Validation Agent")
     is_windows = platform.system() == "Windows"
 
-    parser.add_argument('--model', type=str, default='gpt-4.1', help='LLM model id')
-    parser.add_argument('--log', type=str, default='road_traffic.xes', help='Event log file name in logs/ directory')
+    parser.add_argument('--model', type=str, default='anthropic--claude-4.5-opus', help='LLM model id')
+    parser.add_argument('--log', type=str, default='LoanApp.csv', help='Event log file name in logs/ directory')
     parser.add_argument('--temperature', type=float, default=0.0, help='Temperature for LLM generation (default: 0.0)')
     parser.add_argument('--max_tokens', type=int, default=4096, help='Max tokens for LLM responses (default: 4096)')
     parser.add_argument('--max_iterations', type=int, default=3, help='Maximum improvement iterations (default: 3)')

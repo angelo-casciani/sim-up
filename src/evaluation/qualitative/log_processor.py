@@ -45,33 +45,61 @@ def detect_columns(df: pd.DataFrame) -> Dict[str, str]:
     return mapping
 
 
-def clean_resource_id(resource_id: str) -> str:
+def is_corrupted_resource(resource_id: str) -> bool:
     """
-    Clean resource identifier by removing memory address patterns.
+    Check if resource ID is corrupted (memory address pattern).
     """
     if pd.isna(resource_id):
-        return "Unknown"
-
+        return True
     resource_str = str(resource_id)
-
-    # Remove memory address patterns like "<memory at 0x7f3c348657c8>"
-    if resource_str.startswith("<memory at"):
-        return "SystemAgent"
-
-    # Extract meaningful part from long identifiers
-    if len(resource_str) > 30 and resource_str.startswith("100"):
-        # These are likely composite IDs, extract a shorter hash
-        return resource_str[:12]
-
-    return resource_str
+    # Detect memory address patterns like "<memory at 0x7f3c348657c8>" or "<__main__.X object at 0x...>"
+    if resource_str.startswith("<") and ("0x" in resource_str or "at 0x" in resource_str):
+        return True
+    return False
 
 
-def create_agent_mapping(df: pd.DataFrame, resource_col: str) -> Tuple[Dict[str, int], Dict[int, str]]:
+def derive_role_from_activity(activity: str) -> str:
+    """
+    Derive a role/resource category from activity name using keyword patterns.
+    This preserves the original activity name but assigns a meaningful resource.
+    """
+    activity_lower = activity.lower()
+
+    # Pattern matching based on O2C domain keywords
+    if any(kw in activity_lower for kw in ['sales order', 'quotation']):
+        return 'SalesRep'
+    if any(kw in activity_lower for kw in ['delivery', 'picking', 'goods issue', 'goods receipt', 'goods movement']):
+        return 'WarehouseStaff'
+    if any(kw in activity_lower for kw in ['invoice', 'billing', 'debit memo', 'pro forma']):
+        return 'BillingClerk'
+    if any(kw in activity_lower for kw in ['credit', 'return']):
+        return 'CreditAnalyst'
+
+    return 'ProcessAgent'
+
+
+def assign_resource_from_activity(activity: str, case_id: str, num_per_role: int = 3) -> str:
+    """
+    Assign a specific resource based on activity pattern and case context.
+    Uses deterministic hashing so same case uses consistent resources.
+    """
+    import hashlib
+
+    role = derive_role_from_activity(activity)
+
+    # Hash case_id to distribute work across agents in the same role
+    case_hash = int(hashlib.md5(str(case_id).encode()).hexdigest()[:8], 16)
+    agent_num = (case_hash % num_per_role) + 1
+
+    return f"{role}_{agent_num}"
+
+
+def create_agent_mapping(resources: list) -> Tuple[Dict[str, int], Dict[int, str]]:
     """
     Create bidirectional mapping between resource names and agent IDs.
     """
-    unique_resources = df[resource_col].apply(clean_resource_id).unique()
-    resource_to_agent = {res: idx for idx, res in enumerate(sorted(unique_resources))}
+    unique_resources = sorted(set(resources))
+    resource_to_agent = {res: idx for idx, res in enumerate(unique_resources)}
     agent_to_resource = {idx: res for res, idx in resource_to_agent.items()}
     return resource_to_agent, agent_to_resource
 
@@ -133,11 +161,27 @@ def process_raw_log(input_path: str, output_path: str) -> pd.DataFrame:
     # Parse and sort by timestamp
     processed['timestamp'] = df[col_mapping['timestamp']].apply(parse_timestamp)
 
-    # Handle resource column
+    # Store original case_id strings for resource assignment
+    processed['case_id_str'] = case_ids.values
+
+    # Handle resource column - check if original resources are corrupted
+    use_derived_resources = True
     if 'resource' in col_mapping:
-        processed['resource_raw'] = df[col_mapping['resource']].apply(clean_resource_id)
-    else:
-        processed['resource_raw'] = 'SystemAgent'
+        sample_resources = df[col_mapping['resource']].head(10).tolist()
+        corrupted_count = sum(1 for r in sample_resources if is_corrupted_resource(r))
+        if corrupted_count < len(sample_resources) / 2:
+            # Most resources are valid, use them
+            use_derived_resources = False
+            processed['resource'] = df[col_mapping['resource']].astype(str)
+            print(f"  Using original resource column (valid resources found)")
+
+    if use_derived_resources:
+        # Derive resources from activity names (for corrupted O2C logs)
+        print(f"  Deriving resources from activity patterns (original resources corrupted)")
+        processed['resource'] = processed.apply(
+            lambda row: assign_resource_from_activity(row['activity_name'], row['case_id_str']),
+            axis=1
+        )
 
     # Remove rows with invalid timestamps
     processed = processed.dropna(subset=['timestamp'])
@@ -150,12 +194,9 @@ def process_raw_log(input_path: str, output_path: str) -> pd.DataFrame:
     processed['start_timestamp'] = processed['timestamp']
     processed['end_timestamp'] = processed['timestamp']
 
-    # Create agent mapping
-    resource_to_agent, agent_to_resource = create_agent_mapping(processed, 'resource_raw')
-    processed['agent'] = processed['resource_raw'].map(resource_to_agent)
-
-    # Create resource column with cleaned names
-    processed['resource'] = processed['resource_raw']
+    # Create agent mapping from final resources
+    resource_to_agent, agent_to_resource = create_agent_mapping(processed['resource'].tolist())
+    processed['agent'] = processed['resource'].map(resource_to_agent)
 
     # Format timestamps to ISO format with timezone
     processed['start_timestamp'] = processed['start_timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S+00:00')
