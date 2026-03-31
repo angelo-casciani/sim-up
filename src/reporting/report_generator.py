@@ -19,11 +19,13 @@ AMAZON_BEDROCK_MODELS = {'anthropic--claude-4.5-opus', 'anthropic--claude-4.5-so
 MAX_COMPLETION_TOKENS_MODELS = {'gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'o3', 'o3-mini', 'o1', 'o1-mini', 'o1-preview'}
 
 # Fallback model for report generation (used after retries exhausted)
-FALLBACK_MODEL = 'anthropic--claude-4.5-sonnet'
+# Using gpt-4.1 as fallback since Bedrock endpoints have timeout issues with large prompts
+FALLBACK_MODEL = 'gpt-4.1'
+SECONDARY_FALLBACK_MODEL = 'anthropic--claude-4.5-sonnet'
 
 # Retry configuration
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 2  # seconds
+MAX_RETRIES = 2
+RETRY_BASE_DELAY = 1  # seconds (minimal delay, just to allow transient issues to clear)
 
 # Report generation requires more tokens than hypothesis generation
 REPORT_MAX_TOKENS = 8192
@@ -77,8 +79,11 @@ class ReportGenerator:
     def _call_amazon_bedrock(self, system_prompt: str, user_prompt: str) -> str:
         """Call Amazon Bedrock Converse API for Anthropic models."""
         from gen_ai_hub.proxy.native.amazon.clients import Session
+        from botocore.config import Config
 
-        bedrock = Session().client(model_name=self.model_name)
+        # Increase read timeout for large prompts (default is often 60s, we need more for reports)
+        config = Config(read_timeout=300, connect_timeout=60)  # 5 min read timeout
+        bedrock = Session().client(model_name=self.model_name, config=config)
         conversation = [
             {
                 "role": "user",
@@ -127,8 +132,11 @@ class ReportGenerator:
     def _call_amazon_bedrock_with_model(self, system_prompt: str, user_prompt: str, model_name: str) -> str:
         """Call Amazon Bedrock Converse API with a specific model."""
         from gen_ai_hub.proxy.native.amazon.clients import Session
+        from botocore.config import Config
 
-        bedrock = Session().client(model_name=model_name)
+        # Increase read timeout for large prompts (default is often 60s, we need more for reports)
+        config = Config(read_timeout=300, connect_timeout=60)  # 5 min read timeout
+        bedrock = Session().client(model_name=model_name, config=config)
         conversation = [
             {
                 "role": "user",
@@ -142,7 +150,7 @@ class ReportGenerator:
         return response["output"]["message"]["content"][0]["text"]
 
     def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
-        """Route LLM call with retry logic and fallback to Sonnet."""
+        """Route LLM call with retry logic and fallback models."""
         # Try with primary model first (with retries)
         last_exception = None
         for attempt in range(1, MAX_RETRIES + 1):
@@ -157,7 +165,7 @@ class ReportGenerator:
                     print(f"[ReportGenerator] Waiting {delay}s before retry...")
                     time.sleep(delay)
 
-        # All retries failed with primary model - try fallback model (Sonnet)
+        # All retries failed with primary model - try fallback model (gpt-4.1)
         if self.model_name != FALLBACK_MODEL:
             print(f"[ReportGenerator] Primary model {self.model_name} failed after {MAX_RETRIES} attempts")
             print(f"[ReportGenerator] Falling back to {FALLBACK_MODEL}")
@@ -173,7 +181,23 @@ class ReportGenerator:
                         print(f"[ReportGenerator] Waiting {delay}s before retry...")
                         time.sleep(delay)
 
-        # Both primary and fallback failed
+        # Try secondary fallback (Sonnet via Bedrock)
+        if self.model_name != SECONDARY_FALLBACK_MODEL and FALLBACK_MODEL != SECONDARY_FALLBACK_MODEL:
+            print(f"[ReportGenerator] Fallback {FALLBACK_MODEL} also failed")
+            print(f"[ReportGenerator] Trying secondary fallback: {SECONDARY_FALLBACK_MODEL}")
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    print(f"[ReportGenerator] Secondary fallback attempt {attempt}/{MAX_RETRIES} with {SECONDARY_FALLBACK_MODEL}")
+                    return self._call_llm_single(system_prompt, user_prompt, SECONDARY_FALLBACK_MODEL)
+                except Exception as e:
+                    last_exception = e
+                    print(f"[ReportGenerator] Secondary fallback attempt {attempt} failed: {type(e).__name__}: {e}")
+                    if attempt < MAX_RETRIES:
+                        delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                        print(f"[ReportGenerator] Waiting {delay}s before retry...")
+                        time.sleep(delay)
+
+        # All models failed
         raise last_exception
     
     def generate(
