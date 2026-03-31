@@ -120,13 +120,62 @@ def parse_timestamp(ts) -> pd.Timestamp:
         return pd.NaT
 
 
-def process_raw_log(input_path: str, output_path: str) -> pd.DataFrame:
+def filter_infrequent_activities(
+    df: pd.DataFrame,
+    activity_col: str,
+    min_frequency_pct: float = 1.0
+) -> pd.DataFrame:
+    """
+    Filter out activities that occur less than min_frequency_pct of total events.
+
+    This reduces BPMN complexity for Prosimos simulation - logs with 60+ activities
+    often cause simulation timeouts due to state space explosion in the BPMN model.
+
+    Args:
+        df: Event log DataFrame
+        activity_col: Name of the activity column
+        min_frequency_pct: Minimum percentage of events an activity must have (default 1%)
+
+    Returns:
+        Filtered DataFrame with only frequent activities
+    """
+    original_activities = df[activity_col].nunique()
+    original_events = len(df)
+
+    # Calculate activity frequencies
+    activity_counts = df[activity_col].value_counts()
+    min_count = (min_frequency_pct / 100.0) * original_events
+
+    # Keep activities that meet the threshold
+    frequent_activities = activity_counts[activity_counts >= min_count].index.tolist()
+    df_filtered = df[df[activity_col].isin(frequent_activities)].copy()
+
+    filtered_activities = df_filtered[activity_col].nunique()
+    removed_count = original_activities - filtered_activities
+
+    if removed_count > 0:
+        print(f"  [FILTER] Removed {removed_count} infrequent activities ({original_activities} -> {filtered_activities})")
+        print(f"  [FILTER] Events retained: {len(df_filtered)}/{original_events} ({len(df_filtered)/original_events*100:.1f}%)")
+
+    return df_filtered
+
+
+def process_raw_log(
+    input_path: str,
+    output_path: str,
+    filter_activities: bool = True,
+    min_activity_frequency_pct: float = 1.0,
+    max_cases: int = None
+) -> pd.DataFrame:
     """
     Process a raw O2C event log and transform it to Prosimos/AgentSimulator format.
 
     Args:
         input_path: Path to the raw CSV file
         output_path: Path where processed CSV will be saved
+        filter_activities: Whether to filter infrequent activities (reduces BPMN complexity)
+        min_activity_frequency_pct: Minimum activity frequency threshold (default 1%)
+        max_cases: Maximum number of cases to include (None = all cases)
 
     Returns:
         Processed DataFrame
@@ -145,6 +194,27 @@ def process_raw_log(input_path: str, output_path: str) -> pd.DataFrame:
     for req in required:
         if req not in col_mapping:
             raise ValueError(f"Could not find required column: {req}. Available: {df.columns.tolist()}")
+
+    # Sample cases if max_cases specified (do this BEFORE activity filtering)
+    if max_cases is not None:
+        unique_cases = df[col_mapping['case_id']].unique()
+        if len(unique_cases) > max_cases:
+            # Sample cases randomly with fixed seed for reproducibility
+            np.random.seed(42)
+            sampled_cases = np.random.choice(unique_cases, size=max_cases, replace=False)
+            df = df[df[col_mapping['case_id']].isin(sampled_cases)].copy()
+            print(f"  [SAMPLE] Sampled {max_cases} cases from {len(unique_cases)} ({max_cases/len(unique_cases)*100:.1f}%)")
+
+    # Filter infrequent activities to reduce BPMN complexity for simulation
+    # This prevents Prosimos timeout on logs with 60+ activities
+    if filter_activities:
+        n_activities_before = df[col_mapping['activity_name']].nunique()
+        if n_activities_before > 30:  # Only filter if many activities
+            df = filter_infrequent_activities(
+                df,
+                col_mapping['activity_name'],
+                min_activity_frequency_pct
+            )
 
     # Create working dataframe with standardized columns
     processed = pd.DataFrame()
@@ -217,13 +287,22 @@ def process_raw_log(input_path: str, output_path: str) -> pd.DataFrame:
     return result
 
 
-def process_all_o2c_logs(logs_dir: str, output_suffix: str = 'processed') -> Dict[str, pd.DataFrame]:
+def process_all_o2c_logs(
+    logs_dir: str,
+    output_suffix: str = 'processed',
+    filter_activities: bool = True,
+    min_activity_frequency_pct: float = 1.0,
+    max_cases: int = None
+) -> Dict[str, pd.DataFrame]:
     """
     Process all raw O2C logs in the given directory.
 
     Args:
         logs_dir: Path to the o2c logs directory
         output_suffix: Suffix for output files (e.g., 'processed' -> 'processed_742427502.csv')
+        filter_activities: Whether to filter infrequent activities
+        min_activity_frequency_pct: Minimum activity frequency threshold
+        max_cases: Maximum number of cases per log (None = all cases)
 
     Returns:
         Dictionary mapping log IDs to processed DataFrames
@@ -257,7 +336,13 @@ def process_all_o2c_logs(logs_dir: str, output_suffix: str = 'processed') -> Dic
         output_file = subdir / f"{output_suffix}_{log_id}.csv"
 
         try:
-            result = process_raw_log(str(raw_file), str(output_file))
+            result = process_raw_log(
+                str(raw_file),
+                str(output_file),
+                filter_activities=filter_activities,
+                min_activity_frequency_pct=min_activity_frequency_pct,
+                max_cases=max_cases
+            )
             results[log_id] = result
         except Exception as e:
             print(f"Error processing {log_id}: {e}")
@@ -281,8 +366,15 @@ def main():
     parser.add_argument('--output-suffix', type=str,
                         default='processed',
                         help='Suffix for output files')
+    parser.add_argument('--no-filter', action='store_true',
+                        help='Disable activity filtering (not recommended for logs with 30+ activities)')
+    parser.add_argument('--min-activity-freq', type=float, default=1.0,
+                        help='Minimum activity frequency %% to keep (default: 1.0)')
+    parser.add_argument('--max-cases', type=int, default=None,
+                        help='Maximum number of cases to include (default: all)')
 
     args = parser.parse_args()
+    filter_activities = not args.no_filter
 
     # Resolve paths relative to project root
     script_dir = Path(__file__).parent
@@ -303,10 +395,22 @@ def main():
             return
 
         output_file = log_path / f"{args.output_suffix}_{args.single_log}.csv"
-        process_raw_log(str(raw_files[0]), str(output_file))
+        process_raw_log(
+            str(raw_files[0]),
+            str(output_file),
+            filter_activities=filter_activities,
+            min_activity_frequency_pct=args.min_activity_freq,
+            max_cases=args.max_cases
+        )
     else:
         print(f"Processing all logs in: {logs_dir}")
-        results = process_all_o2c_logs(str(logs_dir), args.output_suffix)
+        results = process_all_o2c_logs(
+            str(logs_dir),
+            args.output_suffix,
+            filter_activities=filter_activities,
+            min_activity_frequency_pct=args.min_activity_freq,
+            max_cases=args.max_cases
+        )
         print(f"\nProcessed {len(results)} logs successfully")
 
 
