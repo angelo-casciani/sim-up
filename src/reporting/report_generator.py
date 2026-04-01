@@ -20,8 +20,8 @@ MAX_COMPLETION_TOKENS_MODELS = {'gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'o3', 'o3-m
 
 # Fallback model for report generation (used after retries exhausted)
 # Using gpt-4.1 as fallback since Bedrock endpoints have timeout issues with large prompts
-FALLBACK_MODEL = 'gpt-4.1'
-SECONDARY_FALLBACK_MODEL = 'anthropic--claude-4.5-sonnet'
+FALLBACK_MODEL = 'gpt-5'
+SECONDARY_FALLBACK_MODEL = 'gpt-4.1'
 
 # Retry configuration
 MAX_RETRIES = 2
@@ -36,7 +36,7 @@ class ReportGenerator:
 
     def __init__(
         self,
-        model_name: str = "gpt-4.1",
+        model_name: str = "gpt-5",
         temperature: float = 0.0,
         max_tokens: int = 4096
     ):

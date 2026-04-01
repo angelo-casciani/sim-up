@@ -8,9 +8,8 @@ This script generates the evaluation package (forms content, log statistics).
 The actual pipeline should be run separately via src/main.py.
 
 Usage:
-1. Run the main pipeline for each log:
+1. Run the main pipeline for the log:
    python src/main.py --log "o2c/745347473/processed_745347473.csv" --max_iterations 3
-   python src/main.py --log "o2c/744204018/processed_744204018.csv" --max_iterations 3
 
 2. Run this script to generate evaluation forms:
    python -m src.evaluation.qualitative.run_qualitative_evaluation
@@ -33,7 +32,7 @@ sys.path.insert(0, str(src_dir))
 
 # Log descriptions for the evaluation
 LOG_DESCRIPTIONS = {
-    '745347473': """**Process A: Order-to-Cash Process (Specialty Chemicals Manufacturing)**
+    '745347473': """**Order-to-Cash Process (Specialty Chemicals Manufacturing)**
 
 This log captures an Order-to-Cash (O2C) process from a specialty chemicals and organic intermediates manufacturer. The process focuses on billing and warehouse fulfillment operations.
 
@@ -47,42 +46,20 @@ This log captures an Order-to-Cash (O2C) process from a specialty chemicals and 
 
 **Data characteristics:**
 - 4-month observation period (May - August 2025)
-- 9,553 events across 2,890 cases (sampled from ~16k original cases)
+- ~14,000 events across ~4,300 cases (sampled from ~16k original cases)
 - 12 distinct activities
-- 9 resources across 3 organizational roles: BillingClerk (3), WarehouseStaff (3), SalesRep (3)
+- 15 resources across 3 roles (proportionally allocated by workload):
+  - BillingClerk: 9 resources (~59% of events)
+  - WarehouseStaff: 5 resources (~40% of events)
+  - SalesRep: 1 resource (~1% of events)
 - Average 3.3 events per case
 
 **Top activities by frequency:**
-- Create Invoice (3,099), Post Goods Issue (1,373), Create Delivery (1,357)
-- Change Billing Document variants (2,484 combined)
-- Goods Movement/Picking/Delivery changes (1,137 combined)
+- Create Invoice, Post Goods Issue, Create Delivery
+- Change Billing Document variants
+- Goods Movement/Picking/Delivery changes
 
-The log represents a high-volume O2C process with established workflows dominated by billing and warehouse operations.""",
-
-    '744204018': """**Process B: Sales-Focused Order-to-Cash Process**
-
-This log captures a sales-intensive Order-to-Cash (O2C) process with comprehensive coverage of sales order management and billing operations.
-
-**Industry:** General Manufacturing / Distribution
-
-**Process scope:**
-- Sales order management: Order creation, modifications, delivery date changes
-- Billing: Invoice creation, pro forma invoices, invoice cancellation
-- Order lifecycle: Document date changes, status updates, price changes
-
-**Data characteristics:**
-- 4-month observation period (April - August 2025, ~114 days)
-- 1,756 events across 592 cases
-- 16 distinct activities
-- 6 resources across 2 organizational roles: SalesRep (3), BillingClerk (3)
-- Average 3.0 events per case
-
-**Top activities by frequency:**
-- Create Invoice (401), Create Pro Forma Invoice (284)
-- Change Sales Order variants: Delivery Date (197), Document Date (166), All Items (151)
-- Create Sales Order/Item (271 combined)
-
-The log represents an O2C process with significant sales order management activity, including frequent order modifications and delivery date adjustments."""
+The log represents a high-volume O2C process with established workflows dominated by billing and warehouse operations."""
 }
 
 
@@ -307,12 +284,12 @@ def generate_google_forms_content(results: List[Dict]) -> str:
     """
     Generate text content structured for Google Forms.
 
-    New structure with independent baseline design:
+    Structure for single-log evaluation:
     1. Introduction
     2. Background (demographics)
-    3-4. Process A: Context + Expert suggestion, then AI recommendation evaluation
-    5-6. Process B: Context + Expert suggestion, then AI recommendation evaluation
-    7. Overall Assessment
+    3. Process Context + Expert suggestion
+    4. AI Recommendation Evaluation
+    5. Overall Assessment
     """
     content = """
 ================================================================================
@@ -320,7 +297,7 @@ QUALITATIVE EVALUATION - GOOGLE FORMS CONTENT
 ================================================================================
 
 Copy this content into Google Forms (forms.google.com) section by section.
-Estimated completion time: 12-15 minutes
+Estimated completion time: 10-12 minutes
 
 ================================================================================
 SECTION 1: INTRODUCTION
@@ -343,12 +320,12 @@ Your expert feedback will help us understand:
 - The practical utility of this approach
 
 **What you'll do:**
-- Review 2 real-world Order-to-Cash process logs
+- Review a real-world Order-to-Cash process log
 - Share what improvements YOU would suggest (before seeing AI output)
 - Evaluate the AI-generated recommendations
 - Provide overall feedback
 
-**Time required:** ~15 minutes
+**Time required:** ~10 minutes
 
 All responses are anonymous and will be used for academic research only.
 
@@ -378,29 +355,27 @@ Q4. How familiar are you with process mining tools? (Linear scale 1-5)
 
 """
 
-    # Process each log - map log_id to process label
-    log_id_to_label = {
-        '745347473': 'A',  # Full O2C (Specialty Chemicals)
-        '744204018': 'B',  # Sales-Focused O2C
-    }
+    # Process the single log
+    if not results:
+        content += "\n[ERROR: No log data available]\n"
+        return content
 
-    for idx, result in enumerate(results):
-        if result['status'] != 'success':
-            continue
+    result = results[0]
+    if result['status'] != 'success':
+        content += "\n[ERROR: Log processing failed]\n"
+        return content
 
-        log_id = result['log_id']
-        context = result['context']
-        recommendations = result['recommendations']
-        process_label = log_id_to_label.get(log_id, f'{idx+1}')
+    log_id = result['log_id']
+    context = result['context']
+    recommendations = result['recommendations']
 
-        # Get log description
-        log_description = LOG_DESCRIPTIONS.get(log_id, "No description available.")
+    # Get log description
+    log_description = LOG_DESCRIPTIONS.get(log_id, "No description available.")
 
-        # Section: Process Context + Expert's Own Suggestion (BEFORE AI)
-        section_num = 3 + (idx * 2)
-        content += f"""
+    # Section 3: Process Context + Expert's Own Suggestion (BEFORE AI)
+    content += f"""
 ================================================================================
-SECTION {section_num}: PROCESS {process_label} - CONTEXT & YOUR SUGGESTIONS
+SECTION 3: PROCESS CONTEXT & YOUR SUGGESTIONS
 ================================================================================
 
 --- PROCESS DESCRIPTION ---
@@ -420,34 +395,32 @@ SECTION {section_num}: PROCESS {process_label} - CONTEXT & YOUR SUGGESTIONS
 
 **Top Activities (by frequency):**
 """
-        for activity, count in list(context['top_activities'].items())[:7]:
-            content += f"- {activity}: {count:,} events\n"
+    for activity, count in list(context['top_activities'].items())[:7]:
+        content += f"- {activity}: {count:,} events\n"
 
-        if context['top_resources']:
-            content += "\n**Resources:**\n"
-            for resource, count in list(context['top_resources'].items()):
-                content += f"- {resource}: {count:,} events\n"
+    if context['top_resources']:
+        content += "\n**Resources (top 5 by activity):**\n"
+        for resource, count in list(context['top_resources'].items()):
+            content += f"- {resource}: {count:,} events\n"
 
-        content += f"""
+    content += """
 
 --- YOUR ANALYSIS (Before seeing AI output) ---
 
-Q{section_num}.1 Based on this data, what process inefficiencies or bottlenecks would you expect to find?
+Q3.1 Based on this data, what process inefficiencies or bottlenecks would you expect to find?
 [Long text field - REQUIRED]
 (Hint: Consider activity frequencies, resource distribution, process flow patterns)
 
-Q{section_num}.2 If you were asked to improve this process, what would be your first recommendation?
+Q3.2 If you were asked to improve this process, what would be your first recommendation?
 [Long text field - REQUIRED]
 (Be as specific as possible about what you would change and why)
 
 """
 
-        # Section: AI Recommendation Evaluation
-        section_num_ai = section_num + 1
-
-        content += f"""
+    # Section 4: AI Recommendation Evaluation
+    content += """
 ================================================================================
-SECTION {section_num_ai}: PROCESS {process_label} - AI RECOMMENDATION EVALUATION
+SECTION 4: AI RECOMMENDATION EVALUATION
 ================================================================================
 
 --- HOW THE AI WORKS ---
@@ -459,13 +432,13 @@ Our system analyzes the event log and:
 4. Validates each hypothesis through discrete-event and agent-based simulation
 5. Reports improvements that show positive impact in simulation
 
-Below is the recommendation the system generated for Process {process_label}.
+Below is the recommendation the system generated for this process.
 
 """
 
-        if recommendations:
-            rec = recommendations[0]  # Single recommendation per log
-            content += f"""--- AI-GENERATED RECOMMENDATION ---
+    if recommendations:
+        rec = recommendations[0]  # Single recommendation
+        content += f"""--- AI-GENERATED RECOMMENDATION ---
 
 **Description:**
 {rec['description']}
@@ -487,44 +460,44 @@ Below is the recommendation the system generated for Process {process_label}.
 **Impact Summary:**
 {rec['impact_summary']}
 """
-            if rec['metrics']:
-                content += "\n**Predicted Metric Changes:**\n"
-                for metric, data in rec['metrics'].items():
-                    if data.get('baseline') is not None and data.get('new') is not None:
-                        content += f"- {metric}: {data['baseline']:.2f} → {data['new']:.2f} ({data['change_pct']:+.1f}%)\n"
-        else:
-            content += """--- AI-GENERATED RECOMMENDATION ---
+        if rec['metrics']:
+            content += "\n**Predicted Metric Changes:**\n"
+            for metric, data in rec['metrics'].items():
+                if data.get('baseline') is not None and data.get('new') is not None:
+                    content += f"- {metric}: {data['baseline']:.2f} → {data['new']:.2f} ({data['change_pct']:+.1f}%)\n"
+    else:
+        content += """--- AI-GENERATED RECOMMENDATION ---
 
 [No recommendation was generated for this process. The system did not identify improvements that showed positive impact in simulation.]
 """
 
-        content += f"""
+    content += """
 
 --- EVALUATION QUESTIONS ---
 
-Q{section_num_ai}.1 Problem Validity: Does this recommendation address a real problem in the process?
+Q4.1 Problem Validity: Does this recommendation address a real problem in the process?
 (Linear scale 1-5)
 1 = Not at all ... 5 = Definitely yes
 
-Q{section_num_ai}.2 Practicality: Is this recommendation practical to implement in a real organization?
+Q4.2 Practicality: Is this recommendation practical to implement in a real organization?
 (Linear scale 1-5)
 1 = Not practical at all ... 5 = Very practical
 
-Q{section_num_ai}.3 Expected Impact: Would implementing this meaningfully improve the process?
+Q4.3 Expected Impact: Would implementing this meaningfully improve the process?
 (Linear scale 1-5)
 1 = No improvement expected ... 5 = Significant improvement expected
 
-Q{section_num_ai}.4 Alignment: Would you have suggested the same or similar improvement?
+Q4.4 Alignment: Would you have suggested the same or similar improvement?
 (Multiple choice)
 - Yes, exactly the same
 - Yes, similar direction
 - Partially overlaps with my thinking
 - No, I would suggest something different
 
-Q{section_num_ai}.5 What would you have done differently? (Optional)
+Q4.5 What would you have done differently? (Optional)
 [Long text field]
 
-Q{section_num_ai}.6 Any other comments about this recommendation? (Optional)
+Q4.6 Any other comments about this recommendation? (Optional)
 [Long text field]
 
 """
@@ -532,33 +505,33 @@ Q{section_num_ai}.6 Any other comments about this recommendation? (Optional)
     # Overall Assessment Section
     content += """
 ================================================================================
-SECTION 7: OVERALL ASSESSMENT
+SECTION 5: OVERALL ASSESSMENT
 ================================================================================
 
-Q7.1 How useful would this AI-assisted approach be for process improvement work?
+Q5.1 How useful would this AI-assisted approach be for process improvement work?
 (Linear scale 1-5)
 1 = Not useful at all ... 5 = Extremely useful
 
-Q7.2 What did the system do well? (Required)
+Q5.2 What did the system do well? (Required)
 [Long text field]
 
-Q7.3 What did the system miss or get wrong? (Required)
+Q5.3 What did the system miss or get wrong? (Required)
 [Long text field]
 
-Q7.4 Would you consider using a tool like this in your practice?
+Q5.4 Would you consider using a tool like this in your practice?
 (Multiple choice)
 - Yes, definitely
 - Maybe, with improvements
 - No
 
-Q7.5 Why or why not? (Optional)
+Q5.5 Why or why not? (Optional)
 [Long text field]
 
-Q7.6 Any additional feedback or suggestions? (Optional)
+Q5.6 Any additional feedback or suggestions? (Optional)
 [Long text field]
 
 ================================================================================
-SECTION 8: THANK YOU
+SECTION 6: THANK YOU
 ================================================================================
 
 Thank you for completing this evaluation!
@@ -581,9 +554,8 @@ def main():
     Generate Google Forms content from existing pipeline reports.
 
     Usage:
-    1. First run the main pipeline for each log:
+    1. First run the main pipeline for the log:
        python src/main.py --log "o2c/745347473/processed_745347473.csv" --max_iterations 3
-       python src/main.py --log "o2c/744181388/processed_744181388.csv" --max_iterations 3
 
     2. Then run this script to generate evaluation package:
        python -m src.evaluation.qualitative.run_qualitative_evaluation
@@ -607,44 +579,39 @@ def main():
     # (reports are generated separately via main.py)
     results = []
 
-    # Target logs for evaluation
-    target_logs = ['745347473', '744204018']
+    # Target log for evaluation (single log)
+    target_log = '745347473'
 
-    for log_id in target_logs:
-        log_dir = logs_dir / log_id
-        if not log_dir.exists():
-            print(f"WARNING: Log directory not found: {log_dir}")
-            continue
-
-        # Find processed CSV
-        processed_files = list(log_dir.glob('processed_*.csv'))
-        if not processed_files:
-            print(f"WARNING: No processed log found in {log_dir}")
-            continue
-
-        log_path = str(processed_files[0])
-        print(f"Processing: {log_path}")
-
-        # Extract context from log
-        context = extract_log_context(log_path)
-
-        result = {
-            'log_id': log_id,
-            'log_path': log_path,
-            'context': context,
-            'baseline_metrics': {},  # Will be in the main report
-            'recommendations': [],   # Will be in the main report
-            'full_report': '',
-            'n_recommendations': 0,
-            'status': 'success'
-        }
-        results.append(result)
-
-    if not results:
-        print("ERROR: No logs found. Check logs/o2c/ directory.")
+    log_dir = logs_dir / target_log
+    if not log_dir.exists():
+        print(f"ERROR: Log directory not found: {log_dir}")
         return
 
-    print(f"\nFound {len(results)} logs for evaluation")
+    # Find processed CSV
+    processed_files = list(log_dir.glob('processed_*.csv'))
+    if not processed_files:
+        print(f"ERROR: No processed log found in {log_dir}")
+        return
+
+    log_path = str(processed_files[0])
+    print(f"Processing: {log_path}")
+
+    # Extract context from log
+    context = extract_log_context(log_path)
+
+    result = {
+        'log_id': target_log,
+        'log_path': log_path,
+        'context': context,
+        'baseline_metrics': {},  # Will be in the main report
+        'recommendations': [],   # Will be in the main report
+        'full_report': '',
+        'n_recommendations': 0,
+        'status': 'success'
+    }
+    results.append(result)
+
+    print(f"\nProcessing log for evaluation: {target_log}")
 
     # Generate evaluation package (Google Forms content)
     generate_evaluation_package(results, output_dir)
@@ -652,10 +619,9 @@ def main():
     print("\n" + "="*60)
     print("NEXT STEPS:")
     print("="*60)
-    print("1. Run the main pipeline for each log to generate reports:")
+    print("1. Run the main pipeline to generate the report:")
     print('   cd src && poetry run python main.py --log "o2c/745347473/processed_745347473.csv" --max_iterations 3')
-    print('   cd src && poetry run python main.py --log "o2c/744204018/processed_744204018.csv" --max_iterations 3')
-    print("\n2. Copy the AI recommendations from the generated reports into")
+    print("\n2. Copy the AI recommendations from the generated report into")
     print(f"   {output_dir / 'google_forms_content.txt'}")
     print("\n3. Create the Google Form at forms.google.com")
 
