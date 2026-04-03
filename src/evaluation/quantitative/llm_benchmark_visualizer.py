@@ -799,6 +799,151 @@ class LLMBenchmarkVisualizer:
         print(f"  Saved: {fig_path}")
         return fig_path
 
+    def plot_first_vs_best_score(
+        self,
+        report: Dict,
+        save_name: str = "first_vs_best_score"
+    ) -> str:
+        """
+        Plot grouped bar chart comparing first simulated proposal score vs best/final score.
+
+        Shows how iteration improves the initial proposal - demonstrating that even if
+        the first proposal wasn't good enough (below 1% threshold), subsequent iterations
+        can improve it.
+
+        Args:
+            report: Benchmark report dictionary
+            save_name: Output filename
+
+        Returns:
+            Path to saved figure
+        """
+        results = report.get("results", [])
+        if not results:
+            return ""
+
+        fig, ax = plt.subplots(figsize=(14, 8))
+
+        model_names = []
+        first_scores = []
+        best_scores = []
+        colors = []
+
+        for i, model_result in enumerate(results):
+            model_name = model_result.get("model_name", f"Model {i}")
+            runs = model_result.get("runs", [])
+
+            # Collect first and best scores across all runs
+            run_first_scores = []
+            run_best_scores = []
+
+            for run in runs:
+                all_proposals = run.get("all_proposals", run.get("iterations", []))
+
+                # Find first simulated proposal (not rejected before simulation)
+                first_score = None
+                for prop in all_proposals:
+                    if not prop.get("rejected_before_simulation", False):
+                        score = prop.get("kpi_impact", {}).get("averaged_score")
+                        if score is not None:
+                            first_score = score
+                            break
+
+                # Find best score across all simulated proposals
+                best_score = None
+                for prop in all_proposals:
+                    if not prop.get("rejected_before_simulation", False):
+                        score = prop.get("kpi_impact", {}).get("averaged_score")
+                        if score is not None and (best_score is None or score > best_score):
+                            best_score = score
+
+                if first_score is not None:
+                    run_first_scores.append(first_score)
+                if best_score is not None:
+                    run_best_scores.append(best_score)
+
+            # Average across runs
+            if run_first_scores and run_best_scores:
+                model_names.append(model_name)
+                first_scores.append(np.mean(run_first_scores) * 100)  # Convert to %
+                best_scores.append(np.mean(run_best_scores) * 100)
+                colors.append(self._get_model_color(model_name, i))
+
+        if not model_names:
+            print("No data to plot for first vs best score")
+            plt.close()
+            return ""
+
+        x = np.arange(len(model_names))
+        width = 0.35
+
+        # Plot grouped bars
+        bars_first = ax.bar(x - width/2, first_scores, width, label='First Proposal',
+                           color=[c for c in colors], alpha=0.5, edgecolor='black', linewidth=1)
+        bars_best = ax.bar(x + width/2, best_scores, width, label='Best Proposal',
+                          color=[c for c in colors], alpha=1.0, edgecolor='black', linewidth=1)
+
+        # Add value labels
+        for bar, score in zip(bars_first, first_scores):
+            height = bar.get_height()
+            ax.annotate(f'{score:.2f}%',
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 3), textcoords="offset points",
+                        ha='center', va='bottom',
+                        fontsize=self.fontsize['annotation'] - 1)
+
+        for bar, score in zip(bars_best, best_scores):
+            height = bar.get_height()
+            ax.annotate(f'{score:.2f}%',
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 3), textcoords="offset points",
+                        ha='center', va='bottom',
+                        fontsize=self.fontsize['annotation'] - 1,
+                        fontweight='bold')
+
+        # Add improvement arrows/annotations
+        for i, (first, best) in enumerate(zip(first_scores, best_scores)):
+            if best > first:
+                improvement = best - first
+                ax.annotate(f'+{improvement:.1f}%',
+                           xy=(x[i], max(first, best) + 0.3),
+                           ha='center', va='bottom',
+                           fontsize=self.fontsize['annotation'] - 1,
+                           color='green', fontweight='bold')
+
+        # Add 1% threshold line
+        ax.axhline(y=1.0, color='green', linestyle='--', linewidth=2,
+                   alpha=0.7, label='1% Validation Threshold')
+
+        # Add 0 reference line
+        ax.axhline(y=0, color='gray', linestyle=':', linewidth=1, alpha=0.5)
+
+        # Formatting
+        ax.set_xlabel('Model', fontsize=self.fontsize['axis_label'])
+        ax.set_ylabel('Avg Score (%)', fontsize=self.fontsize['axis_label'])
+        ax.set_title(f'Iteration Improvement: First vs Best Proposal{self._get_title_suffix()}\n'
+                     '(Shows how iteration improves initial proposals)',
+                     fontsize=self.fontsize['title'], fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(model_names, rotation=45, ha='right',
+                          fontsize=self.fontsize['tick'])
+        ax.tick_params(axis='y', labelsize=self.fontsize['tick'])
+        ax.legend(loc='upper right', fontsize=self.fontsize['legend'])
+
+        # Set y limits to show negative scores if any
+        y_min = min(min(first_scores), 0) - 0.5
+        y_max = max(best_scores) * 1.3
+        ax.set_ylim(y_min, y_max)
+
+        plt.tight_layout()
+
+        fig_path = os.path.join(self.output_dir, f"{save_name}.png")
+        plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"  Saved: {fig_path}")
+        return fig_path
+
     def generate_all_plots(
         self,
         report_path: str
@@ -861,6 +1006,11 @@ class LLMBenchmarkVisualizer:
 
         # Average improvement comparison
         fig_path = self.plot_avg_improvement_comparison(report)
+        if fig_path:
+            figures.append(fig_path)
+
+        # First vs Best score comparison (iteration improvement)
+        fig_path = self.plot_first_vs_best_score(report)
         if fig_path:
             figures.append(fig_path)
 
