@@ -5,7 +5,7 @@ An agentic iterative Large Language Model (LLM)-based pipeline for process-impro
 ## Project Structure
 
 ```
-└── agents-test/
+└── improvement-agent/
     ├── README.md
     ├── LICENSE
     ├── pyproject.toml                            # Poetry dependencies
