@@ -6,11 +6,15 @@ Benchmarks multiple LLM models on the improvement validation pipeline.
 Measures speed (time and iterations to first validated improvement) and
 impact quality (averaged validation formula score).
 
+Supports checkpoint/resume functionality for long-running benchmarks.
+
 Usage:
     python run_llm_benchmark.py --log LoanApp.csv
     python run_llm_benchmark.py --log p2p.csv --repetitions 3 --timeout 1800
     python run_llm_benchmark.py --models gpt-4.1 anthropic--claude-4.5-opus --log LoanApp.csv
     python run_llm_benchmark.py --dry-run
+    python run_llm_benchmark.py --resume --log LoanApp.csv  # Resume interrupted benchmark
+    python run_llm_benchmark.py --status --log LoanApp.csv  # Check checkpoint status
 """
 
 import argparse
@@ -26,6 +30,7 @@ from evaluation.quantitative.llm_benchmark_runner import (
     LLMBenchmarkConfig
 )
 from evaluation.quantitative.llm_benchmark_reporter import LLMBenchmarkReporter
+from evaluation.quantitative.benchmark_checkpoint import BenchmarkCheckpoint
 
 
 def main():
@@ -51,6 +56,15 @@ Examples:
 
   # Dry run to see configuration
   python run_llm_benchmark.py --log LoanApp.csv --dry-run
+
+  # Resume an interrupted benchmark
+  python run_llm_benchmark.py --resume --log LoanApp.csv
+
+  # Check status of a checkpoint
+  python run_llm_benchmark.py --status --log LoanApp.csv
+
+  # Clear an existing checkpoint (start fresh)
+  python run_llm_benchmark.py --clear-checkpoint --log LoanApp.csv
         """
     )
 
@@ -114,6 +128,31 @@ Examples:
         help="Print configuration without running"
     )
 
+    # Checkpoint/resume options
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from checkpoint if available"
+    )
+
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Show checkpoint status and exit"
+    )
+
+    parser.add_argument(
+        "--clear-checkpoint",
+        action="store_true",
+        help="Clear existing checkpoint and start fresh"
+    )
+
+    parser.add_argument(
+        "--no-checkpoint",
+        action="store_true",
+        help="Disable checkpointing (not recommended for long runs)"
+    )
+
     args = parser.parse_args()
 
     # Resolve log path
@@ -136,6 +175,37 @@ Examples:
         print(f"\nMake sure the log file exists in the logs/ directory.")
         sys.exit(1)
 
+    # Initialize checkpoint manager
+    checkpoint_manager = BenchmarkCheckpoint()
+
+    # Handle --status: show checkpoint info and exit
+    if args.status:
+        info = checkpoint_manager.get_checkpoint_info(log_path)
+        if info:
+            print("\n" + "=" * 70)
+            print("CHECKPOINT STATUS")
+            print("=" * 70)
+            print(f"  Event log:        {args.log}")
+            print(f"  Saved at:         {info['saved_at']}")
+            print(f"  Progress:         {info['completed_runs']}/{info['total_runs']} runs ({info['progress_pct']:.1f}%)")
+            print(f"  Completed models: {info['completed_models']}/{info['total_models']}")
+            print(f"  Current model:    {info['current_model']}")
+            print(f"  Current run:      {info['current_run_idx'] + 1}")
+            print("=" * 70)
+            print("\nTo resume: python run_llm_benchmark.py --resume --log", args.log)
+            print("To clear:  python run_llm_benchmark.py --clear-checkpoint --log", args.log)
+        else:
+            print(f"\nNo checkpoint found for {args.log}")
+        return
+
+    # Handle --clear-checkpoint: delete checkpoint and exit
+    if args.clear_checkpoint:
+        if checkpoint_manager.delete_checkpoint(log_path):
+            print(f"Checkpoint cleared for {args.log}")
+        else:
+            print(f"No checkpoint found for {args.log}")
+        return
+
     # Get models list
     models = args.models if args.models else LLMBenchmarkRunner.DEFAULT_MODELS
 
@@ -150,6 +220,22 @@ Examples:
         abs_runs=args.abs_runs
     )
 
+    # Check for existing checkpoint
+    if not args.resume and checkpoint_manager.has_checkpoint(log_path):
+        info = checkpoint_manager.get_checkpoint_info(log_path)
+        if info:
+            print("\n" + "=" * 70)
+            print("WARNING: EXISTING CHECKPOINT FOUND")
+            print("=" * 70)
+            print(f"  Progress: {info['completed_runs']}/{info['total_runs']} runs ({info['progress_pct']:.1f}%)")
+            print(f"  Saved at: {info['saved_at']}")
+            print("=" * 70)
+            print("\nOptions:")
+            print("  --resume           Resume from checkpoint")
+            print("  --clear-checkpoint Clear checkpoint and start fresh")
+            print("\nStarting fresh will DISCARD existing progress!")
+            sys.exit(1)
+
     # Print configuration
     print("\n" + "=" * 70)
     print("LLM BENCHMARK EVALUATION")
@@ -163,6 +249,8 @@ Examples:
     print(f"  DES runs:       {config.des_runs}")
     print(f"  ABS runs:       {config.abs_runs}")
     print(f"  Output dir:     {args.output_dir}")
+    print(f"  Checkpointing:  {'DISABLED' if args.no_checkpoint else 'ENABLED'}")
+    print(f"  Resume mode:    {'YES' if args.resume else 'NO'}")
     print("=" * 70)
 
     if args.dry_run:
@@ -173,8 +261,12 @@ Examples:
 
     # Run benchmark
     print("\nStarting benchmark...")
-    runner = LLMBenchmarkRunner(config)
-    report = runner.run_benchmark()
+    runner = LLMBenchmarkRunner(
+        config,
+        checkpoint_manager=None if args.no_checkpoint else checkpoint_manager,
+        enable_checkpointing=not args.no_checkpoint
+    )
+    report = runner.run_benchmark(resume=args.resume)
 
     # Generate reports
     os.makedirs(args.output_dir, exist_ok=True)

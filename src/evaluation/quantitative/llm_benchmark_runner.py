@@ -4,6 +4,8 @@ LLM Benchmark Runner
 Benchmarks multiple LLM models on the improvement validation pipeline.
 Measures speed (time and iterations to first validated improvement) and
 impact (averaged validation formula score).
+
+Supports checkpoint/resume functionality for long-running benchmarks.
 """
 
 import os
@@ -12,12 +14,15 @@ import time
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, TYPE_CHECKING
 
 # Add src to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from improvement_validation_pipeline import ImprovementValidationAgent
+
+if TYPE_CHECKING:
+    from evaluation.quantitative.benchmark_checkpoint import BenchmarkCheckpoint
 
 
 @dataclass
@@ -241,6 +246,8 @@ class LLMBenchmarkRunner:
     1. Time to first validated improvement (seconds)
     2. Iterations to first validated improvement (count)
     3. Averaged validation formula score (impact quality)
+
+    Supports checkpoint/resume for long-running benchmarks.
     """
 
     DEFAULT_MODELS = [
@@ -259,39 +266,178 @@ class LLMBenchmarkRunner:
         "mistralai--mistral-large-instruct"
     ]
 
-    def __init__(self, config: LLMBenchmarkConfig):
+    def __init__(
+        self,
+        config: LLMBenchmarkConfig,
+        checkpoint_manager: Optional["BenchmarkCheckpoint"] = None,
+        enable_checkpointing: bool = True
+    ):
+        """
+        Initialize benchmark runner.
+
+        Args:
+            config: Benchmark configuration
+            checkpoint_manager: Optional checkpoint manager for save/resume
+            enable_checkpointing: Whether to save checkpoints (default True)
+        """
         self.config = config
+        self.checkpoint_manager = checkpoint_manager
+        self.enable_checkpointing = enable_checkpointing
+        self._timestamp: Optional[str] = None
 
-    def run_benchmark(self) -> LLMBenchmarkReport:
-        """Run full benchmark across all models."""
+    def run_benchmark(self, resume: bool = False) -> LLMBenchmarkReport:
+        """
+        Run full benchmark across all models.
+
+        Args:
+            resume: If True, attempt to resume from checkpoint
+
+        Returns:
+            LLMBenchmarkReport with all results
+        """
+        # Try to resume from checkpoint
+        start_model_idx = 0
+        start_run_idx = 0
+        results: List[ModelBenchmarkResult] = []
+        current_model_runs: List[SingleModelRun] = []
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        results = []
 
-        print(f"\nStarting LLM Benchmark at {timestamp}")
+        if resume and self.checkpoint_manager:
+            checkpoint_data = self.checkpoint_manager.load_checkpoint(self.config.event_log)
+            if checkpoint_data:
+                # Validate config matches
+                saved_config = checkpoint_data.get("config", {})
+                if self._config_matches(saved_config):
+                    print("\n" + "=" * 70)
+                    print("RESUMING FROM CHECKPOINT")
+                    print("=" * 70)
+
+                    # Restore state
+                    timestamp = checkpoint_data.get("timestamp", timestamp)
+                    progress = checkpoint_data.get("progress", {})
+                    start_model_idx = progress.get("current_model_idx", 0)
+                    start_run_idx = progress.get("current_run_idx", 0)
+
+                    # Reconstruct completed results
+                    from evaluation.quantitative.benchmark_checkpoint import (
+                        reconstruct_model_result,
+                        reconstruct_single_run
+                    )
+                    results = [
+                        reconstruct_model_result(r)
+                        for r in checkpoint_data.get("completed_results", [])
+                    ]
+                    current_model_runs = [
+                        reconstruct_single_run(r)
+                        for r in checkpoint_data.get("current_model_runs", [])
+                    ]
+
+                    info = self.checkpoint_manager.get_checkpoint_info(self.config.event_log)
+                    if info:
+                        print(f"  Saved at: {info['saved_at']}")
+                        print(f"  Progress: {info['completed_runs']}/{info['total_runs']} runs ({info['progress_pct']:.1f}%)")
+                        print(f"  Resuming from: {info['current_model']} (run {start_run_idx + 1})")
+                    print("=" * 70)
+                else:
+                    print("\nWarning: Checkpoint config doesn't match current config. Starting fresh.")
+                    if self.checkpoint_manager:
+                        self.checkpoint_manager.delete_checkpoint(self.config.event_log)
+
+        self._timestamp = timestamp
+
+        print(f"\nLLM Benchmark - {timestamp}")
         print(f"Models to benchmark: {len(self.config.models)}")
         print(f"Repetitions per model: {self.config.repetitions}")
         print(f"Max iterations per run: {self.config.max_iterations}")
 
-        for i, model_name in enumerate(self.config.models, 1):
+        if self.enable_checkpointing and self.checkpoint_manager:
+            print(f"Checkpointing: ENABLED (can resume with --resume)")
+        else:
+            print(f"Checkpointing: DISABLED")
+
+        for model_idx, model_name in enumerate(self.config.models):
+            # Skip already completed models
+            if model_idx < start_model_idx:
+                continue
+
             print(f"\n{'='*70}")
-            print(f"[{i}/{len(self.config.models)}] Benchmarking: {model_name}")
+            print(f"[{model_idx + 1}/{len(self.config.models)}] Benchmarking: {model_name}")
             print(f"{'='*70}")
 
-            model_result = self._benchmark_model(model_name)
+            # Determine starting run for this model
+            run_start = start_run_idx if model_idx == start_model_idx else 0
+            runs_for_model = current_model_runs if model_idx == start_model_idx else []
+
+            # Clear for next model
+            if model_idx > start_model_idx:
+                current_model_runs = []
+
+            model_result = self._benchmark_model_with_checkpoint(
+                model_name,
+                model_idx,
+                run_start,
+                runs_for_model,
+                results
+            )
             results.append(model_result)
+
+            # Reset for next model
+            start_run_idx = 0
+            current_model_runs = []
 
             # Print summary for this model
             self._print_model_summary(model_result)
 
         # Create report with rankings
         report = self._create_report(timestamp, results)
+
+        # Delete checkpoint on successful completion
+        if self.checkpoint_manager:
+            self.checkpoint_manager.delete_checkpoint(self.config.event_log)
+            print("\nCheckpoint cleared after successful completion.")
+
         return report
 
-    def _benchmark_model(self, model_name: str) -> ModelBenchmarkResult:
-        """Run benchmark for a single model with repetitions."""
-        runs = []
+    def _config_matches(self, saved_config: Dict[str, Any]) -> bool:
+        """Check if saved config matches current config."""
+        return (
+            saved_config.get("models") == self.config.models and
+            saved_config.get("repetitions") == self.config.repetitions and
+            saved_config.get("max_iterations") == self.config.max_iterations and
+            saved_config.get("des_runs") == self.config.des_runs and
+            saved_config.get("abs_runs") == self.config.abs_runs
+        )
 
-        for run_id in range(1, self.config.repetitions + 1):
+    def _save_checkpoint(
+        self,
+        completed_results: List[ModelBenchmarkResult],
+        current_model_idx: int,
+        current_run_idx: int,
+        current_model_runs: List[SingleModelRun]
+    ):
+        """Save checkpoint if checkpointing is enabled."""
+        if self.enable_checkpointing and self.checkpoint_manager and self._timestamp:
+            self.checkpoint_manager.save_checkpoint(
+                config=self.config,
+                completed_results=completed_results,
+                current_model_idx=current_model_idx,
+                current_run_idx=current_run_idx,
+                current_model_runs=current_model_runs,
+                timestamp=self._timestamp
+            )
+
+    def _benchmark_model_with_checkpoint(
+        self,
+        model_name: str,
+        model_idx: int,
+        start_run_idx: int,
+        existing_runs: List[SingleModelRun],
+        completed_results: List[ModelBenchmarkResult]
+    ) -> ModelBenchmarkResult:
+        """Run benchmark for a single model with checkpointing."""
+        runs = list(existing_runs)  # Copy existing runs
+
+        for run_id in range(start_run_idx + 1, self.config.repetitions + 1):
             print(f"\n  Run {run_id}/{self.config.repetitions}...")
             run_result = self._run_single_benchmark(model_name, run_id)
             runs.append(run_result)
@@ -311,6 +457,14 @@ class LLMBenchmarkRunner:
             else:
                 msg = run_result.error_message or run_result.status
                 print(f"    {status_emoji} {msg}")
+
+            # Save checkpoint after each run
+            self._save_checkpoint(
+                completed_results=completed_results,
+                current_model_idx=model_idx,
+                current_run_idx=run_id,  # run_id is 1-indexed, represents completed
+                current_model_runs=runs
+            )
 
         return self._aggregate_model_results(model_name, runs)
 
