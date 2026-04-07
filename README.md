@@ -55,6 +55,12 @@ An agentic iterative Large Language Model (LLM)-based pipeline for process-impro
 
 ### Install & Run
 
+Clone the repository locally:
+```bash
+https://github.com/angelo-casciani/improvement-agent
+```
+
+Run the automated setup script:
 ```bash
 ./setup.sh
 poetry run python src/main.py --log p2p.csv --max_iterations 3
