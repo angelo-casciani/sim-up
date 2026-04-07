@@ -220,8 +220,8 @@ Examples:
         abs_runs=args.abs_runs
     )
 
-    # Check for existing checkpoint
-    if not args.resume and checkpoint_manager.has_checkpoint(log_path):
+    # Check for existing checkpoint (get_checkpoint_info returns None if no checkpoint)
+    if not args.resume:
         info = checkpoint_manager.get_checkpoint_info(log_path)
         if info:
             print("\n" + "=" * 70)

@@ -622,11 +622,6 @@ Return ONLY the JSON object, no additional text."""
             )
             return description, rationale
 
-        if parameter_type == "activity_durations":
-            description = f"Reduce execution duration for {target} by {value}% to improve flow efficiency."
-            rationale = f"Executed change is {change} on activity {target} with value={value}."
-            return description, rationale
-
         if parameter_type == "calendar":
             description = f"Adjust calendar {target} by {value} hour(s) to improve process capacity."
             rationale = f"Executed change is {change} on calendar {target} with value={value}."

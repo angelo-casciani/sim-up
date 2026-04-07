@@ -117,9 +117,9 @@ class ImprovementValidationAgent:
         )
 
         try:
-            full_cases = pd.read_csv(self.full_log_path)["case_id"].nunique()
-            train_cases = pd.read_csv(self.train_log_path)["case_id"].nunique()
-            test_cases = pd.read_csv(self.test_log_path)["case_id"].nunique()
+            full_cases = pd.read_csv(self.full_log_path, usecols=["case_id"])["case_id"].nunique()
+            train_cases = pd.read_csv(self.train_log_path, usecols=["case_id"])["case_id"].nunique()
+            test_cases = pd.read_csv(self.test_log_path, usecols=["case_id"])["case_id"].nunique()
             print(f"[OK] Split sizes (cases): full={full_cases}, train={train_cases}, test={test_cases}")
             self._log_interaction(f"Split sizes (cases): full={full_cases}, train={train_cases}, test={test_cases}")
         except Exception:
@@ -528,7 +528,6 @@ class ImprovementValidationAgent:
                 )
 
                 # Average the scores from both simulators
-                param_type = (hypothesis.get('changes') or {}).get('parameter_type', '')
                 merged_improvements = self._merge_simulator_improvements(des_validation, abs_validation)
                 improvement_result = self._decide_improvement_averaged(
                     des_validation, abs_validation, des_impact, abs_impact, merged_improvements
@@ -922,135 +921,6 @@ class ImprovementValidationAgent:
         return result
 
     @staticmethod
-    def _decide_improvement(
-        param_type: str,
-        des_validation: Dict,
-        abs_validation: Dict,
-        des_impact: Dict,
-        abs_impact: Dict,
-        merged_improvements: Dict,
-    ) -> Dict:
-        """Return improvement_result dict using change-type-aware oracle logic.
-
-        With selective simulator launch:
-        - resources / calendar  → DES only (ABS is None)
-        - shift_responsibility         → ABS only (DES is None)
-        - anything else         → Both simulators (fallback)
-
-        Validation uses formula: delta_throughput - delta_cycle_time/2 > 0.02
-        with utilization veto if cumulative utilization > 90%.
-        """
-        des_validation = des_validation or {}
-        abs_validation = abs_validation or {}
-        des_impact = des_impact or {}
-        abs_impact = abs_impact or {}
-
-        conflict_detected = False
-        conflict_reason = ""
-        utilization_veto = False
-
-        # Check for utilization veto from either simulator
-        if des_validation.get('utilization_veto'):
-            utilization_veto = True
-        if abs_validation.get('utilization_veto'):
-            utilization_veto = True
-
-        if param_type in {'resources', 'calendar'}:
-            # DES only - ABS was skipped
-            overall = bool(des_validation.get('is_improvement')) and not utilization_veto
-            rule = "DES only (capacity/calendar change); formula: delta_tp - delta_ct/2 > 0.02"
-            des_role = "primary oracle"
-            abs_role = "skipped"
-            summary_parts = []
-            if utilization_veto:
-                util = des_validation.get('cumulative_utilization', 0)
-                summary_parts.append(f"VETO: utilization {util:.1%} > 90%")
-            if des_validation.get('is_improvement'):
-                score = des_validation.get('score', 0)
-                summary_parts.append(f"DES improved (score={score:.4f})")
-            else:
-                score = des_validation.get('score', 0)
-                summary_parts.append(f"DES did not improve (score={score:.4f} <= 0.02)")
-
-        elif param_type == 'shift_responsibility':
-            # ABS only - DES was skipped
-            overall = bool(abs_validation.get('is_improvement')) and not utilization_veto
-            # Plausibility ceiling: >95% cycle-time reduction is likely artifact
-            abs_ct_change = abs_impact.get('cycle_time', 0.0) or 0.0
-            if abs_ct_change < -95.0:
-                overall = False
-            rule = "ABS only (role/routing change); formula: delta_tp - delta_ct/2 > 0.02"
-            des_role = "skipped"
-            abs_role = "primary oracle"
-            summary_parts = []
-            if utilization_veto:
-                util = abs_validation.get('cumulative_utilization', 0)
-                summary_parts.append(f"VETO: utilization {util:.1%} > 90%")
-            if abs_ct_change < -95.0:
-                summary_parts.append(
-                    f"Rejected: ABS cycle time reduction ({abs_ct_change:.1f}%) exceeds "
-                    f"plausibility threshold (-95%) — likely simulation artifact"
-                )
-            elif abs_validation.get('is_improvement'):
-                score = abs_validation.get('score', 0)
-                summary_parts.append(f"ABS improved (score={score:.4f})")
-            else:
-                score = abs_validation.get('score', 0)
-                summary_parts.append(f"ABS did not improve (score={score:.4f} <= 0.02)")
-
-        else:
-            # Both simulators ran (fallback) - OR rule + conflict guardrail
-            conflict_detected, conflict_reason = ImprovementValidationAgent._has_strong_cross_simulator_conflict(
-                des_impact, abs_impact
-            )
-            overall = bool(
-                (des_validation.get('is_improvement') or abs_validation.get('is_improvement'))
-                and not conflict_detected
-                and not utilization_veto
-            )
-            if param_type == 'activity_durations':
-                rule = "OR (DES or ABS) + conflict guardrail; formula: delta_tp - delta_ct/2 > 0.02"
-            else:
-                rule = "OR (DES or ABS) + conflict guardrail (fallback); formula: delta_tp - delta_ct/2 > 0.02"
-            des_role = "active"
-            abs_role = "active"
-            summary_parts = []
-            if utilization_veto:
-                des_util = des_validation.get('cumulative_utilization', 0)
-                abs_util = abs_validation.get('cumulative_utilization', 0)
-                summary_parts.append(f"VETO: utilization > 90% (DES={des_util:.1%}, ABS={abs_util:.1%})")
-            if des_validation.get('is_improvement'):
-                score = des_validation.get('score', 0)
-                summary_parts.append(f"DES improved (score={score:.4f})")
-            if abs_validation.get('is_improvement'):
-                score = abs_validation.get('score', 0)
-                summary_parts.append(f"ABS improved (score={score:.4f})")
-            if not any([des_validation.get('is_improvement'), abs_validation.get('is_improvement')]):
-                des_score = des_validation.get('score', 0)
-                abs_score = abs_validation.get('score', 0)
-                summary_parts.append(
-                    f"Neither simulator improved (DES score={des_score:.4f}, ABS score={abs_score:.4f})"
-                )
-            if conflict_detected:
-                summary_parts.append(f"Rejected by cross-simulator conflict guardrail ({conflict_reason})")
-
-        return {
-            "is_improvement": overall,
-            "summary": "; ".join(summary_parts),
-            "improvements": merged_improvements,
-            "des_validation": des_validation,
-            "abs_validation": abs_validation,
-            "des_role": des_role,
-            "abs_role": abs_role,
-            "decision_rule": rule,
-            "utilization_veto": utilization_veto,
-            "cross_simulator_conflict": {
-                "detected": conflict_detected,
-                "reason": conflict_reason,
-            },
-        }
-
-    @staticmethod
     def _decide_improvement_averaged(
         des_validation: Dict,
         abs_validation: Dict,
@@ -1277,7 +1147,7 @@ class ImprovementValidationAgent:
         specific_changes = changes.get("specific_changes", [])
         expected = (hypothesis or {}).get("expected_impact", {})
 
-        if parameter_type not in {"resources", "shift_responsibility", "activity_durations", "calendar"}:
+        if parameter_type not in {"resources", "shift_responsibility", "calendar"}:
             return False, f"unsupported parameter_type '{parameter_type}'"
 
         if not isinstance(specific_changes, list) or len(specific_changes) != 1:
@@ -1313,12 +1183,6 @@ class ImprovementValidationAgent:
                 return False, "resource changes must be add/increase_count"
             if resources and target not in resources:
                 return False, f"resource target '{target}' is not in known targets"
-
-        if parameter_type == "activity_durations":
-            if change_name != "reduce_duration":
-                return False, "activity duration changes must reduce_duration"
-            if activities and target not in activities:
-                return False, f"activity target '{target}' is not in known targets"
 
         if parameter_type == "calendar":
             if change_name != "increase_hours":

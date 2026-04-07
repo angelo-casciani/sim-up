@@ -84,16 +84,12 @@ class ProsimosRunner:
             target = change.get('target')
             change_type = change.get('change')
             value = change.get('value')
-            # Only allow types supported by AgentSimulator and LLM
             if param_type == 'resources':
                 self._modify_resources(modified_params, target, change_type, value)
             elif param_type == 'shift_responsibility':
                 self._modify_shift_responsibility(modified_params, target, change_type, value, change)
-            elif param_type == 'activity_durations':
-                self._modify_durations(modified_params, target, value)
             elif param_type == 'calendar':
                 self._modify_calendar_hours(modified_params, target, change_type, value)
-            # Remove support for arrival_rate, gateway_probabilities, and any other types
         return modified_params
     
     def _modify_resources(self, params: Dict, target: str, change_type: str, value: int):

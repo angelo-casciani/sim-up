@@ -291,15 +291,7 @@ class AgentSimulatorRunner:
             if not param_type or not specific_changes:
                 return None
 
-            if param_type == 'activity_durations':
-                df = self._apply_activity_duration_modifications(
-                    df,
-                    specific_changes,
-                    activity_col,
-                    start_ts_col,
-                    end_ts_col
-                )
-            elif param_type == 'resources':
+            if param_type == 'resources':
                 df = self._apply_resource_modifications(df, specific_changes, case_col, resource_col)
             elif param_type == 'shift_responsibility':
                 df = self._apply_shift_responsibility_modifications(df, specific_changes, case_col, activity_col, resource_col)
@@ -332,24 +324,14 @@ class AgentSimulatorRunner:
         if df.empty:
             raise RuntimeError(f"ABS log is empty or unreadable: {log_path}")
 
-        columns = df.columns.tolist()
+        columns = set(df.columns.tolist())
 
-        def find_column(patterns, fallback=None):
-            for col in columns:
-                if col.lower() in [p.lower() for p in patterns]:
-                    return col
-            for col in columns:
-                col_lower = col.lower()
-                for pattern in patterns:
-                    if pattern.lower() in col_lower:
-                        return col
-            return fallback
-
-        case_col = find_column(['case_id', 'case'], 'case_id')
-        activity_col = find_column(['activity_name', 'concept:name', 'activity'], 'activity_name')
-        resource_col = find_column(['resource', 'org:resource', 'resourceid'], 'resource')
-        end_ts_col = find_column(['end_timestamp', 'end_time', 'end'], 'end_timestamp')
-        start_ts_col = find_column(['start_timestamp', 'start_time', 'start'], 'start_timestamp')
+        # Use imported find_column utility from utils.column_utils
+        case_col = find_column(columns, ['case_id', 'case'], 'case_id')
+        activity_col = find_column(columns, ['activity_name', 'concept:name', 'activity'], 'activity_name')
+        resource_col = find_column(columns, ['resource', 'org:resource', 'resourceid'], 'resource')
+        end_ts_col = find_column(columns, ['end_timestamp', 'end_time', 'end'], 'end_timestamp')
+        start_ts_col = find_column(columns, ['start_timestamp', 'start_time', 'start'], 'start_timestamp')
 
         modified_log = self._create_modified_abs_log(
             log_path,

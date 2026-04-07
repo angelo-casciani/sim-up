@@ -6,7 +6,6 @@ Provides save/resume functionality to handle interrupted benchmark runs.
 
 import json
 import os
-from dataclasses import asdict
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
@@ -95,10 +94,8 @@ class BenchmarkCheckpoint:
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(checkpoint_data, f, indent=2)
 
-        # Atomic rename
-        if os.path.exists(checkpoint_path):
-            os.remove(checkpoint_path)
-        os.rename(temp_path, checkpoint_path)
+        # Atomic replace (cross-platform)
+        os.replace(temp_path, checkpoint_path)
 
         return checkpoint_path
 
@@ -136,10 +133,11 @@ class BenchmarkCheckpoint:
         """
         checkpoint_path = self.get_checkpoint_path(event_log)
 
-        if os.path.exists(checkpoint_path):
+        try:
             os.remove(checkpoint_path)
             return True
-        return False
+        except FileNotFoundError:
+            return False
 
     def has_checkpoint(self, event_log: str) -> bool:
         """Check if a checkpoint exists for the given event log."""
