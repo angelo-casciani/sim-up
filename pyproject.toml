@@ -2,7 +2,7 @@
 name = "agents-for-bpm"
 version = "0.1.0"
 description = ""
-authors = ["Angelo Casciani <angelo.casciani@sap.com>"]
+authors = []
 readme = "README.md" 
 package-mode = false
 
