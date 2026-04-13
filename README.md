@@ -60,6 +60,8 @@ Clone the repository locally:
 https://github.com/angelo-casciani/improvement-agent
 ```
 
+Extract the event logs from `logs.zip` into the `logs/` folder before running the pipeline.
+
 Run the automated setup script:
 ```bash
 ./setup.sh
