@@ -213,6 +213,6 @@ logs/*.xes
 misc/
 simulated_data/
 .claude/
-logs/o2c
+logs/
 evaluation_results/
 output/
