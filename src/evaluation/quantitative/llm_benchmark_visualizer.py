@@ -862,11 +862,11 @@ class LLMBenchmarkVisualizer:
                 if best_score is not None:
                     run_best_scores.append(best_score)
 
-            # Average across runs
+            # Median across runs
             if run_first_scores and run_best_scores:
                 model_names.append(model_name)
-                first_scores.append(np.mean(run_first_scores) * 100)  # Convert to %
-                best_scores.append(np.mean(run_best_scores) * 100)
+                first_scores.append(np.median(run_first_scores) * 100)  # Convert to %
+                best_scores.append(np.median(run_best_scores) * 100)
                 colors.append(self._get_model_color(model_name, i))
 
         if not model_names:
@@ -901,34 +901,15 @@ class LLMBenchmarkVisualizer:
                         fontsize=self.fontsize['annotation'] - 1,
                         fontweight='bold')
 
-        # Add improvement arrows/annotations
-        for i, (first, best) in enumerate(zip(first_scores, best_scores)):
-            if best > first:
-                improvement = best - first
-                ax.annotate(f'+{improvement:.1f}%',
-                           xy=(x[i], max(first, best) + 0.3),
-                           ha='center', va='bottom',
-                           fontsize=self.fontsize['annotation'] - 1,
-                           color='green', fontweight='bold')
-
-        # Add 1% threshold line
-        ax.axhline(y=1.0, color='green', linestyle='--', linewidth=2,
-                   alpha=0.7, label='1% Validation Threshold')
-
-        # Add 0 reference line
-        ax.axhline(y=0, color='gray', linestyle=':', linewidth=1, alpha=0.5)
-
         # Formatting
         ax.set_xlabel('Model', fontsize=self.fontsize['axis_label'])
-        ax.set_ylabel('Avg Score (%)', fontsize=self.fontsize['axis_label'])
-        ax.set_title(f'Iteration Improvement: First vs Best Proposal{self._get_title_suffix()}\n'
-                     '(Shows how iteration improves initial proposals)',
+        ax.set_ylabel('Median Performance Improvement Score (%)', fontsize=self.fontsize['axis_label'])
+        ax.set_title(self._get_title_suffix().strip(' ()') if self._get_title_suffix() else '',
                      fontsize=self.fontsize['title'], fontweight='bold')
         ax.set_xticks(x)
         ax.set_xticklabels(model_names, rotation=45, ha='right',
                           fontsize=self.fontsize['tick'])
         ax.tick_params(axis='y', labelsize=self.fontsize['tick'])
-        ax.legend(loc='upper right', fontsize=self.fontsize['legend'])
 
         # Set y limits to show negative scores if any
         y_min = min(min(first_scores), 0) - 0.5
@@ -1016,3 +997,348 @@ class LLMBenchmarkVisualizer:
 
         print(f"\nGenerated {len(figures)} visualizations")
         return figures
+
+
+# ============================================================================
+# Aggregated Cross-Log Visualizations
+# ============================================================================
+
+# Standard model order for consistent visualization across logs
+MODEL_ORDER = [
+    'gpt-4.1',
+    'gpt-5-nano',
+    'gpt-5-mini',
+    'gpt-5',
+    'o3',
+    'anthropic--claude-4.5-haiku',
+    'anthropic--claude-4.5-sonnet',
+    'anthropic--claude-4.5-opus',
+    'mistralai--mistral-small-instruct',
+    'mistralai--mistral-large-instruct',
+]
+
+# Log directory to display name mapping
+LOG_DISPLAY_NAMES = {
+    'llm_benchmark_20260322_095513_loanApp': 'Loan Application',
+    'llm_benchmark_20260328_124047_bpic12': 'BPIC12W',
+    'llm_benchmark_20260407_132324': 'BPIC17W',
+    'llm_benchmark_20260403_122407_o2c': 'SAP O2C',
+}
+
+# Log positions in 2x2 grid
+LOG_POSITIONS = {
+    'llm_benchmark_20260322_095513_loanApp': 0,  # top left
+    'llm_benchmark_20260328_124047_bpic12': 1,   # top right
+    'llm_benchmark_20260407_132324': 2,          # bottom left
+    'llm_benchmark_20260403_122407_o2c': 3,      # bottom right
+}
+
+# Model colors (colorblind-friendly)
+MODEL_COLORS = {
+    'gpt-4.1': '#1E90FF',
+    'gpt-5': '#0072B2',
+    'gpt-5-mini': '#56B4E9',
+    'gpt-5-nano': '#ADD8E6',
+    'o3': '#003366',
+    'anthropic--claude-4.5-opus': '#D55E00',
+    'anthropic--claude-4.5-sonnet': '#E69F00',
+    'anthropic--claude-4.5-haiku': '#F0E442',
+    'mistralai--mistral-large-instruct': '#009E73',
+    'mistralai--mistral-small-instruct': '#B2DF8A',
+}
+
+# DES/ABS colors
+DES_COLOR = '#0072B2'  # Blue
+ABS_COLOR = '#D55E00'  # Orange/Vermillion
+
+
+def generate_aggregated_first_vs_best(output_dir: str, save_name: str = "first_vs_best_score_all_logs") -> str:
+    """
+    Generate aggregated first vs best proposal score chart across all event logs.
+
+    Creates a 2x2 grid with one subplot per event log, showing median first and best
+    proposal scores for each model.
+
+    Args:
+        output_dir: Directory containing benchmark result folders and where to save output
+        save_name: Output filename (without extension)
+
+    Returns:
+        Path to saved figure
+    """
+    import json
+    import os
+
+    # Collect data per log
+    logs_data = [None] * 4
+
+    for bench_dir in os.listdir(output_dir):
+        if not bench_dir.startswith('llm_benchmark_'):
+            continue
+        if bench_dir not in LOG_POSITIONS:
+            continue
+
+        results_path = os.path.join(output_dir, bench_dir, 'benchmark_results.json')
+        if not os.path.exists(results_path):
+            continue
+
+        with open(results_path, 'r') as f:
+            report = json.load(f)
+
+        display_name = LOG_DISPLAY_NAMES.get(bench_dir, bench_dir)
+        pos = LOG_POSITIONS[bench_dir]
+        log_data = {'log_name': display_name, 'models': {}}
+
+        for model_result in report.get('results', []):
+            model_name = model_result.get('model_name', 'Unknown')
+            runs = model_result.get('runs', [])
+
+            first_scores = []
+            best_scores = []
+
+            for run in runs:
+                all_proposals = run.get('all_proposals', run.get('iterations', []))
+
+                # Find first simulated proposal score
+                first_score = None
+                for prop in all_proposals:
+                    if not prop.get('rejected_before_simulation', False):
+                        score = prop.get('kpi_impact', {}).get('averaged_score')
+                        if score is not None:
+                            first_score = score
+                            break
+
+                # Find best score
+                best_score = None
+                for prop in all_proposals:
+                    if not prop.get('rejected_before_simulation', False):
+                        score = prop.get('kpi_impact', {}).get('averaged_score')
+                        if score is not None and (best_score is None or score > best_score):
+                            best_score = score
+
+                if first_score is not None:
+                    first_scores.append(first_score)
+                if best_score is not None:
+                    best_scores.append(best_score)
+
+            if first_scores and best_scores:
+                log_data['models'][model_name] = {
+                    'first': np.median(first_scores) * 100,
+                    'best': np.median(best_scores) * 100
+                }
+
+        logs_data[pos] = log_data
+        print(f'  {display_name}: {len(log_data["models"])} models')
+
+    # Create 2x2 subplots
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    axes = axes.flatten()
+
+    fallback_colors = plt.cm.tab10.colors
+
+    for idx, log_data in enumerate(logs_data):
+        if log_data is None:
+            continue
+        ax = axes[idx]
+
+        # Use MODEL_ORDER, only include models that exist in this log
+        models = [m for m in MODEL_ORDER if m in log_data['models']]
+        first_vals = [log_data['models'][m]['first'] for m in models]
+        best_vals = [log_data['models'][m]['best'] for m in models]
+        colors = [MODEL_COLORS.get(m, fallback_colors[i % len(fallback_colors)]) for i, m in enumerate(models)]
+
+        x = np.arange(len(models))
+        width = 0.35
+
+        # First proposal (lighter)
+        ax.bar(x - width/2, first_vals, width,
+               color=colors, alpha=0.5, edgecolor='black', linewidth=0.5)
+        # Best proposal (solid)
+        ax.bar(x + width/2, best_vals, width,
+               color=colors, alpha=1.0, edgecolor='black', linewidth=0.5)
+
+        # Value labels
+        for i, (first, best) in enumerate(zip(first_vals, best_vals)):
+            ax.annotate(f'{first:.1f}',
+                        xy=(x[i] - width/2, first),
+                        xytext=(0, 2), textcoords='offset points',
+                        ha='center', va='bottom', fontsize=7)
+            ax.annotate(f'{best:.1f}',
+                        xy=(x[i] + width/2, best),
+                        xytext=(0, 2), textcoords='offset points',
+                        ha='center', va='bottom', fontsize=7, fontweight='bold')
+
+        ax.set_xlabel('Model', fontsize=10)
+        ax.set_ylabel('Median Performance Improvement Score (%)', fontsize=10)
+        ax.set_title(log_data['log_name'], fontsize=12, fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(models, rotation=45, ha='right', fontsize=8)
+
+    plt.tight_layout()
+
+    # Save as PDF
+    fig_path = os.path.join(output_dir, f'{save_name}.pdf')
+    plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    print(f'Saved: {fig_path}')
+    return fig_path
+
+
+def generate_aggregated_des_vs_abs(output_dir: str, save_name: str = "des_vs_abs_scores") -> str:
+    """
+    Generate aggregated DES vs ABS score chart across all event logs.
+
+    Creates a 2x2 grid with one subplot per event log, showing median DES and ABS
+    scores for each model.
+
+    Args:
+        output_dir: Directory containing benchmark result folders and where to save output
+        save_name: Output filename (without extension)
+
+    Returns:
+        Path to saved figure
+    """
+    import json
+    import os
+
+    # Collect data per log
+    logs_data = [None] * 4
+
+    for bench_dir in os.listdir(output_dir):
+        if not bench_dir.startswith('llm_benchmark_'):
+            continue
+        if bench_dir not in LOG_POSITIONS:
+            continue
+
+        results_path = os.path.join(output_dir, bench_dir, 'benchmark_results.json')
+        if not os.path.exists(results_path):
+            continue
+
+        with open(results_path, 'r') as f:
+            report = json.load(f)
+
+        display_name = LOG_DISPLAY_NAMES.get(bench_dir, bench_dir)
+        pos = LOG_POSITIONS[bench_dir]
+        log_data = {'log_name': display_name, 'models': {}}
+
+        for model_result in report.get('results', []):
+            model_name = model_result.get('model_name', 'Unknown')
+            runs = model_result.get('runs', [])
+
+            des_scores = []
+            abs_scores = []
+
+            for run in runs:
+                all_proposals = run.get('all_proposals', run.get('iterations', []))
+
+                # Find best DES and ABS scores
+                best_des = None
+                best_abs = None
+                for prop in all_proposals:
+                    if not prop.get('rejected_before_simulation', False):
+                        kpi = prop.get('kpi_impact', {})
+                        des = kpi.get('des', {}).get('score')
+                        abs_s = kpi.get('abs', {}).get('score')
+                        if des is not None and (best_des is None or des > best_des):
+                            best_des = des
+                        if abs_s is not None and (best_abs is None or abs_s > best_abs):
+                            best_abs = abs_s
+
+                if best_des is not None:
+                    des_scores.append(best_des)
+                if best_abs is not None:
+                    abs_scores.append(best_abs)
+
+            if des_scores and abs_scores:
+                log_data['models'][model_name] = {
+                    'des': np.median(des_scores) * 100,
+                    'abs': np.median(abs_scores) * 100
+                }
+
+        logs_data[pos] = log_data
+        print(f'  {display_name}: {len(log_data["models"])} models')
+
+    # Create 2x2 subplots
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    axes = axes.flatten()
+
+    for idx, log_data in enumerate(logs_data):
+        if log_data is None:
+            continue
+        ax = axes[idx]
+
+        # Use MODEL_ORDER, only include models that exist in this log
+        models = [m for m in MODEL_ORDER if m in log_data['models']]
+        des_vals = [log_data['models'][m]['des'] for m in models]
+        abs_vals = [log_data['models'][m]['abs'] for m in models]
+
+        x = np.arange(len(models))
+        width = 0.35
+
+        # DES bars
+        ax.bar(x - width/2, des_vals, width, label='DES',
+               color=DES_COLOR, alpha=0.8, edgecolor='black', linewidth=0.5)
+        # ABS bars
+        ax.bar(x + width/2, abs_vals, width, label='ABS',
+               color=ABS_COLOR, alpha=0.8, edgecolor='black', linewidth=0.5)
+
+        # Value labels
+        for i, (des, abs_v) in enumerate(zip(des_vals, abs_vals)):
+            ax.annotate(f'{des:.1f}',
+                        xy=(x[i] - width/2, des),
+                        xytext=(0, 2), textcoords='offset points',
+                        ha='center', va='bottom', fontsize=7)
+            ax.annotate(f'{abs_v:.1f}',
+                        xy=(x[i] + width/2, abs_v),
+                        xytext=(0, 2), textcoords='offset points',
+                        ha='center', va='bottom', fontsize=7, fontweight='bold')
+
+        ax.set_xlabel('Model', fontsize=10)
+        ax.set_ylabel('Median Performance Improvement Score (%)', fontsize=10)
+        ax.set_title(log_data['log_name'], fontsize=12, fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(models, rotation=45, ha='right', fontsize=8)
+
+        # Legend: upper left for BPIC12W (idx=1), upper right for others
+        if idx == 1:
+            ax.legend(loc='upper left', fontsize=8)
+        else:
+            ax.legend(loc='upper right', fontsize=8)
+
+    plt.tight_layout()
+
+    # Save as PDF
+    fig_path = os.path.join(output_dir, f'{save_name}.pdf')
+    plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    print(f'Saved: {fig_path}')
+    return fig_path
+
+
+def generate_all_aggregated_charts(output_dir: str) -> List[str]:
+    """
+    Generate all aggregated cross-log charts.
+
+    Args:
+        output_dir: Directory containing benchmark result folders
+
+    Returns:
+        List of generated figure paths
+    """
+    print("\nGenerating aggregated cross-log visualizations...")
+    figures = []
+
+    fig_path = generate_aggregated_first_vs_best(output_dir)
+    if fig_path:
+        figures.append(fig_path)
+
+    fig_path = generate_aggregated_des_vs_abs(output_dir)
+    if fig_path:
+        figures.append(fig_path)
+
+    print(f"\nGenerated {len(figures)} aggregated visualizations")
+    return figures
