@@ -1278,11 +1278,11 @@ def generate_aggregated_des_vs_abs(output_dir: str, save_name: str = "des_vs_abs
         x = np.arange(len(models))
         width = 0.35
 
-        # DES bars
-        ax.bar(x - width/2, des_vals, width, label='DES',
+        # DES bars (Control-Flow-first)
+        ax.bar(x - width/2, des_vals, width, label='Control-Flow-first',
                color=DES_COLOR, alpha=0.8, edgecolor='black', linewidth=0.5)
-        # ABS bars
-        ax.bar(x + width/2, abs_vals, width, label='ABS',
+        # ABS bars (Resource-first)
+        ax.bar(x + width/2, abs_vals, width, label='Resource-first',
                color=ABS_COLOR, alpha=0.8, edgecolor='black', linewidth=0.5)
 
         # Value labels
@@ -1302,8 +1302,8 @@ def generate_aggregated_des_vs_abs(output_dir: str, save_name: str = "des_vs_abs
         ax.set_xticks(x)
         ax.set_xticklabels(models, rotation=45, ha='right', fontsize=8)
 
-        # Legend: upper left for BPIC12W (idx=1), upper right for others
-        if idx == 1:
+        # Legend: upper left for BPIC12W (idx=1) and SAP O2C (idx=3), upper right for others
+        if idx in [1, 3]:
             ax.legend(loc='upper left', fontsize=8)
         else:
             ax.legend(loc='upper right', fontsize=8)
