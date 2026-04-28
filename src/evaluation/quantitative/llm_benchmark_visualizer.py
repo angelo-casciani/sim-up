@@ -903,7 +903,7 @@ class LLMBenchmarkVisualizer:
 
         # Formatting
         ax.set_xlabel('Model', fontsize=self.fontsize['axis_label'])
-        ax.set_ylabel('Median Performance Improvement Score (%)', fontsize=self.fontsize['axis_label'])
+        ax.set_ylabel('Median Performance Improvement Rate (%)', fontsize=self.fontsize['axis_label'])
         ax.set_title(self._get_title_suffix().strip(' ()') if self._get_title_suffix() else '',
                      fontsize=self.fontsize['title'], fontweight='bold')
         ax.set_xticks(x)
@@ -1170,7 +1170,7 @@ def generate_aggregated_first_vs_best(output_dir: str, save_name: str = "first_v
                         ha='center', va='bottom', fontsize=7, fontweight='bold')
 
         ax.set_xlabel('Model', fontsize=10)
-        ax.set_ylabel('Median Performance Improvement Score (%)', fontsize=10)
+        ax.set_ylabel('Median Performance Improvement Rate (%)', fontsize=10)
         ax.set_title(log_data['log_name'], fontsize=12, fontweight='bold')
         ax.set_xticks(x)
         ax.set_xticklabels(models, rotation=45, ha='right', fontsize=8)
@@ -1297,7 +1297,7 @@ def generate_aggregated_des_vs_abs(output_dir: str, save_name: str = "des_vs_abs
                         ha='center', va='bottom', fontsize=7, fontweight='bold')
 
         ax.set_xlabel('Model', fontsize=10)
-        ax.set_ylabel('Median Performance Improvement Score (%)', fontsize=10)
+        ax.set_ylabel('Median Performance Improvement Rate (%)', fontsize=10)
         ax.set_title(log_data['log_name'], fontsize=12, fontweight='bold')
         ax.set_xticks(x)
         ax.set_xticklabels(models, rotation=45, ha='right', fontsize=8)
