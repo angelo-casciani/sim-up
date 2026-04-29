@@ -13,7 +13,7 @@ This document provides an overview of the prompts used by the process improvemen
 3. [Report Generation Prompts](#2-report-generation-prompts)
    - [System Prompt](#21-system-prompt)
    - [User Prompt](#22-user-prompt)
-4. [Evaluation Benchmark Prompts](#3-evaluation-benchmark-prompts)
+4. [Intervention Type Benchmark Prompts](#3-evaluation-benchmark-prompts)
    - [Calendar LLM Search](#31-calendar-llm-search)
    - [Resource LLM Search](#32-resource-llm-search)
    - [Shift Responsibility LLM Search](#33-shift-responsibility-llm-search)
@@ -26,11 +26,11 @@ The agent architecture employs prompts in three main contexts:
 
 | Component | Purpose | Source File |
 |-----------|---------|-------------|
-| **HypothesisGenerator** | Generate process improvement hypotheses | `src/llm/hypothesis_generator.py` |
-| **ReportGenerator** | Generate executive improvement reports | `src/reporting/report_generator.py` |
-| **CalendarLLMSearch** | Benchmark: calendar optimization | `src/evaluation/quantitative/calendar_llm_search.py` |
-| **LLMResourceSearch** | Benchmark: resource allocation | `src/evaluation/quantitative/resource_llm_search.py` |
-| **ShiftResponsibilityLLMSearch** | Benchmark: workload balancing | `src/evaluation/quantitative/shift_responsibility_llm_search.py` |
+| **HypothesisGenerator** | Generate process intervention hypotheses | `src/llm/hypothesis_generator.py` |
+| **ReportGenerator** | Generate process improvement reports | `src/reporting/report_generator.py` |
+| **CalendarLLMSearch** | Intervention Type Benchmark: calendar optimization | `src/evaluation/quantitative/calendar_llm_search.py` |
+| **LLMResourceSearch** | Intervention Type Benchmark: resource allocation | `src/evaluation/quantitative/resource_llm_search.py` |
+| **ShiftResponsibilityLLMSearch** | Intervention Type Benchmark: workload balancing | `src/evaluation/quantitative/shift_responsibility_llm_search.py` |
 
 ---
 
