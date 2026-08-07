@@ -1,6 +1,6 @@
 # Sim-Up
 
-An agentic iterative pipeline based on Large Language Model (LLM) for process-improvement generation and validation, combining SIMOD and PM4Py baseline simulation models extraction, and a two-fold simulation for the improvement hypothesis validation, supporting control-flow-based simulation via Prosimos and resource-based simulation via AgentSimulator.
+An agentic iterative pipeline based on Large Language Model (LLM) for process-improvement generation and validation, combining SIMOD and PM4Py baseline simulation models extraction, and a two-fold simulation for the improvement hypothesis validation, supporting control-flow-first simulation via Prosimos and resource-first simulation via AgentSimulator.
 
 ## Project Structure
 
@@ -27,8 +27,8 @@ An agentic iterative pipeline based on Large Language Model (LLM) for process-im
     │   ├── simulator/
     │   │   ├── __init__.py
     │   │   ├── simod_discoverer.py                      # SIMOD simulation model discovery
-    │   │   ├── prosimos_runner.py                       # DES simulation via Prosimos
-    │   │   ├── agent_simulator_runner.py                # ABS simulation via AgentSimulator
+    │   │   ├── prosimos_runner.py                       # Control-flow-first simulation simulation via Prosimos
+    │   │   ├── agent_simulator_runner.py                # Resource-first simulation via AgentSimulator
     │   │   └── metrics_extractor.py                     # KPI extraction utilities
     │   ├── utils/                                       # Shared utilities
     │   │   ├── __init__.py
@@ -77,8 +77,8 @@ poetry run python src/main.py --log p2p.csv --max_iterations 3
 | `--max_tokens` | Max tokens per LLM call |
 | `--max_iterations` | Number of improvement iterations |
 | `--no_sudo` | Run Docker without sudo (needed for Windows) |
-| `--des_runs` | DES simulation runs (default: 10) |
-| `--abs_runs` | ABS simulation runs (default: 10) |
+| `--des_runs` | Control-flow-first simulation runs (default: 10) |
+| `--abs_runs` | Resource-first simulation runs (default: 10) |
 
 </details>
 
@@ -115,7 +115,7 @@ Event Log (XES/CSV)
   -> SIMOD simulation model discovery
   -> Iteration loop:
        LLM hypothesis generation
-       Parallel simulation (DES + ABS)
+       Parallel simulation (Control-flow-first + Resource-first)
        Averaged validation (KPI score > 0.01)
        Utilization veto (reject if overall resource utilization > 90%)
        Scenario update (if the improvement hypothesis is validated)
@@ -124,12 +124,12 @@ Event Log (XES/CSV)
 
 ## Simulators
 
-The pipeline runs **both simulators in parallel** for every LLM-generated hypothesis, averaging their results for its validation. In this way, DES captures queue-based capacity effects and ABS captures behavioral patterns, and averaging provides a more robust validation that neither simulator alone can achieve.
+The pipeline runs **both simulators in parallel** for every LLM-generated hypothesis, averaging their results for its validation. In this way, control-flow-first captures queue-based capacity effects and resource-first simulation captures behavioral patterns, and averaging proviControl-flow-first a more robust validation that neither simulator alone can achieve.
 
 | Simulator | What it Models | Reliable KPIs | Limitations |
 |-----------|----------------|---------------|-------------|
-| **DES (Prosimos)** | BPMN, resource pools, calendars, queuing | cycle_time, waiting_time, throughput | No agent routing/handover |
-| **ABS (AgentSimulator)** | Agent behaviors, handover sequences | cycle_time, resource utilization | No queue model (waiting_time = 0) |
+| **Control-flow-first (Prosimos)** | BPMN, resource pools, calendars, queuing | cycle_time, waiting_time, throughput | No agent routing/handover |
+| **Resource-first (AgentSimulator)** | Agent behaviors, handover sequences | cycle_time, resource utilization | No queue model (waiting_time = 0) |
 
 ## Validation
 
@@ -137,7 +137,7 @@ Each simulator computes a score, then scores are averaged:
 
 ```
 score = delta_throughput - delta_cycle_time
-averaged_score = (DES_score + ABS_score) / 2
+averaged_score = (control-flow-first_score + resource-first_score) / 2
 ```
 
 **Pass condition:** `averaged_score > 0.01` (1% improvement threshold)
