@@ -124,7 +124,7 @@ Event Log (XES/CSV)
 
 ## Simulators
 
-The pipeline runs **both simulators in parallel** for every LLM-generated hypothesis, averaging their results for its validation. In this way, control-flow-first captures queue-based capacity effects and resource-first simulation captures behavioral patterns, and averaging proviControl-flow-first a more robust validation that neither simulator alone can achieve.
+The pipeline runs **both simulators in parallel** for every LLM-generated hypothesis, averaging their results for its validation. In this way, control-flow-first captures queue-based capacity effects and resource-first simulation captures behavioral patterns, and averaging provides a more robust validation that neither simulator alone can achieve.
 
 | Simulator | What it Models | Reliable KPIs | Limitations |
 |-----------|----------------|---------------|-------------|
