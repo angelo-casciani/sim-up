@@ -1,16 +1,16 @@
-# Process Improvement Agent
+# Sim-Up
 
-An agentic iterative Large Language Model (LLM)-based pipeline for process-improvement generation and validation, combining SIMOD and PM4Py baseline simulation models extraction, and a two-fold simulation for the improvement hypothesis validation, supporting Discrete Event Simulation (DES) simulation via Prosimos and agent-based simulation (ABS) via AgentSimulator.
+An agentic iterative pipeline based on Large Language Model (LLM) for process-improvement generation and validation, combining SIMOD and PM4Py baseline simulation models extraction, and a two-fold simulation for the improvement hypothesis validation, supporting control-flow-based simulation via Prosimos and resource-based simulation via AgentSimulator.
 
 ## Project Structure
 
 ```
-└── improvement-agent/
+└── sim-up/
     ├── README.md
     ├── LICENSE
     ├── pyproject.toml                            # Poetry dependencies
     ├── setup.sh                                  # Automated setup script 
-    ├── logs/                                     # Event logs for testing
+    ├── logs/                                     # Event logs for testing (gzipped, extract before use)
     ├── src/
     │   ├── gui.py                                # Gradio web interface
     │   ├── improvement_validation_pipeline.py    # Main orchestration pipeline
@@ -18,12 +18,6 @@ An agentic iterative Large Language Model (LLM)-based pipeline for process-impro
     │   ├── AgentSimulator/                       # AgentSimulator source code
     │   ├── calibration/                          
     │   │   └── simod_calibrator.py               # SIMOD model calibration
-    │   ├── evaluation/
-    │   │   ├── __init__.py
-    │   │   ├── qualitative/                      # Qualitative evaluation setup scripts
-    │   │   │   └── ...
-    │   │   └── quantitative/                     # Quantitative evaluation setup scripts
-    │   │       └── ...
     │   ├── llm/
     │   │   ├── __init__.py
     │   │   └── hypothesis_generator.py                  # Improvement hypotheses generation via LLM
@@ -57,10 +51,14 @@ An agentic iterative Large Language Model (LLM)-based pipeline for process-impro
 
 Clone the repository locally:
 ```bash
-https://github.com/angelo-casciani/improvement-agent
+https://github.com/angelo-casciani/sim-up
 ```
 
-Extract the event logs from `logs.zip` into the `logs/` folder before running the pipeline.
+The event logs in `logs/` are stored gzipped. Extract them in place before running the pipeline:
+```bash
+gunzip -k logs/*.gz
+```
+This keeps the `.gz` archives and writes the uncompressed logs (e.g. `logs/p2p.csv`) next to them; the extracted files are git-ignored.
 
 Run the automated setup script:
 ```bash

@@ -208,11 +208,11 @@ __marimo__/
 
 reports/
 
-# Logs - exclude only pure .xes files, not compressed variants
+# Event logs - only the compressed .gz archives are versioned,
+# the extracted (uncompressed) logs stay local
+logs/*
+!logs/*.gz
 logs/*.xes
-misc/
-simulated_data/
-.claude/
-logs/
+logs/*.csv
 evaluation_results/
 output/
