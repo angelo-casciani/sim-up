@@ -1,98 +1,36 @@
 import json
 from typing import Dict, List, Optional
-from dotenv import load_dotenv
 import re
 
-load_dotenv()
-
-from gen_ai_hub.proxy.native.openai import chat
-
-# Models that use Amazon Bedrock Converse API (Anthropic Claude models)
-AMAZON_BEDROCK_MODELS = {'anthropic--claude-4.5-opus', 'anthropic--claude-4.5-sonnet', 'anthropic--claude-4.5-haiku',
-                         'anthropic--claude-4-opus', 'anthropic--claude-4-sonnet'}
-
-# OpenAI reasoning models (use max_completion_tokens, no temperature)
-OPENAI_REASONING_MODELS = {'gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'o3', 'o3-mini', 'o1', 'o1-mini', 'o1-preview'}
+from .ollama_client import DEFAULT_MODEL, DEFAULT_NUM_CTX, OllamaLLM
 
 
 class HypothesisGenerator:
-    def __init__(self, model_name: str = "gpt-4.1", temperature: float = 0.0, max_tokens: int = 4096):
+    def __init__(
+        self,
+        model_name: str = DEFAULT_MODEL,
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
+        num_ctx: int = DEFAULT_NUM_CTX,
+        think: bool = False,
+    ):
         self.model_name = model_name
         self.temperature = temperature
         self.max_tokens = max_tokens
-
-    def _is_amazon_bedrock_model(self) -> bool:
-        """Check if the model uses Amazon Bedrock Converse API."""
-        model_lower = self.model_name.lower()
-        return any(m in model_lower for m in AMAZON_BEDROCK_MODELS)
-
-    def _is_reasoning_model(self) -> bool:
-        """Check if the model is an OpenAI reasoning model (o-series, gpt-5 series)."""
-        return self.model_name in OPENAI_REASONING_MODELS
-
-    def _call_openai_chat(self, system_prompt: str, user_prompt: str) -> str:
-        """Call OpenAI-compatible chat API (works for GPT, Mistral models)."""
-        response = chat.completions.create(
-            model_name=self.model_name,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=self.temperature,
-            max_tokens=self.max_tokens
+        self.llm = OllamaLLM(
+            model_name=model_name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            num_ctx=num_ctx,
+            think=think,
+            log_prefix="HypothesisGenerator",
         )
-        return response.choices[0].message.content
-
-    def _call_openai_reasoning(self, system_prompt: str, user_prompt: str) -> str:
-        """Call OpenAI reasoning model API (o-series, gpt-5 series - no temperature, use max_completion_tokens)."""
-        response = chat.completions.create(
-            model_name=self.model_name,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            extra_body={"max_completion_tokens": self.max_tokens}
-        )
-        # Debug: check if content is None
-        content = response.choices[0].message.content
-        if content is None:
-            # Try to get more info about the response
-            print(f"[DEBUG] Response object: {response}")
-            print(f"[DEBUG] Message object: {response.choices[0].message}")
-            # Some reasoning models put content in 'reasoning_content' or similar
-            if hasattr(response.choices[0].message, 'reasoning_content'):
-                content = response.choices[0].message.reasoning_content
-        return content or ""
-
-    def _call_amazon_bedrock(self, system_prompt: str, user_prompt: str) -> str:
-        """Call Amazon Bedrock Converse API for Anthropic models."""
-        from gen_ai_hub.proxy.native.amazon.clients import Session
-
-        bedrock = Session().client(model_name=self.model_name)
-        conversation = [
-            {
-                "role": "user",
-                "content": [{"text": f"{system_prompt}\n\n{user_prompt}"}],
-            }
-        ]
-        response = bedrock.converse(
-            messages=conversation,
-            inferenceConfig={"maxTokens": self.max_tokens, "temperature": self.temperature},
-        )
-        return response["output"]["message"]["content"][0]["text"]
 
     def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
-        """Route LLM call to the appropriate provider based on model name."""
-        if self._is_amazon_bedrock_model():
-            print(f"[HypothesisGenerator] Using Amazon Bedrock Converse API for {self.model_name}")
-            return self._call_amazon_bedrock(system_prompt, user_prompt)
-        elif self._is_reasoning_model():
-            print(f"[HypothesisGenerator] Using OpenAI Reasoning API for {self.model_name}")
-            return self._call_openai_reasoning(system_prompt, user_prompt)
-        else:
-            print(f"[HypothesisGenerator] Using OpenAI Chat API for {self.model_name}")
-            return self._call_openai_chat(system_prompt, user_prompt)
-    
+        """Call the Ollama model, constraining the output to JSON (the prompt asks for a JSON object)."""
+        print(f"[HypothesisGenerator] Calling Ollama model {self.model_name}")
+        return self.llm.chat(system_prompt, user_prompt, json_mode=True)
+
     
     def generate(
         self,

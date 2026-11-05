@@ -25,6 +25,26 @@ poetry env use python3.11 >/dev/null
 echo "[setup] Installing project dependencies with Poetry..."
 poetry install
 
+# Ollama is only checked, never pulled automatically (the models are several GB each).
+SUPPORTED_OLLAMA_MODELS=("qwen3.8:latest" "laguna-xs-2.1:latest" "gemma4:latest" "qwen2.5-coder:14b")
+if command -v ollama >/dev/null 2>&1; then
+  echo "[setup] Checking Ollama models..."
+  if installed_models="$(ollama list 2>/dev/null | awk 'NR>1 {print $1}')"; then
+    for model in "${SUPPORTED_OLLAMA_MODELS[@]}"; do
+      if grep -Fxq "$model" <<<"$installed_models"; then
+        echo "[setup] Ollama model $model present."
+      else
+        echo "[setup] Ollama model $model not found. Pull it with: ollama pull $model"
+      fi
+    done
+  else
+    echo "[setup] WARNING: Ollama server not reachable. Start it with 'ollama serve'."
+  fi
+else
+  echo "[setup] WARNING: 'ollama' not found. Install it from https://ollama.com/download"
+  echo "[setup]          (or set OLLAMA_HOST in .env to use a remote Ollama server)."
+fi
+
 echo "[setup] Ensuring SIMOD Docker image is available..."
 if ! docker image inspect nokal/simod:latest >/dev/null 2>&1; then
   docker pull nokal/simod:latest

@@ -5,27 +5,12 @@ import os
 import time
 import traceback
 from typing import Dict, List
-from dotenv import load_dotenv
 
-load_dotenv()
+from llm.ollama_client import DEFAULT_MODEL, DEFAULT_NUM_CTX, OllamaLLM
 
-from gen_ai_hub.proxy.native.openai import chat
-
-# Models that use Amazon Bedrock Converse API (Anthropic Claude models)
-AMAZON_BEDROCK_MODELS = {'anthropic--claude-4.5-opus', 'anthropic--claude-4.5-sonnet', 'anthropic--claude-4.5-haiku',
-                         'anthropic--claude-4-opus', 'anthropic--claude-4-sonnet'}
-
-# Models that require max_completion_tokens instead of max_tokens (newer OpenAI reasoning models)
-MAX_COMPLETION_TOKENS_MODELS = {'gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'o3', 'o3-mini', 'o1', 'o1-mini', 'o1-preview'}
-
-# Fallback model for report generation (used after retries exhausted)
-# Using gpt-4.1 as fallback since Bedrock endpoints have timeout issues with large prompts
-FALLBACK_MODEL = 'gpt-5'
-SECONDARY_FALLBACK_MODEL = 'gpt-4.1'
-
-# Retry configuration
+# Retry configuration (same model; transient Ollama errors such as a model reload)
 MAX_RETRIES = 2
-RETRY_BASE_DELAY = 1  # seconds (minimal delay, just to allow transient issues to clear)
+RETRY_BASE_DELAY = 1  # seconds
 
 # Report generation requires more tokens than hypothesis generation
 REPORT_MAX_TOKENS = 8192
@@ -36,127 +21,37 @@ class ReportGenerator:
 
     def __init__(
         self,
-        model_name: str = "gpt-5",
+        model_name: str = DEFAULT_MODEL,
         temperature: float = 0.0,
-        max_tokens: int = 4096
+        max_tokens: int = 4096,
+        num_ctx: int = DEFAULT_NUM_CTX,
+        think: bool = False,
     ):
         """Initialize report generator."""
         self.model_name = model_name
         self.temperature = temperature
         self.max_tokens = max_tokens
-
-    def _is_amazon_bedrock_model(self) -> bool:
-        """Check if the model uses Amazon Bedrock Converse API."""
-        model_lower = self.model_name.lower()
-        return any(m in model_lower for m in AMAZON_BEDROCK_MODELS)
-
-    def _uses_max_completion_tokens(self) -> bool:
-        """Check if the model requires max_completion_tokens instead of max_tokens (and no temperature)."""
-        return self.model_name in MAX_COMPLETION_TOKENS_MODELS
-
-    def _call_openai_chat(self, system_prompt: str, user_prompt: str) -> str:
-        """Call OpenAI-compatible chat API (works for GPT, Mistral models)."""
-        # Build parameters - reasoning models need different params
-        params = {
-            "model_name": self.model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-        }
-
-        if self._uses_max_completion_tokens():
-            # Reasoning models: use max_completion_tokens via extra_body, no temperature
-            params["extra_body"] = {"max_completion_tokens": self.max_tokens}
-        else:
-            # Standard models: use max_tokens and temperature
-            params["temperature"] = self.temperature
-            params["max_tokens"] = self.max_tokens
-
-        response = chat.completions.create(**params)
-        return response.choices[0].message.content
-
-    def _call_amazon_bedrock(self, system_prompt: str, user_prompt: str) -> str:
-        """Call Amazon Bedrock Converse API for Anthropic models."""
-        from gen_ai_hub.proxy.native.amazon.clients import Session
-        from botocore.config import Config
-
-        # Increase read timeout for large prompts (default is often 60s, we need more for reports)
-        config = Config(read_timeout=300, connect_timeout=60)  # 5 min read timeout
-        bedrock = Session().client(model_name=self.model_name, config=config)
-        conversation = [
-            {
-                "role": "user",
-                "content": [{"text": f"{system_prompt}\n\n{user_prompt}"}],
-            }
-        ]
-        response = bedrock.converse(
-            messages=conversation,
-            inferenceConfig={"maxTokens": self.max_tokens, "temperature": self.temperature},
+        # The report is long: never give it less than REPORT_MAX_TOKENS of output budget.
+        self.report_max_tokens = max(REPORT_MAX_TOKENS, max_tokens)
+        self.llm = OllamaLLM(
+            model_name=model_name,
+            temperature=temperature,
+            max_tokens=self.report_max_tokens,
+            num_ctx=num_ctx,
+            think=think,
+            log_prefix="ReportGenerator",
         )
-        return response["output"]["message"]["content"][0]["text"]
-
-    def _is_bedrock_model(self, model_name: str) -> bool:
-        """Check if a specific model uses Amazon Bedrock Converse API."""
-        model_lower = model_name.lower()
-        return any(m in model_lower for m in AMAZON_BEDROCK_MODELS)
-
-    def _call_llm_single(self, system_prompt: str, user_prompt: str, model_name: str) -> str:
-        """Make a single LLM call to the specified model."""
-        if self._is_bedrock_model(model_name):
-            print(f"[ReportGenerator] Using Amazon Bedrock Converse API for {model_name}")
-            return self._call_amazon_bedrock_with_model(system_prompt, user_prompt, model_name)
-        else:
-            print(f"[ReportGenerator] Using OpenAI Chat API for {model_name}")
-            return self._call_openai_chat_with_model(system_prompt, user_prompt, model_name)
-
-    def _call_openai_chat_with_model(self, system_prompt: str, user_prompt: str, model_name: str) -> str:
-        """Call OpenAI-compatible chat API with a specific model."""
-        params = {
-            "model_name": model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-        }
-
-        if model_name in MAX_COMPLETION_TOKENS_MODELS:
-            params["extra_body"] = {"max_completion_tokens": REPORT_MAX_TOKENS}
-        else:
-            params["temperature"] = self.temperature
-            params["max_tokens"] = REPORT_MAX_TOKENS
-
-        response = chat.completions.create(**params)
-        return response.choices[0].message.content
-
-    def _call_amazon_bedrock_with_model(self, system_prompt: str, user_prompt: str, model_name: str) -> str:
-        """Call Amazon Bedrock Converse API with a specific model."""
-        from gen_ai_hub.proxy.native.amazon.clients import Session
-        from botocore.config import Config
-
-        # Increase read timeout for large prompts (default is often 60s, we need more for reports)
-        config = Config(read_timeout=300, connect_timeout=60)  # 5 min read timeout
-        bedrock = Session().client(model_name=model_name, config=config)
-        conversation = [
-            {
-                "role": "user",
-                "content": [{"text": f"{system_prompt}\n\n{user_prompt}"}],
-            }
-        ]
-        response = bedrock.converse(
-            messages=conversation,
-            inferenceConfig={"maxTokens": REPORT_MAX_TOKENS, "temperature": self.temperature},
-        )
-        return response["output"]["message"]["content"][0]["text"]
 
     def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
-        """Route LLM call with retry logic and fallback models."""
-        # Try with primary model first (with retries)
+        """Call the Ollama model with retries and exponential backoff."""
         last_exception = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 print(f"[ReportGenerator] Attempt {attempt}/{MAX_RETRIES} with {self.model_name}")
-                return self._call_llm_single(system_prompt, user_prompt, self.model_name)
+                response_text = self.llm.chat(system_prompt, user_prompt)
+                if not response_text:
+                    raise ValueError("empty response from model")
+                return response_text
             except Exception as e:
                 last_exception = e
                 print(f"[ReportGenerator] Attempt {attempt} failed: {type(e).__name__}: {e}")
@@ -165,39 +60,6 @@ class ReportGenerator:
                     print(f"[ReportGenerator] Waiting {delay}s before retry...")
                     time.sleep(delay)
 
-        # All retries failed with primary model - try fallback model (gpt-4.1)
-        if self.model_name != FALLBACK_MODEL:
-            print(f"[ReportGenerator] Primary model {self.model_name} failed after {MAX_RETRIES} attempts")
-            print(f"[ReportGenerator] Falling back to {FALLBACK_MODEL}")
-            for attempt in range(1, MAX_RETRIES + 1):
-                try:
-                    print(f"[ReportGenerator] Fallback attempt {attempt}/{MAX_RETRIES} with {FALLBACK_MODEL}")
-                    return self._call_llm_single(system_prompt, user_prompt, FALLBACK_MODEL)
-                except Exception as e:
-                    last_exception = e
-                    print(f"[ReportGenerator] Fallback attempt {attempt} failed: {type(e).__name__}: {e}")
-                    if attempt < MAX_RETRIES:
-                        delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                        print(f"[ReportGenerator] Waiting {delay}s before retry...")
-                        time.sleep(delay)
-
-        # Try secondary fallback (Sonnet via Bedrock)
-        if self.model_name != SECONDARY_FALLBACK_MODEL and FALLBACK_MODEL != SECONDARY_FALLBACK_MODEL:
-            print(f"[ReportGenerator] Fallback {FALLBACK_MODEL} also failed")
-            print(f"[ReportGenerator] Trying secondary fallback: {SECONDARY_FALLBACK_MODEL}")
-            for attempt in range(1, MAX_RETRIES + 1):
-                try:
-                    print(f"[ReportGenerator] Secondary fallback attempt {attempt}/{MAX_RETRIES} with {SECONDARY_FALLBACK_MODEL}")
-                    return self._call_llm_single(system_prompt, user_prompt, SECONDARY_FALLBACK_MODEL)
-                except Exception as e:
-                    last_exception = e
-                    print(f"[ReportGenerator] Secondary fallback attempt {attempt} failed: {type(e).__name__}: {e}")
-                    if attempt < MAX_RETRIES:
-                        delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                        print(f"[ReportGenerator] Waiting {delay}s before retry...")
-                        time.sleep(delay)
-
-        # All models failed
         raise last_exception
     
     def generate(
@@ -437,6 +299,8 @@ Mandatory reporting rules:
         header += f"Model: {self.model_name}\n"
         header += f"Temperature: {self.temperature}\n"
         header += f"Max Tokens: {self.max_tokens}\n"
+        header += f"Context Window: {self.llm.num_ctx}\n"
+        header += f"Thinking: {'on' if self.llm.think else 'off'}\n"
         
         # Add execution times if available
         if execution_times or iterations_times:

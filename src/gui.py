@@ -7,25 +7,15 @@ from contextlib import redirect_stdout
 
 import gradio as gr
 from improvement_validation_pipeline import ImprovementValidationAgent
+from llm import DEFAULT_MODEL, SUPPORTED_MODELS, OllamaUnavailableError, check_ollama_model, model_slug
 
 # Paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGS_DIR = os.path.join(SCRIPT_DIR, "..", "logs")
 REPORTS_DIR = os.path.join(SCRIPT_DIR, "..", "reports")
 
-# Supported LLMs
-SUPPORTED_LLMS = [
-    "gpt-4.1",
-    "gpt-5",
-    "gpt-5-mini",
-    "gpt-5-nano",
-    "o3",
-    "anthropic--claude-4.5-opus",
-    "anthropic--claude-4.5-sonnet",
-    "anthropic--claude-4.5-haiku",
-    "mistralai--mistral-small-instruct",
-    "mistralai--mistral-large-instruct",
-]
+# Supported LLMs (Ollama model tags)
+SUPPORTED_LLMS = SUPPORTED_MODELS
 
 
 def get_available_logs():
@@ -43,7 +33,7 @@ def get_latest_report(log_name: str, model: str) -> str:
     log_stem = os.path.splitext(log_name)[0]
     matching = []
     for f in os.listdir(REPORTS_DIR):
-        if f.startswith("improvement_report_") and log_stem in f and model in f:
+        if f.startswith("improvement_report_") and log_stem in f and model_slug(model) in f:
             matching.append(f)
     if not matching:
         return ""
@@ -53,12 +43,18 @@ def get_latest_report(log_name: str, model: str) -> str:
         return fp.read()
 
 
-def run_pipeline(log_file, model, temperature, max_iterations):
+def run_pipeline(log_file, model, temperature, max_iterations, think):
     """Run the improvement pipeline and yield status updates."""
     log_path = os.path.join(LOGS_DIR, log_file)
 
     if not os.path.exists(log_path):
         yield f"Error: Log file not found: {log_path}", ""
+        return
+
+    try:
+        check_ollama_model(model)
+    except OllamaUnavailableError as e:
+        yield f"Error: {e}", ""
         return
 
     yield "Initializing agent...", ""
@@ -75,6 +71,7 @@ def run_pipeline(log_file, model, temperature, max_iterations):
                 model_name=model,
                 temperature=temperature,
                 max_tokens=4096,
+                think=bool(think),
                 max_iterations=int(max_iterations),
                 use_sudo=False,
                 des_runs=10,
@@ -112,7 +109,7 @@ def run_pipeline(log_file, model, temperature, max_iterations):
     os.makedirs(REPORTS_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_stem = os.path.splitext(log_file)[0].replace(os.sep, "_").replace("/", "_")
-    report_filename = f"improvement_report_{model}_{log_stem}_{temperature}_{4096}_{timestamp}.txt"
+    report_filename = f"improvement_report_{model_slug(model)}_{log_stem}_{temperature}_{4096}_{timestamp}.txt"
     report_path = os.path.join(REPORTS_DIR, report_filename)
     with open(report_path, "w", encoding="utf-8") as fp:
         fp.write(report)
@@ -133,8 +130,13 @@ with gr.Blocks(title="Process Improvement Agent") as demo:
             )
             model_dropdown = gr.Dropdown(
                 choices=SUPPORTED_LLMS,
-                label="Select LLM Model",
-                value="gpt-4.1",
+                label="Select LLM Model (Ollama)",
+                value=DEFAULT_MODEL,
+                allow_custom_value=True,
+            )
+            think_checkbox = gr.Checkbox(
+                value=False,
+                label="Enable thinking (models that support it)",
             )
             temperature_slider = gr.Slider(
                 minimum=0.0,
@@ -166,7 +168,7 @@ with gr.Blocks(title="Process Improvement Agent") as demo:
 
     run_btn.click(
         fn=run_pipeline,
-        inputs=[log_dropdown, model_dropdown, temperature_slider, max_iter_input],
+        inputs=[log_dropdown, model_dropdown, temperature_slider, max_iter_input, think_checkbox],
         outputs=[status_box, report_box],
     )
 

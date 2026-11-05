@@ -13,7 +13,7 @@ import pandas as pd
 from typing import Dict, Tuple
 
 from simulator import SIMODDiscoverer, ProsimosRunner, AgentSimulatorRunner
-from llm import HypothesisGenerator
+from llm import HypothesisGenerator, DEFAULT_MODEL, DEFAULT_NUM_CTX
 from validation import ImprovementValidator
 from reporting import ReportGenerator
 from utils.column_utils import find_column
@@ -32,9 +32,11 @@ class ImprovementValidationAgent:
     """
     
     def __init__(self, 
-                model_name: str = "gpt-4.1", 
-                temperature: float = 0.0, 
+                model_name: str = DEFAULT_MODEL,
+                temperature: float = 0.0,
                 max_tokens: int = 4096,
+                num_ctx: int = DEFAULT_NUM_CTX,
+                think: bool = False,
                 max_iterations: int = 3,
                 use_sudo: bool = True,
                 des_runs: int = 10,
@@ -43,6 +45,8 @@ class ImprovementValidationAgent:
         self.model_name = model_name
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.num_ctx = num_ctx
+        self.think = think
         self.max_iterations = max_iterations
         self.use_sudo = use_sudo
         self.des_runs = max(1, int(des_runs))
@@ -59,9 +63,9 @@ class ImprovementValidationAgent:
         self.discoverer = SIMODDiscoverer(use_sudo)
         self.simulator = ProsimosRunner(use_sudo)
         self.agent_simulator = AgentSimulatorRunner()
-        self.hypothesis_gen = HypothesisGenerator(model_name, temperature, max_tokens)
+        self.hypothesis_gen = HypothesisGenerator(model_name, temperature, max_tokens, num_ctx, think)
         self.validator = ImprovementValidator()
-        self.reporter = ReportGenerator(model_name, temperature, max_tokens)
+        self.reporter = ReportGenerator(model_name, temperature, max_tokens, num_ctx, think)
         self.des_train_log_path = None
         self.des_test_log_path = None
         self.abs_source_log_path = None
@@ -139,7 +143,7 @@ class ImprovementValidationAgent:
         self._log_interaction("PROCESS IMPROVEMENT VALIDATION - INTERACTION LOG")
         self._log_interaction(f"Timestamp: {datetime.now()}")
         self._log_interaction(f"Event Log (original): {log_path}")
-        self._log_interaction(f"Model: {self.model_name}")
+        self._log_interaction(f"Model: {self.model_name} (Ollama, num_ctx={self.num_ctx}, think={self.think})")
         self._log_interaction(f"Simulation runs config: DES={self.des_runs}, ABS={self.abs_runs}")
         self._log_interaction("="*80 + "\n")
         

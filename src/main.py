@@ -7,16 +7,30 @@ load_dotenv()
 import subprocess
 
 from improvement_validation_pipeline import ImprovementValidationAgent
+from llm import (
+    DEFAULT_MODEL,
+    DEFAULT_NUM_CTX,
+    SUPPORTED_MODELS,
+    OllamaUnavailableError,
+    check_ollama_model,
+    model_slug,
+)
 
 
 def parse_arguments():
     parser = ArgumentParser(description="Test Process Improvement Validation Agent")
     is_windows = platform.system() == "Windows"
 
-    parser.add_argument('--model', type=str, default='anthropic--claude-4.5-opus', help='LLM model id')
+    parser.add_argument('--model', type=str, default=DEFAULT_MODEL,
+                        help=f"Ollama model tag (default: {DEFAULT_MODEL}; supported: {', '.join(SUPPORTED_MODELS)})")
     parser.add_argument('--log', type=str, default='LoanApp.csv', help='Event log file name in logs/ directory')
     parser.add_argument('--temperature', type=float, default=0.0, help='Temperature for LLM generation (default: 0.0)')
-    parser.add_argument('--max_tokens', type=int, default=4096, help='Max tokens for LLM responses (default: 4096)')
+    parser.add_argument('--max_tokens', type=int, default=4096,
+                        help='Max output tokens per LLM call, reasoning included when --think is on (default: 4096)')
+    parser.add_argument('--num_ctx', type=int, default=DEFAULT_NUM_CTX,
+                        help=f'Ollama context window in tokens, capped at the model maximum (default: {DEFAULT_NUM_CTX})')
+    parser.add_argument('--think', action='store_true',
+                        help='Enable reasoning for models that support it (default: off)')
     parser.add_argument('--max_iterations', type=int, default=3, help='Maximum improvement iterations (default: 3)')
     parser.add_argument('--no_sudo', action='store_true', default=is_windows,
                         help='Do not use sudo for Docker commands (auto-detected: disabled on Windows)')
@@ -79,6 +93,8 @@ def main():
     print(f"  Event Log: {args.log}")
     print(f"  Temperature: {args.temperature}")
     print(f"  Max Tokens: {args.max_tokens}")
+    print(f"  Context Window: {args.num_ctx}")
+    print(f"  Thinking: {args.think}")
     print(f"  Max Iterations: {args.max_iterations}")
     print(f"  Use Sudo: {use_sudo}")
     print(f"  DES Runs: {args.des_runs}")
@@ -87,6 +103,13 @@ def main():
     print()
 
     print("Checking prerequisites...")
+    try:
+        check_ollama_model(args.model)
+        print(f"[OK] Ollama model '{args.model}' available")
+    except OllamaUnavailableError as e:
+        print(f"[X] {e}")
+        return
+
     docker_ok = check_docker_available()
     if docker_ok:
         simod_ok = check_simod_image("nokal/simod:latest")
@@ -115,6 +138,8 @@ def main():
         model_name=args.model,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
+        num_ctx=args.num_ctx,
+        think=args.think,
         max_iterations=args.max_iterations,
         use_sudo=use_sudo,
         des_runs=args.des_runs,
@@ -138,7 +163,7 @@ def main():
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_name_no_ext = os.path.splitext(args.log)[0].replace(os.sep, "_").replace("/", "_")
-        report_filename = (f"improvement_report_{args.model}_{log_name_no_ext}_{args.temperature}_{args.max_tokens}_{timestamp}.txt")
+        report_filename = (f"improvement_report_{model_slug(args.model)}_{log_name_no_ext}_{args.temperature}_{args.max_tokens}_{timestamp}.txt")
         report_path = os.path.join(report_dir, report_filename)
 
         with open(report_path, 'w', encoding='utf-8') as f:
